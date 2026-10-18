@@ -61,6 +61,8 @@ The installer downloads the skills to a folder called `legal-research-skills` in
 Before or after installing, two short setup steps:
 
 1. **Install one of the two tools, if you haven't.** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) needs a Claude Pro or Max plan or an Anthropic API key; the [Claude desktop app](https://code.claude.com/docs/en/desktop) includes it under its Code tab. [Codex](https://developers.openai.com/codex) needs a ChatGPT Plus or Pro plan or an OpenAI API key, and comes as a command-line tool or a desktop app.
+
+   **On a Claude Pro plan, one extra switch.** Cite-check, proofread, and legal-research run as multi-agent "dynamic workflows," which Claude turns on by default for Max and Team plans but not for Pro. In Claude Code, type `/config`, find the **Dynamic workflows** row, and turn it on ([docs](https://code.claude.com/docs/en/workflows)). Without it, those three skills will fail at the fan-out step and the other three work normally. A reader hit exactly this, so check it before your first cite-check.
 2. **Get a free CourtListener account** and copy an API token from [courtlistener.com/profile/api-token](https://www.courtlistener.com/profile/api-token/). This is how the skills confirm that a case exists. Add this line to the end of the file `~/.zshrc` (Mac) with the token pasted in, then open a new Terminal window or restart the app:
 
    ```sh
@@ -128,7 +130,7 @@ The Claude desktop app's **Code** tab runs local sessions from this same folder,
 
 Runtime notes specific to Claude Code:
 
-- cite-check, proofread, and legal-research use Claude Code's `Workflow` tool (the `.workflow.js` files) for multi-agent fan-out.
+- cite-check, proofread, and legal-research use Claude Code's `Workflow` tool (the `.workflow.js` files) for multi-agent fan-out. Dynamic workflows must be enabled: they are on by default for Max, Team, and Enterprise plans and for API access, but **a Pro plan has to turn them on from the Dynamic workflows row in `/config`** ([docs](https://code.claude.com/docs/en/workflows)). Each run also asks for approval before it starts; in the desktop app that is an approval card with Once, Always, and Deny.
 - cite-check and find-cite assume a Zotero MCP server for library search; the scripts also read Zotero credentials from the `zotero` MCP server entry in `~/.claude.json`.
 - build-library's HeinOnline section assumes an institutional library proxy; replace `<proxy-host>` with yours.
 - case-prep assumes a reMarkable MCP server; the download-and-crop steps work without one.

@@ -83,6 +83,8 @@ Done. Next steps:
   2. For case checking, get a free CourtListener API token at
      https://www.courtlistener.com/profile/api-token/ and add this line to ~/.zshrc:
        export COURTLISTENER_API_TOKEN="paste-your-token-here"
-  3. Open a folder with a short draft and ask: "cite-check this draft."
+  3. Claude Pro plan only: in Claude Code, type /config and turn on "Dynamic workflows".
+     (cite-check, proofread, and legal-research need it; Max and Team plans have it on already.)
+  4. Open a folder with a short draft and ask: "cite-check this draft."
 Re-run this installer any time to update.
 NEXT
