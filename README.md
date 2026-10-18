@@ -1,6 +1,8 @@
 # legal-research-skills
 
-Research assistants for legal scholars, built as skills for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) (Anthropic) and [Codex CLI](https://developers.openai.com/codex) (OpenAI). They cite-check a law-review draft footnote by footnote, find verified authorities for a proposition, proofread a long manuscript, build a Zotero library with real records, write research memos, and assemble the brief set for a Supreme Court case. Built and used daily by a law professor; released as-is under the MIT license.
+Research assistants for legal scholars, built as skills for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) (Anthropic) and [Codex](https://developers.openai.com/codex) (OpenAI). They cite-check a law-review draft footnote by footnote, find verified authorities for a proposition, proofread a long manuscript, build a Zotero library with real records, write research memos, and assemble the brief set for a Supreme Court case.
+
+Written by [Daniel Epps](https://law.wustl.edu/faculty-staff-directory/profile/daniel-epps/), Howard and Caroline Cayne Distinguished Professor of Law at Washington University in St. Louis and co-host of the *Divided Argument* podcast, who builds and uses these in his own scholarship every day. Released as-is under the MIT license. Questions and bug reports go to the [issues page](https://github.com/danepps/legal-research-skills/issues); see also his [Bluebook citation style](https://danepps.github.io/bluebook/) and [Zotero plugins](https://danepps.github.io/zotero/) for law reviews.
 
 ## Why not just use the chat window?
 
@@ -38,18 +40,36 @@ Once installed, you open the folder that holds your draft, in the Terminal or in
 
 ## Getting started
 
-About twenty minutes the first time.
+Pick whichever of these three feels least intimidating. They all end in the same place.
 
-1. **Install one of the two tools.** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) needs a Claude Pro or Max plan or an Anthropic API key; the [Claude desktop app](https://code.claude.com/docs/en/desktop) includes it under its Code tab. [Codex](https://developers.openai.com/codex) needs a ChatGPT Plus or Pro plan or an OpenAI API key, and comes as a command-line tool or a desktop app. Each site has a one-line installer.
-2. **Get a free CourtListener account** and copy an API token from [courtlistener.com/profile/api-token](https://www.courtlistener.com/profile/api-token/). This is how the skills confirm that a case exists. Add this line to the end of the file `~/.zshrc` (Mac) with the token pasted in, then open a new Terminal window:
+**Option A: let the assistant install itself.** Open the Claude desktop app's Code tab (or Codex), choose any folder, and paste this sentence:
+
+> Install the skills from https://github.com/danepps/legal-research-skills by running its installer: `curl -fsSL https://danepps.github.io/legal-research-skills/install.sh | sh`
+
+It will ask your permission to run the command, do the install, and tell you what it did. Then start a new session.
+
+**Option B: one line in Terminal.** Open the Terminal app (on a Mac, press Cmd-Space and type "Terminal"), paste this, and press Return:
+
+```sh
+curl -fsSL https://danepps.github.io/legal-research-skills/install.sh | sh
+```
+
+The installer downloads the skills to a folder called `legal-research-skills` in your home directory and links them where Claude Code and Codex look. It detects which tool you have and never overwrites anything already there. Run the same line again later to update. (If the Mac says git is missing, accept its offer to install the command-line tools, then run the line again.)
+
+**Option C: by hand.** The copy-and-paste blocks are in the [Install for Claude Code](#install-for-claude-code) and [Install for Codex](#install-for-codex) sections below.
+
+Before or after installing, two short setup steps:
+
+1. **Install one of the two tools, if you haven't.** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) needs a Claude Pro or Max plan or an Anthropic API key; the [Claude desktop app](https://code.claude.com/docs/en/desktop) includes it under its Code tab. [Codex](https://developers.openai.com/codex) needs a ChatGPT Plus or Pro plan or an OpenAI API key, and comes as a command-line tool or a desktop app.
+2. **Get a free CourtListener account** and copy an API token from [courtlistener.com/profile/api-token](https://www.courtlistener.com/profile/api-token/). This is how the skills confirm that a case exists. Add this line to the end of the file `~/.zshrc` (Mac) with the token pasted in, then open a new Terminal window or restart the app:
 
    ```sh
    export COURTLISTENER_API_TOKEN="paste-your-token-here"
    ```
 
-3. **Install the skills.** Open Terminal and paste the block for your tool from the [Install](#install-for-claude-code) sections below.
-4. **Optional: connect Zotero.** If you keep your sources in Zotero, create a key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) and set `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` the same way. Without it, cite-check still works; it just checks articles against the open web only.
-5. **Try it.** Open the folder with a short draft, either by starting `claude` or `codex` there in Terminal or by choosing the folder in the desktop app, and type "cite-check this draft." Read the "needs your attention" section first.
+   Optional: if you keep sources in Zotero, create a key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) and set `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` the same way. Without it, cite-check still works; it just checks articles against the open web only.
+
+Then open the folder with a short draft, in the Terminal or the desktop app, and type "cite-check this draft." Read the "needs your attention" section first.
 
 Everything below this line is for readers who want the details.
 
