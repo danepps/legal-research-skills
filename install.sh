@@ -8,8 +8,10 @@
 #   Claude Code: registers the "danepps" plugin marketplace and installs the "law"
 #                plugin with the claude CLI (or prints the two commands to type in
 #                Claude Code if the CLI is not on your PATH).
-#   Codex:       clones (or updates) the repository into ~/legal-research-skills and
-#                links the Codex skills into ~/.agents/skills.
+#   Codex:       registers the repository's Codex marketplace and installs the
+#                "legal-research" plugin with the codex CLI. If your Codex has no
+#                plugin command, it clones (or updates) the repository into
+#                ~/legal-research-skills and links the skills into ~/.agents/skills.
 # It never overwrites anything that is already there. Re-run it any time to update.
 #
 # Options:   sh install.sh --claude     only Claude Code
@@ -67,7 +69,23 @@ if [ -n "$WANT_CLAUDE" ]; then
 fi
 
 # ---------------------------------------------------------------------- Codex
+CODEX_MARKET="danepps-legal-research-codex"
+CODEX_PLUGIN="legal-research"
+CODEX_LINKED=""
+if [ -n "$WANT_CODEX" ] && command -v codex >/dev/null 2>&1 && codex plugin --help >/dev/null 2>&1; then
+  echo "Codex: the $CODEX_PLUGIN plugin"
+  if codex plugin marketplace list 2>/dev/null | grep -q "$CODEX_MARKET"; then
+    echo "  marketplace $CODEX_MARKET already registered; refreshing"
+    codex plugin marketplace upgrade "$CODEX_MARKET" >/dev/null 2>&1 || true
+  else
+    codex plugin marketplace add "$REPO"
+  fi
+  codex plugin add "$CODEX_PLUGIN@$CODEX_MARKET"
+  WANT_CODEX=""
+  CODEX_LINKED=plugin
+fi
 if [ -n "$WANT_CODEX" ]; then
+  echo "Codex: no plugin command found; installing a plain copy of the skills instead"
   if ! command -v git >/dev/null 2>&1; then
     echo "git is not installed. On a Mac, run 'xcode-select --install', accept the prompt, then run this again." >&2
     exit 1
@@ -108,6 +126,7 @@ Done. Next steps:
   3. Claude Pro plan only: in Claude Code, type /config and turn on "Dynamic workflows".
      (cite-check, proofread, and legal-research need it; Max and Team plans have it on already.)
   4. Open a folder with a short draft and ask: "cite-check this draft."
-Updates: Claude Code users can turn on auto-update under /plugin > Marketplaces > danepps,
-or run /plugin marketplace update danepps. Codex users re-run this installer.
+Updates: Claude Code can auto-update (/plugin > Marketplaces > danepps > Enable auto-update)
+or check on demand with /plugin marketplace update danepps. Codex: re-run this installer, which
+upgrades the marketplace and reinstalls the current version.
 NEXT

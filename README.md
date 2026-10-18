@@ -1,6 +1,6 @@
 # legal-research-skills
 
-Research assistants for legal scholars, packaged as a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) (Anthropic) and as a plugin or individual skills for [Codex](https://developers.openai.com/codex) (OpenAI). They cite-check a law-review draft footnote by footnote, find verified authorities for a proposition, proofread a long manuscript, build a Zotero library with real records, write research memos, and assemble the brief set for a Supreme Court case.
+Research assistants for legal scholars, packaged as plugins for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) (Anthropic) and [Codex](https://developers.openai.com/codex) (OpenAI). They cite-check a law-review draft footnote by footnote, find verified authorities for a proposition, proofread a long manuscript, build a Zotero library with real records, write research memos, and assemble the brief set for a Supreme Court case.
 
 Written by [Daniel Epps](https://law.wustl.edu/faculty-staff-directory/profile/daniel-epps/), Howard and Caroline Cayne Distinguished Professor of Law at Washington University in St. Louis and co-host of the *Divided Argument* podcast, who builds and uses these in his own scholarship every day. Released as-is under the MIT license. Questions and bug reports go to the [issues page](https://github.com/danepps/legal-research-skills/issues); see also his [Bluebook citation style](https://danepps.github.io/bluebook/) and [Zotero plugins](https://danepps.github.io/zotero/) for law reviews.
 
@@ -48,13 +48,22 @@ Once installed, you open the folder that holds your draft, in the Terminal or in
 
 That registers this repository as a plugin marketplace and installs the `law` plugin, which holds all six skills. (On a Claude Code older than 2.1.275, type `/plugin marketplace add danepps/legal-research-skills` and then `/plugin install law@danepps`.) Start a new session, or type `/reload-plugins`, and the skills appear in `/` autocomplete as `/law:cite-check`, `/law:proofread`, and so on. You rarely need to type those names: asking "cite-check this draft" in plain English is enough.
 
-**Codex, or both tools at once: one line in Terminal.** Open the Terminal app (on a Mac, press Cmd-Space and type "Terminal"), paste this, and press Return:
+**Codex: two commands in Terminal.** Open the Terminal app (on a Mac, press Cmd-Space and type "Terminal"), paste these, and press Return:
+
+```sh
+codex plugin marketplace add danepps/legal-research-skills
+codex plugin add legal-research@danepps-legal-research-codex
+```
+
+That installs the `legal-research` plugin, which holds the six Codex skills. Start a new Codex session (restart the desktop app if it was open) and they appear under Plugins as **Legal Research Skills**. The [Codex plugin guide](codex/README.md) has the skill names, updates, and removal.
+
+**Or let a script do it.** This one line installs for whichever tools it finds on your Mac, running the same plugin commands as above (and falling back to a plain copy of the skills if your Codex is too old for plugins):
 
 ```sh
 curl -fsSL https://danepps.github.io/legal-research-skills/install.sh | sh
 ```
 
-The installer detects which tools you have. For Claude Code it runs the same plugin install as above (or prints the command to type if the `claude` program is not on your PATH). For Codex it downloads this repository to a folder called `legal-research-skills` in your home directory and links the skills where Codex looks. It never overwrites anything already there. (If the Mac says git is missing, accept its offer to install the command-line tools, then run the line again.)
+It never overwrites anything already there. (If the Mac says git is missing, accept its offer to install the command-line tools, then run the line again.)
 
 **By hand.** The details are in the [Install for Claude Code](#install-for-claude-code) and [Install for Codex](#install-for-codex) sections below.
 
@@ -78,7 +87,7 @@ Then open the folder with a short draft, in the Terminal or the desktop app, and
 New releases are listed in [CHANGELOG.md](CHANGELOG.md).
 
 - **Claude Code** checks for updates the way it does for any plugin. To have new releases arrive on their own, type `/plugin`, open **Marketplaces**, select **danepps**, and choose **Enable auto-update**. Otherwise type `/plugin marketplace update danepps` whenever you want to check. Nothing changes without a release: you get a new copy only when the version number in the changelog moves.
-- **Codex** has no plugin updater, so run the Terminal line above again. It pulls the latest copy and leaves everything else alone.
+- **Codex** refreshes the catalog and installs the current version with `codex plugin marketplace upgrade danepps-legal-research-codex` followed by `codex plugin add legal-research@danepps-legal-research-codex`. If you used the installer's plain-copy fallback instead, run the installer line again.
 
 Everything below this line is for readers who want the details.
 
@@ -91,7 +100,7 @@ Two parallel implementations live here, one per runtime. They share a design phi
 | Folder | Runtime | How it installs |
 |---|---|---|
 | [`claude-code/`](claude-code/) | Claude Code (Anthropic) | A plugin named `law`, listed by the marketplace catalog at [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json); Claude Code copies it into its plugin cache |
-| [`codex/`](codex/) | Codex CLI (OpenAI) | Symlinks from `~/.agents/skills/<skill>/` into a clone of this repository |
+| [`codex/`](codex/) | Codex CLI (OpenAI) | A plugin named `legal-research`, listed by the catalog at [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json); Codex caches it. Manual symlinks from `~/.agents/skills/` still work |
 
 ## What the skills share
 
