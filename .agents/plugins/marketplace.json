@@ -1,0 +1,20 @@
+{
+  "name": "danepps-legal-research-codex",
+  "interface": {
+    "displayName": "Daniel Epps: Codex Research Skills"
+  },
+  "plugins": [
+    {
+      "name": "legal-research",
+      "source": {
+        "source": "local",
+        "path": "./codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

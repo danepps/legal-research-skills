@@ -1,6 +1,6 @@
 # legal-research-skills
 
-Research assistants for legal scholars, packaged as a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) (Anthropic) and as skills for [Codex](https://developers.openai.com/codex) (OpenAI). They cite-check a law-review draft footnote by footnote, find verified authorities for a proposition, proofread a long manuscript, build a Zotero library with real records, write research memos, and assemble the brief set for a Supreme Court case.
+Research assistants for legal scholars, packaged as a plugin for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) (Anthropic) and as a plugin or individual skills for [Codex](https://developers.openai.com/codex) (OpenAI). They cite-check a law-review draft footnote by footnote, find verified authorities for a proposition, proofread a long manuscript, build a Zotero library with real records, write research memos, and assemble the brief set for a Supreme Court case.
 
 Written by [Daniel Epps](https://law.wustl.edu/faculty-staff-directory/profile/daniel-epps/), Howard and Caroline Cayne Distinguished Professor of Law at Washington University in St. Louis and co-host of the *Divided Argument* podcast, who builds and uses these in his own scholarship every day. Released as-is under the MIT license. Questions and bug reports go to the [issues page](https://github.com/danepps/legal-research-skills/issues); see also his [Bluebook citation style](https://danepps.github.io/bluebook/) and [Zotero plugins](https://danepps.github.io/zotero/) for law reviews.
 

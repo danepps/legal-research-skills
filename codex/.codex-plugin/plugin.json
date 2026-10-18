@@ -1,0 +1,33 @@
+{
+  "name": "legal-research",
+  "version": "1.0.0",
+  "description": "Verified legal research, citation checking, proofreading, and Zotero library workflows for Codex.",
+  "author": {
+    "name": "Daniel Epps"
+  },
+  "homepage": "https://danepps.github.io/legal-research-skills/",
+  "repository": "https://github.com/danepps/legal-research-skills",
+  "license": "MIT",
+  "keywords": ["legal-research", "scholarship", "citations", "proofreading", "zotero"],
+  "skills": [
+    "./build-zotero-library",
+    "./cite-check",
+    "./deep-research",
+    "./find-cite",
+    "./internal-proofread",
+    "./legal-research-memo"
+  ],
+  "interface": {
+    "displayName": "Legal Research Skills",
+    "shortDescription": "Research, cite-check, and proofread legal scholarship",
+    "longDescription": "Six research workflows with source verification, evidence records, and completion checks. Includes legal memos, citation finding, citation checking, internal proofreading, Zotero library building, and deep research. Requires a Codex environment with local file and script access; external research and library operations use the user's available tools and credentials.",
+    "developerName": "Daniel Epps",
+    "category": "Productivity",
+    "websiteURL": "https://danepps.github.io/legal-research-skills/",
+    "defaultPrompt": [
+      "Use $legal-research:legal-research-memo to research this legal question.",
+      "Use $legal-research:cite-check to verify the citations in this draft.",
+      "Use $legal-research:internal-proofread to review this manuscript."
+    ]
+  }
+}
