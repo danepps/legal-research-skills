@@ -1,0 +1,12 @@
+theme: jekyll-theme-cayman
+title: Legal Research Skills
+description: Cite-checking, citation-finding, proofreading, and research assistants for legal scholars, built for Claude Code and Codex.
+show_downloads: false
+exclude:
+  - claude-code/
+  - codex/
+  - run_tests.py
+  - LICENSE
+  - .github/
+  - .codex-memo/
+  - "AI Memos/"
