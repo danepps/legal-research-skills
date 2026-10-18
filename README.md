@@ -6,7 +6,7 @@ Research assistants for legal scholars, built as skills for [Claude Code](https:
 
 If you have asked ChatGPT or Claude for a citation, you know the problem: the answer sounds right and the case may not exist. Chat assistants answer from memory. They also cannot open your Word file, cannot see your footnotes as footnotes, and lose the thread somewhere around the fortieth citation.
 
-Claude Code and Codex are the same models in a different setting. Instead of a chat window, they run in the Terminal app on your Mac or PC, where the model can open files, run small checking programs, and keep working for an hour without you. That changes what you can ask for:
+Claude Code and Codex are the same models in a different setting. Instead of a chat window, they work on your own computer, where the model can open files, run small checking programs, and keep working for an hour without you. You can use them from the Terminal app, or from a regular desktop app: the [Claude desktop app](https://code.claude.com/docs/en/desktop) has a Code tab for this on Mac and Windows, and OpenAI ships a [Codex app](https://learn.chatgpt.com/docs/build-skills) for Mac and Windows. Either way, the model gains the same abilities, and that changes what you can ask for:
 
 | | Chat window | Claude Code or Codex with these skills |
 |---|---|---|
@@ -16,11 +16,11 @@ Claude Code and Codex are the same models in a different setting. Instead of a c
 | What you get back | A reply you have to act on from memory | A report file, problems first, each with the exact words to Cmd+F in Word |
 | Consistency | Different each time | The same extraction and comparison scripts every run; the model is used only where judgment is needed |
 
-The skills in this repository are the instructions and scripts that make the model behave this way. Installing them is a one-time copy-and-paste.
+The skills in this repository are the instructions and scripts that make the model behave this way. Installing them is a one-time copy-and-paste, after which they are available in both the Terminal and the desktop app.
 
 ## What you can ask for
 
-Once installed, you start a session in the folder that holds your draft and ask in plain English.
+Once installed, you open the folder that holds your draft, in the Terminal or in the desktop app, and ask in plain English.
 
 - **"Cite-check my draft."** It extracts every citation and quotation, resolves the *Id.* and *supra* chains, checks each case against CourtListener and the official reporter, checks each article against your Zotero library and then the open web, and returns a graded, footnote-by-footnote report. A "needs your attention" section comes first. It says what it checked, against what, and what it could not open.
 - **"Find me a cite for the proposition that…"** A few verified authorities, each with a pincite and a parenthetical, preferring the Supreme Court and flagship journals. A footnote-filler, not a memo.
@@ -34,13 +34,13 @@ Once installed, you start a session in the folder that holds your draft and ask 
 - **It finds problems; you decide.** This is a first pass that catches what a tired human misses, not a replacement for your own read or the journal's cite-check. The verifier pass removes many false alarms, not all of them.
 - **It cannot log in for you.** HeinOnline, Westlaw, and publisher paywalls are off limits to the automation. The report lists what it could not open, and you can download a PDF yourself and hand it over.
 - **It costs money and time.** A full cite-check of a long article runs for a while and uses a meaningful amount of your Claude or ChatGPT plan. Start with a short piece.
-- **It is a terminal program.** You will paste a few commands once. After that, you type requests in English.
+- **It is not the chat window.** You will paste a few commands once to install. After that you type requests in English, in the Terminal or in the desktop app, whichever you prefer.
 
 ## Getting started
 
 About twenty minutes the first time.
 
-1. **Install one of the two tools.** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) needs a Claude Pro or Max plan or an Anthropic API key. [Codex CLI](https://developers.openai.com/codex) needs a ChatGPT Plus or Pro plan or an OpenAI API key. Each site has a one-line installer.
+1. **Install one of the two tools.** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) needs a Claude Pro or Max plan or an Anthropic API key; the [Claude desktop app](https://code.claude.com/docs/en/desktop) includes it under its Code tab. [Codex](https://developers.openai.com/codex) needs a ChatGPT Plus or Pro plan or an OpenAI API key, and comes as a command-line tool or a desktop app. Each site has a one-line installer.
 2. **Get a free CourtListener account** and copy an API token from [courtlistener.com/profile/api-token](https://www.courtlistener.com/profile/api-token/). This is how the skills confirm that a case exists. Add this line to the end of the file `~/.zshrc` (Mac) with the token pasted in, then open a new Terminal window:
 
    ```sh
@@ -49,7 +49,7 @@ About twenty minutes the first time.
 
 3. **Install the skills.** Open Terminal and paste the block for your tool from the [Install](#install-for-claude-code) sections below.
 4. **Optional: connect Zotero.** If you keep your sources in Zotero, create a key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) and set `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` the same way. Without it, cite-check still works; it just checks articles against the open web only.
-5. **Try it.** In Terminal, `cd` into the folder with a short draft, start `claude` or `codex`, and type "cite-check this draft." Read the "needs your attention" section first.
+5. **Try it.** Open the folder with a short draft, either by starting `claude` or `codex` there in Terminal or by choosing the folder in the desktop app, and type "cite-check this draft." Read the "needs your attention" section first.
 
 Everything below this line is for readers who want the details.
 
@@ -104,6 +104,8 @@ done
 
 The links track the checkout, so `git pull` updates the installed skills. The skills reference each other at `~/.claude/skills/<skill>/...` (cite-check, proofread, find-cite, and case-prep all import from legal-research), so install the set together at that path. Start a new Claude Code session and type `/` to confirm the six names appear.
 
+The Claude desktop app's **Code** tab runs local sessions from this same folder, so one install serves the Terminal and the app ([docs](https://code.claude.com/docs/en/desktop)). Two exceptions: the app's Cowork tab takes its skills from your claude.ai account settings, not from this folder, and cloud sessions at claude.ai/code load account skills instead of local ones.
+
 Runtime notes specific to Claude Code:
 
 - cite-check, proofread, and legal-research use Claude Code's `Workflow` tool (the `.workflow.js` files) for multi-agent fan-out.
@@ -144,6 +146,8 @@ done
 ```
 
 The loop leaves any existing file, directory, or differently-pointed link in place and reports it. The links track the checkout, so `git pull` updates the installed skills. Start or refresh Codex and confirm the six skill names appear in its skill list.
+
+OpenAI's docs list the user-level folder as shared by the Codex CLI, the Codex desktop app, and the IDE extension, with symlinked folders followed ([docs](https://learn.chatgpt.com/docs/build-skills)). If the desktop app does not show them, use its reload-skills command or restart it; earlier app builds had a discovery bug with this folder.
 
 ## Prerequisites and configuration
 
