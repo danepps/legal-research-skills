@@ -12,7 +12,7 @@ export const meta = {
 }
 
 // ---- args (passed from the skill) -------------------------------------------
-// args = { question, mode: 'caselaw'|'scholarship'|'both', outputStyle: 'academic'|'practitioner',
+// args = { skillsDir: '<plugin root>/skills', question, mode: 'caselaw'|'scholarship'|'both', outputStyle: 'academic'|'practitioner',
 //          jurisdiction, asOfDate, notes, deep:boolean, projectDir:string }
 let A = args || {}
 if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
@@ -100,13 +100,17 @@ const SOURCES = `FREE / OPEN-WEB LEGAL SOURCES ONLY (no Westlaw/Lexis):
 TOOLS: use WebSearch and WebFetch. If not already callable, first run
 ToolSearch with query "select:WebSearch,WebFetch", then use them.`
 
-// Bundled helper scripts (run via the Bash tool). $HOME (not ~) because every use
-// below lands inside shell double quotes in an agent prompt, where $HOME expands but ~ does not.
-const CHECK_CITE = '$HOME/.claude/skills/legal-research/check_cite.py'
-const FETCH_PAGE = '$HOME/.claude/skills/legal-research/fetch_page.py'
-const CL_TOOLS = '$HOME/.claude/skills/legal-research/cl_case_tools.py'
-// Deterministic quote verifier (lives in the sibling cite-check skill; both must be installed).
-const VERIFY_QUOTES = '$HOME/.claude/skills/cite-check/scripts/verify_quotes.py'
+// Bundled helper scripts (run via the Bash tool). SKILL.md passes
+// skillsDir = "${CLAUDE_PLUGIN_ROOT}/skills", which Claude Code expands to the plugin's
+// install directory before the call. The fallback is the plain ~/.claude/skills layout;
+// $HOME (not ~) because every use below lands inside shell double quotes in an agent
+// prompt, where $HOME expands but ~ does not.
+const SKILLS = A.skillsDir || '$HOME/.claude/skills'
+const CHECK_CITE = `${SKILLS}/legal-research/check_cite.py`
+const FETCH_PAGE = `${SKILLS}/legal-research/fetch_page.py`
+const CL_TOOLS = `${SKILLS}/legal-research/cl_case_tools.py`
+// Deterministic quote verifier (lives in the sibling cite-check skill, shipped in the same plugin).
+const VERIFY_QUOTES = `${SKILLS}/cite-check/scripts/verify_quotes.py`
 
 const BLUEBOOK = `CITATION FORMAT (Bluebook, lightweight):
 - Cases: *Brown v. Bd. of Educ.*, 347 U.S. 483, 495 (1954); add the deciding court for

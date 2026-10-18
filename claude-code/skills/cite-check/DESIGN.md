@@ -11,7 +11,7 @@
 
 ## Placement & invocation
 
-- Skill master lives in a synced config folder, symlinked to `~/.claude/skills/cite-check/` — same install pattern as legal-research, so it works from any folder (drafts live outside this repo).
+- Ships as one skill of the `law` plugin (`claude-code/skills/cite-check/`), beside legal-research, whose helper scripts it calls via `${CLAUDE_PLUGIN_ROOT}/skills/legal-research/`. Installed as a plugin it works from any folder (drafts live outside this repo).
 - Trigger: `/cite-check <path-to-draft>` or natural language ("cite-check this draft"). Optional args: `--footnotes 45-80` (partial pass), `deep` (adversarial re-verification of load-bearing quotes, mirroring legal-research's 3-vote pattern).
 
 ## Pipeline

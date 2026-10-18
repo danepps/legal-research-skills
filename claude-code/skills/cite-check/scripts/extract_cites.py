@@ -37,11 +37,11 @@ from xml.etree import ElementTree as ET
 # Shared citation-FORM library (Bluebook typeface + short forms + the .docx
 # run-formatting reader), same module /proofread uses, so the two skills cannot
 # drift apart on these rules. Added 2026-08-10 when the author lifted the format-linter
-# scope lock for "obvious stuff". Installed path first, sibling fallback for the
-# un-symlinked master copy.
-for _p in (os.path.expanduser("~/.claude/skills/legal-research"),
-           os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "..", "..", "legal-research")):
+# scope lock for "obvious stuff". Sibling skill directory first (the plugin layout),
+# then a plain ~/.claude/skills install.
+for _p in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "legal-research"),
+           os.path.expanduser("~/.claude/skills/legal-research")):
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
 try:

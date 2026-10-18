@@ -13,6 +13,7 @@ export const meta = {
 
 // ---- args (assembled by SKILL.md from the extraction scripts) ----------------
 // args = {
+//   skillsDir: '<plugin root>/skills' (where the helper scripts live),
 //   extractPath, unitsPath, draftPath, draftName,
 //   unitCount, footnoteCount, caseCites:[...], supraProblems:[...],
 //   formChecks:<extract.json form_checks block>,
@@ -50,12 +51,15 @@ const FORM_FMT_OK = !!FORM.available
 const FORM_FMT_PATH = FORM.fulltext_fmt || ''
 const FORM_CANDIDATES = FORM.case_name_candidates || []
 
-// Bundled helper scripts. $HOME (not ~) because every use below lands inside
-// shell double quotes in an agent prompt, where $HOME expands but ~ does not.
-const PREPARE = '$HOME/.claude/skills/cite-check/scripts/prepare_units.py'
-const CHECK_CITE = '$HOME/.claude/skills/legal-research/check_cite.py'
-const FETCH_PAGE = '$HOME/.claude/skills/legal-research/fetch_page.py'
-const VERIFY_QUOTES = '$HOME/.claude/skills/cite-check/scripts/verify_quotes.py'
+// Bundled helper scripts. SKILL.md passes skillsDir = "${CLAUDE_PLUGIN_ROOT}/skills",
+// which Claude Code expands to the plugin's install directory before the call. The
+// fallback is the plain ~/.claude/skills layout; $HOME (not ~) because every use
+// below lands inside shell double quotes in an agent prompt, where $HOME expands but ~ does not.
+const SKILLS = A.skillsDir || '$HOME/.claude/skills'
+const PREPARE = `${SKILLS}/cite-check/scripts/prepare_units.py`
+const CHECK_CITE = `${SKILLS}/legal-research/check_cite.py`
+const FETCH_PAGE = `${SKILLS}/legal-research/fetch_page.py`
+const VERIFY_QUOTES = `${SKILLS}/cite-check/scripts/verify_quotes.py`
 
 // ---- knobs -------------------------------------------------------------------
 const SEGMENT_CHUNK = 28   // quote-units per resolver agent
@@ -883,7 +887,7 @@ italicizes case names everywhere):
   footnote ("Flint relied on Veazie Bank v. Fenno, 75 U.S. 533 (1869)") — and any
   SHORT-FORM case name ("Hylton, 3 U.S. at 174").
 The full rule statement with worked examples:
-~/.claude/skills/legal-research/bluebook-typeface-and-short-forms.md — Read it first.
+${SKILLS}/legal-research/bluebook-typeface-and-short-forms.md — Read it first.
 
 A deterministic pass flagged the case names below as departing from the expectation for the
 position it THINKS they occupy. That positional guess is fallible — it mistakes textual

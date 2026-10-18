@@ -11,6 +11,7 @@ export const meta = {
 
 // ---- args (assembled by SKILL.md from extract_proof.py) -----------------------
 // args = {
+//   skillsDir: '<plugin root>/skills' (where the sibling skills' reference files live),
 //   outDir, draftName, chunkFiles:[...paths], lintFindings:[...],
 //   counts:{paragraphs, footnotes, words}, headings, noteParas, sha256,
 //   snapshotTime, formatting:<proof.json formatting block>,
@@ -18,6 +19,10 @@ export const meta = {
 // }
 let A = args || {}
 if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
+// Where the sibling skills' reference files live. SKILL.md passes
+// skillsDir = "${CLAUDE_PLUGIN_ROOT}/skills" (expanded by Claude Code before the call);
+// the fallback is the plain ~/.claude/skills layout.
+const SKILLS = A.skillsDir || '~/.claude/skills'
 const OUT_DIR = A.outDir || ''
 const DRAFT_NAME = A.draftName || 'draft'
 const CHUNK_FILES = A.chunkFiles || []
@@ -235,7 +240,7 @@ ${GROUND_RULES}
 THE RULES YOU ARE APPLYING (Bluebook R. 2.1(a) typeface for law review FOOTNOTES — not the
 Bluepages/practitioner convention, which italicizes case names everywhere. The full
 statement, including the worked examples, is in
-~/.claude/skills/legal-research/bluebook-typeface-and-short-forms.md — Read it first.
+${SKILLS}/legal-research/bluebook-typeface-and-short-forms.md — Read it first.
 State the rule in your findings so the authors can check your work):
 1. ITALIC: introductory signals (See, See also, See generally, Cf., Compare … with …,
    But see, But cf., Accord, Contra, E.g.); "Id."; "supra"; "infra"; and

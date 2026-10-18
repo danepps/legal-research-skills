@@ -44,9 +44,9 @@ draft alone, no source consulted:
   in a citation clause, italic in a textual sentence or short form — the one call that needs an
   agent, since a pattern cannot tell those apart).
 
-These run off `~/.claude/skills/legal-research/citeform.py`, the **same module `/proofread` uses**,
+These run off `${CLAUDE_PLUGIN_ROOT}/skills/legal-research/citeform.py`, the **same module `/proofread` uses**,
 so the two skills cannot give contradictory advice. The rules as applied are written out in
-`~/.claude/skills/legal-research/bluebook-typeface-and-short-forms.md`. Form findings get their own
+`${CLAUDE_PLUGIN_ROOT}/skills/legal-research/bluebook-typeface-and-short-forms.md`. Form findings get their own
 report section near the end and never enter "Needs your attention" — they are tidy-up, not substance.
 
 **What it is still NOT:** a full Bluebook linter (signal order, citation order, and whether a cite is
@@ -99,7 +99,7 @@ stage. Ask first.
 1. Read `~/.claude/settings.json`; ensure `permissions.allow` contains `"WebFetch"` and
    `"WebSearch"` (merge in what's missing — never replace the array). Routine setup; don't prompt.
 2. Confirm the CourtListener token works. **Test it, don't go looking for a file** — run
-   `python3 ~/.claude/skills/legal-research/check_cite.py "347 U.S. 483"`; exit 0 with
+   `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/check_cite.py "347 U.S. 483"`; exit 0 with
    `"found": true` means it is working and there is nothing to report. `check_cite.py` resolves
    the token from `COURTLISTENER_API_TOKEN`, then `COURTLISTENER_TOKEN`, then the file
    `~/.config/courtlistener/token` — **in that order**, and the env-var route (commonly set in
@@ -139,10 +139,10 @@ fine). Use the installed script paths so this works from any folder (`draftName`
 original filename, not "snapshot"):
 
 ```
-python3 ~/.claude/skills/cite-check/scripts/extract_cites.py "<scratch>/snapshot.docx" "<scratch>/extract.json"
-python3 ~/.claude/skills/cite-check/scripts/prepare_units.py "<scratch>/extract.json" "<scratch>/units.json"
-python3 ~/.claude/skills/cite-check/scripts/citation_ledger.py "<scratch>/extract.json" "<scratch>/ledger.json"
-python3 ~/.claude/skills/cite-check/scripts/citation_ledger.py "<scratch>/extract.json" --compact > "<scratch>/ledger_args.json"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/extract_cites.py "<scratch>/snapshot.docx" "<scratch>/extract.json"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/prepare_units.py "<scratch>/extract.json" "<scratch>/units.json"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py "<scratch>/extract.json" "<scratch>/ledger.json"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py "<scratch>/extract.json" --compact > "<scratch>/ledger_args.json"
 ```
 
 `citation_ledger.py` prints instance_count / by_kind / unique_secondary_cites / unresolved_xrefs.
@@ -164,7 +164,7 @@ layer declined rather than risk misaligned offsets) — mention it only if the c
 For a **partial pass**, resolve the footnote range to unit ids:
 
 ```
-python3 ~/.claude/skills/cite-check/scripts/prepare_units.py "<scratch>/extract.json" --footnotes 45-80
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/prepare_units.py "<scratch>/extract.json" --footnotes 45-80
 ```
 
 (prints `unit_ids` — pass them as `unitIds`).
@@ -173,8 +173,9 @@ python3 ~/.claude/skills/cite-check/scripts/prepare_units.py "<scratch>/extract.
 
 ```
 Workflow({
-  scriptPath: "~/.claude/skills/cite-check/cite-check.workflow.js",  // expand ~ to the absolute home dir when calling
+  scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/cite-check/cite-check.workflow.js",
   args: {
+    skillsDir: "${CLAUDE_PLUGIN_ROOT}/skills",      // where the bundled helper scripts live
     extractPath: "<scratch>/extract.json",      // agents read units + full context from here
     draftName:   "<draft filename without extension>",
     footnoteCount: <extract.footnote_count>,
@@ -238,7 +239,7 @@ The workflow returns `{ report, counts, exitState, degradation, artifactsCaught,
 - Write **`report`** to `<draft's directory>/<draftName> — Cite Check.md` (next to the draft).
 - Write the **companion ledger** next to it: save the result's `ledger` array to
   `<scratch>/ledger_final.json`, then
-  `python3 ~/.claude/skills/cite-check/scripts/citation_ledger.py --render "<scratch>/ledger_final.json" > "<draft's directory>/<draftName> — Citation Ledger.md"`
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py --render "<scratch>/ledger_final.json" > "<draft's directory>/<draftName> — Citation Ledger.md"`
   — one row per citation instance (note, kind, disposition, cite text). This is the audit trail
   behind section H; `counts.ledger` has the totals for the TL;DR.
 - **Research memo header & production footer (required, per the author — global rule in
@@ -276,7 +277,7 @@ The workflow returns `{ report, counts, exitState, degradation, artifactsCaught,
   unverifiable items and any degradation; if the budget guard degraded coverage, say which sources
   were batched/skipped and offer a targeted re-run.
 - Offer a **.docx** copy via the bundled converter:
-  `python3 ~/.claude/skills/legal-research/md2docx.py "<report>.md" "<report>.docx" "<Title>"`.
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/md2docx.py "<report>.md" "<report>.docx" "<Title>"`.
 - Note once, in the deliver message: free/open-web sources only, so a Westlaw/Lexis pass and a
   manual Bluebook check remain the user's responsibility before publication. Citation *form* now
   gets its own section (short cites + typeface), but signal order, citation order, and cite

@@ -50,7 +50,7 @@ Before calling Workflow, make the run self-contained:
    them, or add the rule via `/permissions`.)
 4. Optional but worth a glance: deterministic case-cite verification needs a CourtListener API
    token. **Test it, don't go looking for a file** — run
-   `python3 ~/.claude/skills/legal-research/check_cite.py "347 U.S. 483"`; exit 0 with
+   `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/check_cite.py "347 U.S. 483"`; exit 0 with
    `"found": true` means the token is working and there is nothing to report.
    `check_cite.py` resolves the token from `COURTLISTENER_API_TOKEN`, then
    `COURTLISTENER_TOKEN`, then the file `~/.config/courtlistener/token` — **in that order**,
@@ -64,8 +64,9 @@ Call the **Workflow** tool with the bundled script and the parsed args:
 
 ```
 Workflow({
-  scriptPath: "~/.claude/skills/legal-research/legal-research.workflow.js",  // expand ~ to the absolute home dir when calling
+  scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/legal-research/legal-research.workflow.js",
   args: {
+    skillsDir: "${CLAUDE_PLUGIN_ROOT}/skills",      // where the bundled helper scripts live
     question: "<the legal question>",
     mode: "caselaw" | "scholarship" | "both",
     outputStyle: "practitioner" | "academic",
@@ -170,7 +171,7 @@ The workflow returns `{ memo, exitState, degradation, counts, ... }`.
   by default; offer it if the user wants to audit the reasoning, and use it yourself when editing
   the memo by hand (a claim with no skeleton line needs an authority or a hedge before it grows).
 - Offer to save it: Markdown in the working dir; **Word** via the bundled converter —
-  `python3 ~/.claude/skills/legal-research/md2docx.py memo.md memo.docx "<Title>"`; or Google
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/md2docx.py memo.md memo.docx "<Title>"`; or Google
   Drive via the connector. If the user asked for .docx up front, just produce it.
 - Offer a follow-up pass on any weak/unverified point, or an output-style switch.
 

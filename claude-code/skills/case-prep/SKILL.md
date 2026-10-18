@@ -65,7 +65,7 @@ Then resolve and download the PDF deterministically with the legal-research
 skill's helper (prefers CourtListener's stored copy, falls back to the
 court's own file, verifies `%PDF` magic before saving):
 ```
-python3 ~/.claude/skills/legal-research/cl_case_tools.py pdf cluster:<cluster_id> --out "01 Lower-court opinion.pdf"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/cl_case_tools.py pdf cluster:<cluster_id> --out "01 Lower-court opinion.pdf"
 ```
 (`cluster_id` comes from the search result; a reporter cite works too once
 one exists). If no PDF is on CourtListener or the court's site, the cert

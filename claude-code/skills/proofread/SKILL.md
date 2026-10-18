@@ -30,7 +30,7 @@ needs an external source.
 Bluebook R. 10.9's five-footnote window where the short form belongs; a case short form
 stranded past that window, or with no full cite before it anywhere; a secondary source
 cited in full twice when R. 4.2 calls for `Author, supra note N`. All decidable from the
-draft alone — see `~/.claude/skills/legal-research/bluebook-typeface-and-short-forms.md`
+draft alone — see `${CLAUDE_PLUGIN_ROOT}/skills/legal-research/bluebook-typeface-and-short-forms.md`
 for the rules as applied.
 
 **TYPEFACE** (added 2026-08-10, `.docx` only): the extractor now resolves run properties
@@ -124,7 +124,7 @@ report (step 5) — a new `.md` next to the draft, written by you, never the `.d
 
 ### 3. Extract + lint (deterministic — run yourself, near-zero tokens)
 ```
-python3 ~/.claude/skills/proofread/scripts/extract_proof.py "<scratch>/snapshot.docx" "<scratch>/proof"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/proofread/scripts/extract_proof.py "<scratch>/snapshot.docx" "<scratch>/proof"
 ```
 Default chunking is 1800 words — sized so each proofer reads carefully rather than skims.
 For **deep**, run the extractor a SECOND time into a separate outdir with
@@ -147,8 +147,9 @@ word counts, chunk_count, lint_finding_count…). It writes `<scratch>/proof/pro
 ### 4. Launch the workflow
 ```
 Workflow({
-  scriptPath: "~/.claude/skills/proofread/proofread.workflow.js",  // expand ~ to the absolute home dir when calling
+  scriptPath: "${CLAUDE_PLUGIN_ROOT}/skills/proofread/proofread.workflow.js",
   args: {
+    skillsDir: "${CLAUDE_PLUGIN_ROOT}/skills",      // where the bundled helper scripts live
     outDir:      "<scratch>/proof",         // agents read fulltext.txt + proof.json here
     draftName:   "<draft filename without extension>",
     chunkFiles:  <proof.json chunk_files>,
@@ -208,7 +209,7 @@ The workflow returns `{ report, counts, exitState, degradation, rejectedFindings
 - Surface `exitState` and any `degradation` (e.g. likely-severity findings shipped
   unvetted under budget pressure) and offer a targeted re-run.
 - Offer a **.docx** copy via
-  `python3 ~/.claude/skills/legal-research/md2docx.py "<report>.md" "<report>.docx" "<Title>"`.
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/md2docx.py "<report>.md" "<report>.docx" "<Title>"`.
 - Note once what was and wasn't covered: on a `.docx`, italics/small caps WERE checked
   against the document's real run formatting (block-quote layout and indentation were not);
   on a markdown draft, no formatting was visible at all. Citation *substance* is never

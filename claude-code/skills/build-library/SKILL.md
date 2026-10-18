@@ -16,8 +16,8 @@ All global authority rules (never invent a cite; flag uncertainty) apply through
 library and *read all of it*:
 
 ```
-python3 ~/.claude/skills/build-library/library_inventory.py --group <ID>   # or --user
-python3 ~/.claude/skills/build-library/library_inventory.py --group <ID> --grep <terms>
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/library_inventory.py --group <ID>   # or --user
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/library_inventory.py --group <ID> --grep <terms>
 ```
 
 One line per top-level item: year, PDF-or-not, authors, title, publication, item key.
@@ -187,8 +187,8 @@ surprise against a second source.
 **After adding**, run the bundled checker on exactly what landed in Zotero:
 
 ```
-python3 ~/.claude/skills/build-library/check_source.py --collection <KEY>   # whole collection
-python3 ~/.claude/skills/build-library/check_source.py --keys K1,K2,K3      # just new items
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/check_source.py --collection <KEY>   # whole collection
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/check_source.py --keys K1,K2,K3      # just new items
 ```
 
 It resolves each item's ISBN through five independent catalogs (Open Library edition +
@@ -223,8 +223,8 @@ To put the actual PDF on a Zotero item — not merely the citation — use the b
 child → request upload authorization with md5/size → upload bytes → register):
 
 ```
-python3 ~/.claude/skills/build-library/attach_pdf.py --item <KEY> --url  <https://…pdf>  # Tier 1
-python3 ~/.claude/skills/build-library/attach_pdf.py --item <KEY> --file <~/Downloads/x.pdf>  # Tier 3
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/attach_pdf.py --item <KEY> --url  <https://…pdf>  # Tier 1
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/attach_pdf.py --item <KEY> --file <~/Downloads/x.pdf>  # Tier 3
 ```
 
 It refuses non-PDF bytes (a bot-wall/login page starts with HTML, not `%PDF-`), so a

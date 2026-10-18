@@ -72,7 +72,7 @@ single-type request, just search inline.
 An unverified cite never ships — that rule is identical to the full skill's.
 
 - **Cases:** run every candidate through the deterministic lookup:
-  `python3 ~/.claude/skills/legal-research/check_cite.py "<vol> U.S. <page>" …`
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/check_cite.py "<vol> U.S. <page>" …`
   (falls back to web verification if no CourtListener token). Then **open the opinion** and
   confirm the passage actually supports the proposition, at the pincite, in the majority
   (not a dissent/concurrence unless flagged). Pincite to official U.S. Reports pagination

@@ -50,11 +50,11 @@ from xml.etree import ElementTree as ET
 
 # Shared citation-FORM library (typeface + short forms + the .docx run-formatting
 # reader) lives with the other cross-skill machinery in legal-research/, so
-# /cite-check runs the identical checks. Installed path first, sibling-directory
-# fallback for the un-symlinked master copy.
-for _p in (os.path.expanduser("~/.claude/skills/legal-research"),
-           os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "..", "..", "legal-research")):
+# /cite-check runs the identical checks. Sibling skill directory first (the plugin
+# layout), then a plain ~/.claude/skills install.
+for _p in (os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "legal-research"),
+           os.path.expanduser("~/.claude/skills/legal-research")):
     if os.path.isdir(_p) and _p not in sys.path:
         sys.path.insert(0, _p)
 from citeform import (                                       # noqa: E402

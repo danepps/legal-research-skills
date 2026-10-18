@@ -3,12 +3,13 @@
 
 Runs every test_*.py as its own process (some are unittest modules, some are
 standalone assertion scripts), compiles every Python file, checks every
-relative Markdown link, and validates SKILL.md frontmatter and Codex UI
-metadata. Exits non-zero if anything fails.
+relative Markdown link, validates SKILL.md frontmatter and Codex UI
+metadata, and checks the Claude Code plugin manifests. Exits non-zero if anything fails.
 """
 from __future__ import annotations
 
 import ast
+import json
 import os
 import re
 import subprocess
@@ -85,7 +86,7 @@ def check_markdown_links() -> list[str]:
 
 def check_frontmatter() -> list[str]:
     failures: list[str] = []
-    skills = sorted(ROOT.glob("*/*/SKILL.md"))
+    skills = sorted(p for p in walk(("SKILL.md",)) if p.name == "SKILL.md")
     for skill in skills:
         lines = skill.read_text(encoding="utf-8").splitlines()
         if not lines or lines[0].strip() != "---":
@@ -112,6 +113,50 @@ def check_frontmatter() -> list[str]:
     return failures
 
 
+def check_plugin_manifests() -> list[str]:
+    """The Claude Code side is a plugin: marketplace.json at the root, plugin.json in
+    claude-code/, skills under claude-code/skills/, CHANGELOG's top entry matching
+    the plugin version, and no stale ~/.claude/skills paths in skill text."""
+    failures: list[str] = []
+    try:
+        market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text(encoding="utf-8"))
+        plugin = json.loads((ROOT / "claude-code" / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [f"plugin manifests: {exc}"]
+    entries = {e.get("name"): e for e in market.get("plugins", [])}
+    if plugin.get("name") not in entries:
+        failures.append(f"marketplace.json lists {sorted(entries)} but plugin.json is {plugin.get('name')!r}")
+    else:
+        src = entries[plugin["name"]].get("source")
+        if src != "./claude-code":
+            failures.append(f"marketplace entry source is {src!r}, expected './claude-code'")
+        if "version" in entries[plugin["name"]]:
+            failures.append("set version in plugin.json only, not in the marketplace entry")
+    for key in ("name", "version", "description", "author"):
+        if not plugin.get(key):
+            failures.append(f"plugin.json: missing {key}")
+    skills_dir = ROOT / "claude-code" / "skills"
+    skills = sorted(p.name for p in skills_dir.iterdir() if (p / "SKILL.md").exists()) if skills_dir.is_dir() else []
+    if len(skills) < 6:
+        failures.append(f"claude-code/skills has {len(skills)} skills, expected at least 6")
+    changelog = ROOT / "CHANGELOG.md"
+    if changelog.exists():
+        m = re.search(r"^## \[?v?(\d[^\]\s]*)", changelog.read_text(encoding="utf-8"), re.M)
+        if not m:
+            failures.append("CHANGELOG.md: no '## <version>' heading")
+        elif m.group(1) != plugin.get("version"):
+            failures.append(f"CHANGELOG.md top entry {m.group(1)} != plugin.json version {plugin.get('version')}")
+    else:
+        failures.append("CHANGELOG.md missing")
+    stale = 0
+    for f in walk((".md", ".js")):
+        if "claude-code" in f.parts and "~/.claude/skills/" in f.read_text(encoding="utf-8", errors="replace"):
+            failures.append(f"{rel(f)}: hard-coded ~/.claude/skills/ path; use ${{CLAUDE_PLUGIN_ROOT}}/skills/")
+            stale += 1
+    print(f"  plugin {plugin.get('name')} v{plugin.get('version')}: {len(skills)} skills, {stale} stale paths, {len(failures)} problems")
+    return failures
+
+
 def check_codex_ui_metadata() -> list[str]:
     failures: list[str] = []
     files = sorted(ROOT.glob("codex/*/agents/openai.yaml"))
@@ -135,6 +180,7 @@ def main() -> int:
         ("Markdown links", check_markdown_links),
         ("SKILL.md frontmatter", check_frontmatter),
         ("Codex UI metadata", check_codex_ui_metadata),
+        ("Plugin manifests", check_plugin_manifests),
     ):
         print(f"\n{title}")
         all_failures.extend(fn())

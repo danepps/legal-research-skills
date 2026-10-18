@@ -1,0 +1,15 @@
+{
+  "name": "danepps",
+  "description": "Research tools for legal scholars by Daniel Epps",
+  "owner": {
+    "name": "Daniel Epps",
+    "url": "https://law.wustl.edu/faculty-staff-directory/profile/daniel-epps/"
+  },
+  "plugins": [
+    {
+      "name": "law",
+      "source": "./claude-code",
+      "description": "Cite-check drafts against real sources, find verified authorities, proofread, build Zotero libraries, write research memos, and prep Supreme Court cases."
+    }
+  ]
+}

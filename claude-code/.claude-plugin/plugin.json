@@ -1,0 +1,14 @@
+{
+  "name": "law",
+  "displayName": "Legal Research Skills",
+  "version": "1.0.0",
+  "description": "Cite-check a law-review draft footnote by footnote, find verified authorities, proofread a manuscript, build a verified Zotero library, write research memos, and assemble a Supreme Court brief set.",
+  "author": {
+    "name": "Daniel Epps",
+    "url": "https://law.wustl.edu/faculty-staff-directory/profile/daniel-epps/"
+  },
+  "homepage": "https://danepps.github.io/legal-research-skills/",
+  "repository": "https://github.com/danepps/legal-research-skills",
+  "license": "MIT",
+  "keywords": ["law", "legal-research", "cite-check", "bluebook", "zotero", "courtlistener", "proofreading"]
+}

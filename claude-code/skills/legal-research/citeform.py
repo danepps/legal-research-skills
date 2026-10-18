@@ -21,9 +21,9 @@ The rules as applied, with worked examples, are in
 
 Calibrated 2026-08-10 against two real drafts; see /proofread's NOTES.md for the
 false-positive classes that shaped each rule. Stdlib only, importable from any
-skill:
+sibling skill in the plugin:
 
-    sys.path.insert(0, os.path.expanduser("~/.claude/skills/legal-research"))
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "legal-research"))
     import citeform
 """
 import re
