@@ -1,0 +1,4 @@
+interface:
+  display_name: "Build Zotero Library"
+  short_description: "Build a verified Zotero library with PDFs"
+  default_prompt: "Use $build-zotero-library to build a verified Zotero library for this project and attach authorized full-text PDFs when requested."

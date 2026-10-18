@@ -1,0 +1,4 @@
+interface:
+  display_name: "Deep Research"
+  short_description: "Run rigorous research within hard quotas"
+  default_prompt: "Use $deep-research to produce a source-grounded memo at the lightest responsible depth, with staged fresh-context subagents, adaptive verification, and hard interaction guardrails."

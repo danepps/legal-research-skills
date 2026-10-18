@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cite Check"
+  short_description: "Verify legal citations and quotations"
+  default_prompt: "Use $cite-check to verify every citation and quotation in this legal draft."

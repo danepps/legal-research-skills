@@ -1,0 +1,4 @@
+interface:
+  display_name: "Find Cite"
+  short_description: "Find verified authority for one proposition"
+  default_prompt: "Use $find-cite to find footnote-ready authority for this proposition."

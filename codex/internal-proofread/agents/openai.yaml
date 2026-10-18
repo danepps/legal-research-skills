@@ -1,0 +1,4 @@
+interface:
+  display_name: "Internal Proofread"
+  short_description: "Proofread drafts with bounded parallel review"
+  default_prompt: "Use $internal-proofread to proofread this draft and return a verified internal-error report."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Legal Research Memos"
+  short_description: "Research and draft verified legal analysis"
+  default_prompt: "Use $legal-research-memo to autonomously research, verify, audit, and deliver the requested legal answer or memo."
