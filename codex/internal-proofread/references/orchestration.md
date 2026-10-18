@@ -7,7 +7,7 @@
 - Spawn `proofread-mechanical` agents on `gpt-5.6-luna` with low reasoning for bounded cross-reference, terminology, and structure inventories.
 - Spawn `proofread-chunk` agents for semantic xref shards, the semantic consistency lane, and the independent recall packets.
 - Spawn `proofread-verifier` agents on `gpt-5.6-sol` with high reasoning for retained high-impact findings and high-impact rejection audits.
-- If named custom agents are unavailable, give the same role instructions to ordinary subagents and record the limitation. Do not silently omit verification.
+- Use only roles, models, and reasoning settings that the recipient's runtime actually exposes. If a named custom agent, a named model, or a reasoning setting is unavailable, assign the same bounded responsibilities to the subagents and models that are available, preserve the independent verification pass, and record the effective routing in the run. If independent review cannot be performed at all, disclose that limitation rather than reporting the full workflow complete. Never rewrite the user's global configuration to manufacture the preferred setup.
 
 ## Fanout sequence
 

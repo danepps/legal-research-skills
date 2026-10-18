@@ -1,78 +1,173 @@
 # legal-research-skills
 
-Agent skills for legal scholarship: research memos, citation finding, cite-checking, proofreading, Zotero library construction, and Supreme Court case prep. Built and used daily by a law professor; released as-is under the MIT license.
+Research assistants for legal scholars, built as skills for [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) (Anthropic) and [Codex CLI](https://developers.openai.com/codex) (OpenAI). They cite-check a law-review draft footnote by footnote, find verified authorities for a proposition, proofread a long manuscript, build a Zotero library with real records, write research memos, and assemble the brief set for a Supreme Court case. Built and used daily by a law professor; released as-is under the MIT license.
 
-Two parallel implementations live here, one per agent runtime. They share a design philosophy but are **separate codebases**, not ports of each other. Pick the folder for the tool you use.
+## Why not just use the chat window?
 
-| Folder | Runtime | Install location |
+If you have asked ChatGPT or Claude for a citation, you know the problem: the answer sounds right and the case may not exist. Chat assistants answer from memory. They also cannot open your Word file, cannot see your footnotes as footnotes, and lose the thread somewhere around the fortieth citation.
+
+Claude Code and Codex are the same models in a different setting. Instead of a chat window, they run in the Terminal app on your Mac or PC, where the model can open files, run small checking programs, and keep working for an hour without you. That changes what you can ask for:
+
+| | Chat window | Claude Code or Codex with these skills |
 |---|---|---|
-| [`claude-code/`](claude-code/) | [Claude Code](https://claude.com/claude-code) (Anthropic) | `~/.claude/skills/<skill>/` |
-| [`codex/`](codex/) | [Codex CLI](https://github.com/openai/codex) (OpenAI) | `~/.codex/skills/<skill>/` |
+| Reading your draft | You paste chunks; footnotes arrive as a jumble | Opens the .docx itself, footnotes and all, and takes a snapshot so edits mid-run don't confuse it |
+| Checking a citation | Tells you what it remembers | Looks the case up on CourtListener, opens the opinion, and compares your quotation to the actual text |
+| Scale | A handful of cites before it drifts | Every footnote in a 300-footnote article, split among many parallel agents, then re-checked by a separate verifier |
+| What you get back | A reply you have to act on from memory | A report file, problems first, each with the exact words to Cmd+F in Word |
+| Consistency | Different each time | The same extraction and comparison scripts every run; the model is used only where judgment is needed |
 
-## What the skills enforce
+The skills in this repository are the instructions and scripts that make the model behave this way. Installing them is a one-time copy-and-paste.
 
-The skills differ in detail but all follow the same house rules, which came out of real failures on real drafts:
+## What you can ask for
+
+Once installed, you start a session in the folder that holds your draft and ask in plain English.
+
+- **"Cite-check my draft."** It extracts every citation and quotation, resolves the *Id.* and *supra* chains, checks each case against CourtListener and the official reporter, checks each article against your Zotero library and then the open web, and returns a graded, footnote-by-footnote report. A "needs your attention" section comes first. It says what it checked, against what, and what it could not open.
+- **"Find me a cite for the proposition that…"** A few verified authorities, each with a pincite and a parenthetical, preferring the Supreme Court and flagship journals. A footnote-filler, not a memo.
+- **"Proofread this."** Typos, doubled words, editing residue, and inconsistencies in hyphenation, capitalization, defined terms, and cross-references, with a find-string for each. It handles the prose; cite-check handles the authorities.
+- **"Build a Zotero collection on…"** Finds the sources, creates proper records through Zotero's own interface, attaches open-access PDFs, checks the whole library for duplicates first, and runs a verification pass over everything it added.
+- **"Write me a research memo on…"** Several agents research in parallel across free legal sources, every authority is verified, and you get a memo with working links.
+- **"Prep *Smith v. Arizona*."** Pulls the questions presented, the lower-court opinion, the cert-stage and merits briefs, the Solicitor General's amicus, and the argument transcript, and loads them onto a reMarkable tablet in reading order.
+
+## Honest limits
+
+- **It finds problems; you decide.** This is a first pass that catches what a tired human misses, not a replacement for your own read or the journal's cite-check. The verifier pass removes many false alarms, not all of them.
+- **It cannot log in for you.** HeinOnline, Westlaw, and publisher paywalls are off limits to the automation. The report lists what it could not open, and you can download a PDF yourself and hand it over.
+- **It costs money and time.** A full cite-check of a long article runs for a while and uses a meaningful amount of your Claude or ChatGPT plan. Start with a short piece.
+- **It is a terminal program.** You will paste a few commands once. After that, you type requests in English.
+
+## Getting started
+
+About twenty minutes the first time.
+
+1. **Install one of the two tools.** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) needs a Claude Pro or Max plan or an Anthropic API key. [Codex CLI](https://developers.openai.com/codex) needs a ChatGPT Plus or Pro plan or an OpenAI API key. Each site has a one-line installer.
+2. **Get a free CourtListener account** and copy an API token from [courtlistener.com/profile/api-token](https://www.courtlistener.com/profile/api-token/). This is how the skills confirm that a case exists. Add this line to the end of the file `~/.zshrc` (Mac) with the token pasted in, then open a new Terminal window:
+
+   ```sh
+   export COURTLISTENER_API_TOKEN="paste-your-token-here"
+   ```
+
+3. **Install the skills.** Open Terminal and paste the block for your tool from the [Install](#install-for-claude-code) sections below.
+4. **Optional: connect Zotero.** If you keep your sources in Zotero, create a key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) and set `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` the same way. Without it, cite-check still works; it just checks articles against the open web only.
+5. **Try it.** In Terminal, `cd` into the folder with a short draft, start `claude` or `codex`, and type "cite-check this draft." Read the "needs your attention" section first.
+
+Everything below this line is for readers who want the details.
+
+---
+
+## Layout
+
+Two parallel implementations live here, one per runtime. They share a design philosophy but are **separate codebases**, not ports of each other.
+
+| Folder | Runtime | Default install location |
+|---|---|---|
+| [`claude-code/`](claude-code/) | Claude Code (Anthropic) | `~/.claude/skills/<skill>/` |
+| [`codex/`](codex/) | Codex CLI (OpenAI) | `~/.agents/skills/<skill>/` |
+
+## What the skills share
+
+The skills differ in detail but follow the same house rules, which came out of real failures on real drafts:
 
 - **Verify against primary sources, not model memory.** Cases are checked against [CourtListener](https://www.courtlistener.com/) and official reporters; scholarship against the user's Zotero library and then the open web. Nothing is reported as verified without saying *on what basis*.
-- **Deterministic scripts for structure, models for judgment.** Footnote extraction, `Id.`/`supra` resolution, quote matching, and schema validation are plain Python so they cost zero tokens and cannot hallucinate. Model agents handle only the parts that need reading.
+- **Deterministic scripts for structure, models for judgment.** Footnote extraction, `Id.`/`supra` resolution, quote matching, and schema validation are plain Python, so they are repeatable and cannot invent a source. Model agents handle the parts that need reading. (Scripts can still have bugs, and invoking them still costs some context.)
 - **Verify the verifier.** Multi-agent runs end with an independent pass over the findings before anything reaches the user, because the first pass produces confident false positives.
-- **Budgets enforced by script.** Fetch sizes, page counts, chunk sizes, and token ceilings are hard caps in code, with a documented degradation ladder for when a run exceeds them.
+- **Limits enforced where a script can enforce them.** Fetch sizes, page counts, and chunk sizes are hard caps in code, and run validators check recorded usage against budgets. Token, browsing, and time limits also depend on what the runtime measures and on the lead agent's supervision.
 - **Report for a reader in Word.** Findings carry verbatim find-strings and footnote numbers rather than internal paragraph ids, so each one can be located with Cmd+F.
+
+Passing a validator confirms the structural and workflow requirements it specifies. It does not establish that a model read an authority correctly; the lead agent remains responsible for source support, interpretation, and disclosed limits.
 
 ## Claude Code skills (`claude-code/`)
 
 | Skill | What it does |
 |---|---|
-| **legal-research** | Multi-agent legal research that fans out across free legal sources, verifies every authority, and returns a memo. Modes: case law, scholarship, or both. Also the shared toolbox: `check_cite.py` (CourtListener citation lookup), `cl_case_tools.py` (opinion PDFs), `fetch_page.py` (hard-capped fetcher), `citeform.py` (reads italics and small caps out of .docx runs), `md2docx.py`. |
+| **legal-research** | Multi-agent legal research that fans out across free legal sources, verifies every authority, and returns a memo. Modes: case law, scholarship, or both. Also the shared toolbox: `check_cite.py` (CourtListener citation lookup), `cl_case_tools.py` (opinion PDFs), `fetch_page.py` (hard-capped fetcher), `citeform.py` (reads italics and small caps out of .docx runs), `md2docx.py` (stdlib Markdown to .docx). |
 | **cite-check** | Takes an article draft (.docx with footnotes), extracts every citation and quotation, resolves the cross-reference web, verifies each against the real source, and returns a graded footnote-by-footnote report with a "needs your attention" section first. `DESIGN.md` records the design and the lessons from the first full practice run, including where the cost estimate was wrong and what changed. |
 | **proofread** | Prose-only proofreading of a long draft: typos, doubled words, editing residue, and internal consistency (hyphenation, capitalization, defined terms, cross-references). Owns the prose; cite-check owns the authorities. |
 | **find-cite** | Quick, verified citation-finding for one proposition. A footnote-filler, not a memo. Prefers Supreme Court cites and flagship-journal scholarship, each with a pincite and a parenthetical, verified before delivery. |
-| **build-library** | Builds or extends a Zotero collection of verified sources via the Zotero Web API, then runs a deterministic anti-hallucination check (`check_source.py`) that every added item must pass. Includes a whole-library inventory script, because delegating the duplicate check to a subagent produced duplicates. |
+| **build-library** | Builds or extends a Zotero collection of verified sources via the Zotero Web API, then runs a deterministic check (`check_source.py`) that every added item must pass. Includes a whole-library inventory script, because delegating the duplicate check to a subagent produced duplicates. |
 | **case-prep** | Gathers the full document set for a Supreme Court case (questions presented, lower-court opinion, cert-stage and merits briefs, SG amicus, argument transcript), crops margins, and loads it onto a reMarkable tablet in a per-case folder. |
 
-### Install
+### Install for Claude Code
 
 ```sh
 git clone https://github.com/danepps/legal-research-skills.git
+cd legal-research-skills
+mkdir -p ~/.claude/skills
 for s in legal-research cite-check proofread find-cite build-library case-prep; do
-  ln -s "$PWD/legal-research-skills/claude-code/$s" ~/.claude/skills/$s
+  if [ -e ~/.claude/skills/$s ] && [ ! "$(readlink ~/.claude/skills/$s)" = "$PWD/claude-code/$s" ]; then
+    echo "skipping $s: ~/.claude/skills/$s already exists"
+  else
+    ln -sfn "$PWD/claude-code/$s" ~/.claude/skills/$s
+  fi
 done
 ```
 
-The skills reference each other at `~/.claude/skills/<skill>/...` (cite-check, proofread, find-cite, and case-prep all import from legal-research), so install the set together at that path.
+The links track the checkout, so `git pull` updates the installed skills. The skills reference each other at `~/.claude/skills/<skill>/...` (cite-check, proofread, find-cite, and case-prep all import from legal-research), so install the set together at that path. Start a new Claude Code session and type `/` to confirm the six names appear.
 
-**Credentials and environment.** Nothing is hard-coded; set what you use:
+Runtime notes specific to Claude Code:
 
-- `COURTLISTENER_API_TOKEN` (or `~/.config/courtlistener/token`): free token from [courtlistener.com](https://www.courtlistener.com/profile/api-token/). Without it, case lookups fall back to web search.
-- `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, `ZOTERO_LIBRARY_TYPE`, and for build-library `ZOTERO_USER_ID`: from [zotero.org/settings/keys](https://www.zotero.org/settings/keys). The scripts also look in the `zotero` MCP server entry of `~/.claude.json`.
-- cite-check, proofread, and legal-research use Claude Code's `Workflow` tool (the `.workflow.js` files) for multi-agent fan-out, and cite-check and find-cite assume a Zotero MCP server for library search.
-- build-library's HeinOnline sections assume an institutional library proxy; replace `<proxy-host>` with yours.
+- cite-check, proofread, and legal-research use Claude Code's `Workflow` tool (the `.workflow.js` files) for multi-agent fan-out.
+- cite-check and find-cite assume a Zotero MCP server for library search; the scripts also read Zotero credentials from the `zotero` MCP server entry in `~/.claude.json`.
+- build-library's HeinOnline section assumes an institutional library proxy; replace `<proxy-host>` with yours.
 - case-prep assumes a reMarkable MCP server; the download-and-crop steps work without one.
 
 `NOTES.md` session-handoff files and practice-run test data are not included.
 
 ## Codex skills (`codex/`)
 
-Independent implementations for Codex CLI. These lean harder on machine-enforced completion gates: each skill has an `init_run.py` / `validate_run.py` pair, and a run is not reported complete until its validator passes a JSON schema over the run directory.
+Independent implementations for Codex CLI. These skills combine source review with deterministic extraction, evidence records, and completion checks. Each workflow supplies the helpers appropriate to its task: cite-check, internal-proofread, and build-zotero-library use an `init_run.py` / `validate_run.py` pair; legal-research-memo uses `init_research_run.py` / `validate_research_run.py`; find-cite validates an evidence packet with `validate_packet.py`; deep-research drives a run through subcommands of `research_run.py`. A run is not reported complete until its validator passes.
 
 | Skill | What it does |
 |---|---|
 | **legal-research-memo** | Verified legal or scholarly memos: doctrinal synthesis, historical research, literature reviews, resumable investigations. References cover source protocol, subagent orchestration, autonomous runs, and a review checklist. |
 | **cite-check** | Verifies citations, quotations, pincites, proposition support, cross-references, source versions, and URLs in a draft, with a documented verification protocol and schema-validated run output. |
-| **internal-proofread** | Proofreads long drafts for internal textual defects using deterministic whole-document checks, bounded subagent review, an independent "challenger" pass, and machine-enforced completion gates. |
+| **internal-proofread** | Proofreads long drafts for internal textual defects using deterministic whole-document checks, bounded subagent review, independent recall and verification passes, and machine-enforced completion gates. Comparison against an externally supplied "challenger" report is optional. |
 | **find-cite** | A small set of verified, footnote-ready authorities for one proposition, delivered as a validated evidence packet. |
-| **build-zotero-library** | Builds or extends a verified Zotero collection, including full-text PDFs. PDFs from authenticated databases are attached from user-downloaded files, with provenance recorded; nothing automates institutional access. |
+| **build-zotero-library** | Builds or extends a verified Zotero collection, including full-text PDFs. Open-access PDFs are fetched directly; anything behind a paywall or login is attached from a file the user downloads, with provenance recorded. Nothing automates institutional access. |
 | **deep-research** | A resumable, source-grounded investigation runner for the CLI, with cost controls and anti-spiral rules. General-purpose rather than legal, but used by the legal skills. |
 
-### Install
+### Install for Codex
+
+Codex loads user-level skills from `~/.agents/skills/` and follows symlinked skill folders ([OpenAI docs](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)). An existing `~/.codex/skills/` installation keeps working; point the links wherever your Codex reads them.
 
 ```sh
+git clone https://github.com/danepps/legal-research-skills.git
+cd legal-research-skills
+mkdir -p ~/.agents/skills
 for s in legal-research-memo cite-check internal-proofread find-cite build-zotero-library deep-research; do
-  ln -s "$PWD/legal-research-skills/codex/$s" ~/.codex/skills/$s
+  if [ -e ~/.agents/skills/$s ] && [ ! "$(readlink ~/.agents/skills/$s)" = "$PWD/codex/$s" ]; then
+    echo "skipping $s: ~/.agents/skills/$s already exists"
+  else
+    ln -sfn "$PWD/codex/$s" ~/.agents/skills/$s
+  fi
 done
 ```
 
-Each skill's `SKILL.md` lists its own environment variables.
+The loop leaves any existing file, directory, or differently-pointed link in place and reports it. The links track the checkout, so `git pull` updates the installed skills. Start or refresh Codex and confirm the six skill names appear in its skill list.
+
+## Prerequisites and configuration
+
+| Capability | What you need |
+|---|---|
+| Script execution | Python 3.11 or newer (the test suite runs on 3.11, 3.12, and 3.13). The scripts use only the standard library and sibling modules in the same skill folder. |
+| Current external research | Live web access or an authorized connected source in your runtime. Installing the skills does not supply this; deep-research says so explicitly when it is missing. |
+| Case identity screening | Your own `COURTLISTENER_API_TOKEN` (free, from [courtlistener.com](https://www.courtlistener.com/profile/api-token/)); `COURTLISTENER_TOKEN` and the file `~/.config/courtlistener/token` are read as fallbacks. The helper confirms a citation exists and resolves to the named case. Whether it supports the proposition still requires reading it. |
+| Zotero operations | Your own `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` (`user` or `group`), from [zotero.org/settings/keys](https://www.zotero.org/settings/keys). On macOS the Codex scripts also accept a Keychain generic-password entry under the service name `codex-zotero-mcp` (accounts `api-key` and `library-id`). |
+| Word output | None beyond Python. Markdown is the canonical deliverable; the .docx helpers write OOXML with the standard library. |
+| PDF text extraction | `pdftotext` (poppler) where a helper reads a PDF, such as the memo skill's quantifier audit. Not needed for every task. |
+| Parallel review | A runtime that exposes subagents. The named custom roles and models in the orchestration references are preferences, not requirements; each skill falls back to the agents and models your runtime actually has and records the routing it used. |
+
+Keep credentials, library identifiers, and account exports out of the repository and out of issues.
+
+## Tests
+
+One offline command covers both folders. It runs every `test_*.py` entry point as its own process (several are standalone assertion scripts, not `unittest` cases), parses every Python file, checks every relative Markdown link, and validates each skill's frontmatter and Codex UI metadata. It needs no credentials or network.
+
+```sh
+python3 run_tests.py
+```
+
+The same command runs in GitHub Actions on Python 3.11, 3.12, and 3.13.
 
 ## Status
 

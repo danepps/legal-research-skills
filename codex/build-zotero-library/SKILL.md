@@ -1,6 +1,6 @@
 ---
 name: build-zotero-library
-description: Build or extend a verified Zotero collection for a research project, including attached full-text PDFs when requested. Use when the user asks Codex to build, populate, curate, or add sources or PDFs to a Zotero library or collection; gather books, articles, cases, reports, or other research sources into Zotero; acquire authorized HeinOnline or open-access PDFs; or audit newly added Zotero items and attachments. Search for candidates, prevent duplicates, record field-level provenance, write through the Zotero Web API, and enforce post-write verification before reporting completion.
+description: Build or extend a verified Zotero collection for a research project, including attached full-text PDFs when requested. Use when the user asks Codex to build, populate, curate, or add sources or PDFs to a Zotero library or collection; gather books, articles, cases, reports, or other research sources into Zotero; attach open-access PDFs or files the user supplies; or audit newly added Zotero items and attachments. Search for candidates, prevent duplicates, record field-level provenance, write through the Zotero Web API, and enforce post-write verification before reporting completion.
 ---
 
 # Build Zotero Library
