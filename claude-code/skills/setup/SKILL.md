@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time, conversational setup for the legal-research plugin — checks Python, saves and tests the user's CourtListener token, pre-allows web tools, and (optionally) registers a Zotero library, all from inside Claude Code so the user never edits a configuration file. Trigger on "/legal-research:setup", "set up the legal research tools", "where do I put my CourtListener token", "connect my Zotero library", or when another skill in this plugin finds the CourtListener token missing.
+description: One-time, conversational setup for the legal-research plugin — checks Python, saves and tests the user's CourtListener token, pre-allows web tools, and (optionally) registers a Zotero library, all from inside Claude Code so the user never edits a configuration file. Trigger on /legal-research:setup, on a request to set up the legal research tools, to find out where a CourtListener token goes, or to connect a Zotero library, or when another skill in this plugin finds the CourtListener token missing.
 ---
 
 # Setup
@@ -12,7 +12,7 @@ editor. Everything below is done with `${CLAUDE_PLUGIN_ROOT}/skills/setup/setup.
 backs up any file it rewrites and never removes a setting it did not add.
 
 Run the steps in order. Skip anything the status report shows is already done, and say so in
-a word ("CourtListener: already working"). Keep the whole exchange short.
+a few words, such as CourtListener, already working. Keep the whole exchange short.
 
 ## 1. Take stock
 
@@ -21,9 +21,9 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/setup/setup.py" status
 ```
 
 - If `python3` is missing or the command fails to start: on a Mac the first use of `python3`
-  opens a dialog offering to install the "command line developer tools." Tell the user to click
+  opens a dialog offering to install the command line developer tools. Tell the user to click
   Install, wait for it to finish (a few minutes), then type `/legal-research:setup` again. On
-  Windows, tell them to install Python from python.org (tick "Add python to PATH"), restart the
+  Windows, tell them to install Python from python.org (tick the option that adds python to PATH), restart the
   app, and run setup again.
 - If `python.ok` is false (older than 3.11): same advice, with the current python.org installer.
 - Do not paste the raw JSON at the user. Summarize it as a short checklist with a tick or cross
@@ -86,8 +86,9 @@ workflows** row in `/config`; docs: https://code.claude.com/docs/en/workflows.)
 
 ## 5. Zotero (optional, for people who keep sources in Zotero)
 
-Ask: "Do you keep your sources in Zotero? If so, I can connect your library so cite-check and
-find-cite can search it. If not, or not now, say skip." Treat anything but a clear yes as skip.
+Ask whether they keep their sources in Zotero, and say that if so you can connect the library
+so cite-check and find-cite can search it, and that they can answer skip to do this later.
+Treat anything but a clear yes as skip.
 
 If yes and `zotero.servers` already lists a server, say so and move on.
 
@@ -100,10 +101,10 @@ Otherwise:
    If the install fails, say so plainly, skip Zotero, and note that the rest still works.
 2. Give the user these steps and wait:
    1. Open https://www.zotero.org/settings/keys while signed in to zotero.org.
-   2. Near the top the page says "Your userID for use in API calls is" followed by a number.
-      Note that number.
-   3. Click "Create new private key", give it any name, leave "Allow library access" ticked,
-      tick "Allow write access" if they want build-library to add records, and save.
+   2. Near the top, the page shows the numeric userID for use in API calls (the page is behind
+      a login, so this wording is from memory). Note that number.
+   3. Click the button that creates a new private key, give it any name, leave library access
+      allowed, allow write access if they want build-library to add records, and save.
    4. Paste the key and the userID here.
 3. Run:
 
@@ -120,10 +121,10 @@ Otherwise:
 
 Re-run `status` and show the final checklist. Then, in two sentences: they are ready; to try
 it, open a folder that holds a short draft (in the desktop app, the folder picker at the top;
-in the Terminal, `cd` to it first) and type "cite-check this draft." If this run turned on
+in the Terminal, `cd` to it first) and type cite-check this draft. If this run turned on
 workflows or added Zotero, say that those two take effect in a new session, so they should
 start one first. Mention that the first cite-check asks for approval before it launches its
-workflow, and that choosing "Always" avoids the question next time.
+workflow, and that choosing Always avoids the question next time.
 
 Do not install anything else, do not touch files other than the three the script writes, and
 do not read or echo the token or key back after saving them.
