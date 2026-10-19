@@ -121,7 +121,7 @@ Done. Next steps:
   1. Start a new Claude Code or Codex session (restart the desktop app if it was open).
   2. Claude Code: type /legal-research:setup and follow along. It saves and tests your free
      CourtListener token, pre-approves web lookups, turns on dynamic workflows (needed on a
-     Pro plan), and can connect a Zotero library. The token it saves also serves Codex.
+     Pro plan), and offers to connect a Zotero library (optional). The token it saves also serves Codex.
      Codex only: get a free token at https://www.courtlistener.com/profile/api-token/ and
      add this line to ~/.zshrc:
        export COURTLISTENER_API_TOKEN="paste-your-token-here"

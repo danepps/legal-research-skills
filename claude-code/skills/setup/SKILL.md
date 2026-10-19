@@ -27,7 +27,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/setup/setup.py" status
   app, and run setup again.
 - If `python.ok` is false (older than 3.11): same advice, with the current python.org installer.
 - Do not paste the raw JSON at the user. Summarize it as a short checklist with a tick or cross
-  per line: Python, CourtListener, web access, Zotero, git.
+  per line: Python, CourtListener, web access, Zotero (marked optional), git.
 
 ## 2. CourtListener token (required for case checking)
 
@@ -84,11 +84,14 @@ One sentence to the user: this lets the bigger skills split the work among sever
 it takes effect the next time they start a session. (It is the same switch as the **Dynamic
 workflows** row in `/config`; docs: https://code.claude.com/docs/en/workflows.)
 
-## 5. Zotero (optional, for people who keep sources in Zotero)
+## 5. Zotero (optional; many users do not have it, and nothing else depends on it)
 
-Ask whether they keep their sources in Zotero, and say that if so you can connect the library
-so cite-check and find-cite can search it, and that they can answer skip to do this later.
-Treat anything but a clear yes as skip.
+Say first that this step is optional and that every skill except build-library works without
+Zotero, checking articles against the open web instead. Then ask whether they keep their
+sources in Zotero, and say that if so you can connect the library so cite-check and find-cite
+search it before the web, and that they can answer skip now and run setup again later.
+Treat anything but a clear yes as skip, and never present a missing Zotero as a problem in
+the final checklist; show it as not connected (optional).
 
 If yes and `zotero.servers` already lists a server, say so and move on.
 
