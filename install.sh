@@ -119,13 +119,13 @@ cat <<'NEXT'
 
 Done. Next steps:
   1. Start a new Claude Code or Codex session (restart the desktop app if it was open).
-     In Claude Code, type / and look for law:cite-check, law:proofread, and the others.
-  2. For case checking, get a free CourtListener API token at
-     https://www.courtlistener.com/profile/api-token/ and add this line to ~/.zshrc:
+  2. Claude Code: type /legal-research:setup and follow along. It saves and tests your free
+     CourtListener token, pre-approves web lookups, turns on dynamic workflows (needed on a
+     Pro plan), and can connect a Zotero library. The token it saves also serves Codex.
+     Codex only: get a free token at https://www.courtlistener.com/profile/api-token/ and
+     add this line to ~/.zshrc:
        export COURTLISTENER_API_TOKEN="paste-your-token-here"
-  3. Claude Pro plan only: in Claude Code, type /config and turn on "Dynamic workflows".
-     (cite-check, proofread, and legal-research need it; Max and Team plans have it on already.)
-  4. Open a folder with a short draft and ask: "cite-check this draft."
+  3. Open a folder with a short draft and ask: "cite-check this draft."
 Updates: Claude Code can auto-update (/plugin > Marketplaces > danepps > Enable auto-update)
 or check on demand with /plugin marketplace update danepps. Codex: re-run this installer, which
 upgrades the marketplace and reinstalls the current version.

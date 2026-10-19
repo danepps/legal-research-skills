@@ -40,13 +40,40 @@ Once installed, you open the folder that holds your draft, in the Terminal or in
 
 ## Getting started
 
-**Claude Code: one command, typed into Claude Code itself.** Open Claude Code in the Terminal or the desktop app's Code tab, and type:
+Everything happens inside Claude Code, in conversation. You will not open the Terminal, edit a file, or set an environment variable. (Codex users: see [Other ways to install](#other-ways-to-install) below.)
+
+**Step 1. Open Claude Code.** The easiest way is the [Claude desktop app](https://claude.ai/download) for Mac or Windows, which needs a Claude Pro or Max plan. Install it, sign in, and click the **Code** tab at the top of the window. In the row under the prompt box, choose the top entry under **Local** as the environment, then click the folder control next to it and open any folder; the one that holds a draft you want checked is a good choice. (If you already use Claude Code in the Terminal, open the folder there and type `claude`; the steps below are the same.)
+
+**Step 2. Install the plugin.** Paste this into the prompt box and press Return:
 
 ```text
 /plugin install legal-research --marketplace danepps/legal-research-skills
 ```
 
-That registers this repository as a plugin marketplace and installs the `legal-research` plugin, which holds all six skills. (On a Claude Code older than 2.1.275, type `/plugin marketplace add danepps/legal-research-skills` and then `/plugin install legal-research@danepps`.) Start a new session, or type `/reload-plugins`, and the skills appear in `/` autocomplete as `/legal-research:cite-check`, `/legal-research:proofread`, and so on. You rarely need to type those names: asking "cite-check this draft" in plain English is enough.
+What to expect: Claude Code fetches this repository and may show a panel describing the plugin; accept the defaults (install for your user, not just this folder). When it says the plugin is installed, start a new session, or type `/reload-plugins`. Two things that can get in the way:
+
+- If Claude Code says it does not understand the command, it is older than version 2.1.275. Type `/plugin marketplace add danepps/legal-research-skills`, press Return, then `/plugin install legal-research@danepps`. That second command opens a details panel; choose **Install** there.
+- Fetching the plugin uses a program called git. Most Macs have it; if a dialog offers to install the "command line developer tools," click **Install**, wait for it to finish, and paste the line again. On Windows, install [Git for Windows](https://git-scm.com/download/win) first, then restart the app.
+
+**Step 3. Let Claude Code set itself up.** Type this and press Return:
+
+```text
+/legal-research:setup
+```
+
+Claude Code now walks you through the rest in plain English and does the work itself. It checks that Python is present, asks you to create a free [CourtListener](https://www.courtlistener.com/) account and paste in the token from your profile page (it saves the token to a private file on your computer and tests it against a real case), pre-approves web lookups so a long run never stops to ask, turns on multi-agent workflows (a switch Claude leaves off for Pro plans), and offers to connect your Zotero library if you have one. It tells you where it put each thing. Nothing here requires you to find a file. If you would rather see exactly what it does first, the instructions it follows are in [`claude-code/skills/setup/SKILL.md`](claude-code/skills/setup/SKILL.md).
+
+**Step 4. Try it.** Start a new session so the settings take effect, open the folder with a short draft (a few pages with footnotes is ideal for a first run), and type:
+
+```text
+cite-check this draft
+```
+
+The first time, Claude Code asks for approval before it launches the multi-agent run; choose **Always** so it stops asking. Read the "needs your attention" section of the report first.
+
+That is the whole installation. Updates arrive through Claude Code's plugin mechanism; see [Keeping up to date](#keeping-up-to-date). If anything in these four steps did not work as described, please say so at the [issues page](https://github.com/danepps/legal-research-skills/issues) or by email; a confusing instruction is a bug.
+
+### Other ways to install
 
 **Codex: two commands in Terminal.** Open the Terminal app (on a Mac, press Cmd-Space and type "Terminal"), paste these, and press Return:
 
@@ -55,32 +82,19 @@ codex plugin marketplace add danepps/legal-research-skills
 codex plugin add legal-research@danepps-legal-research-codex
 ```
 
-That installs the `legal-research` plugin, which holds the six Codex skills. Start a new Codex session (restart the desktop app if it was open) and they appear under Plugins as **Legal Research Skills**. The [Codex plugin guide](codex/README.md) has the skill names, updates, and removal.
+That installs the `legal-research` plugin, which holds the six Codex skills. Start a new Codex session (restart the desktop app if it was open) and they appear under Plugins as **Legal Research Skills**. The [Codex plugin guide](codex/README.md) has the skill names, updates, and removal. Codex has no setup skill, so give it the CourtListener token one of two ways: if you also have Claude Code, run `/legal-research:setup` there, which writes the token to a file (`~/.config/courtlistener/token`) that the Codex scripts read too; otherwise create that file yourself, or add this line to the end of `~/.zshrc` (Mac) and open a new Terminal window:
 
-**Or let a script do it.** This one line installs for whichever tools it finds on your Mac, running the same plugin commands as above (and, if your Codex is too old for plugins, cloning this repository and linking its skills in):
+```sh
+export COURTLISTENER_API_TOKEN="paste-your-token-here"
+```
+
+**A script that does the Claude Code and Codex installs for you.** Paste this one line into Terminal. It runs the same plugin commands as above for whichever tools it finds (and, if your Codex is too old for plugins, clones this repository and links its skills in). It never overwrites anything already there.
 
 ```sh
 curl -fsSL https://danepps.github.io/legal-research-skills/install.sh | sh
 ```
 
-It never overwrites anything already there. (If the Mac says git is missing, accept its offer to install the command-line tools, then run the line again.)
-
 **By hand.** The details are in the [Install for Claude Code](#install-for-claude-code) and [Install for Codex](#install-for-codex) sections below.
-
-Before or after installing, two short setup steps:
-
-1. **Install one of the two tools, if you haven't.** [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) needs a Claude Pro or Max plan or an Anthropic API key; the [Claude desktop app](https://code.claude.com/docs/en/desktop) includes it under its Code tab. [Codex](https://developers.openai.com/codex) needs a ChatGPT Plus or Pro plan or an OpenAI API key, and comes as a command-line tool or a desktop app.
-
-   **On a Claude Pro plan, one extra switch.** Cite-check, proofread, and legal-research run as multi-agent "dynamic workflows," which Claude turns on by default for Max and Team plans but not for Pro. In Claude Code, type `/config`, find the **Dynamic workflows** row, and turn it on ([docs](https://code.claude.com/docs/en/workflows)). Without it, those three skills will fail at the fan-out step and the other three work normally. A reader hit exactly this, so check it before your first cite-check.
-2. **Get a free CourtListener account** and copy an API token from [courtlistener.com/profile/api-token](https://www.courtlistener.com/profile/api-token/). This is how the skills confirm that a case exists. Add this line to the end of the file `~/.zshrc` (Mac) with the token pasted in, then open a new Terminal window or restart the app:
-
-   ```sh
-   export COURTLISTENER_API_TOKEN="paste-your-token-here"
-   ```
-
-   Optional: if you keep sources in Zotero, create a key at [zotero.org/settings/keys](https://www.zotero.org/settings/keys) and set `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` the same way. Without it, cite-check still works; it just checks articles against the open web only.
-
-Then open the folder with a short draft, in the Terminal or the desktop app, and type "cite-check this draft." Read the "needs your attention" section first.
 
 ## Keeping up to date
 
@@ -89,7 +103,7 @@ New releases are listed in [CHANGELOG.md](CHANGELOG.md).
 - **Claude Code** checks for updates the way it does for any plugin. To have new releases arrive on their own, type `/plugin`, open **Marketplaces**, select **danepps**, and choose **Enable auto-update**. Otherwise type `/plugin marketplace update danepps` whenever you want to check. Nothing changes without a release: you get a new copy only when the version number in the changelog moves.
 - **Codex** refreshes the catalog and installs the current version with `codex plugin marketplace upgrade danepps-legal-research-codex` followed by `codex plugin add legal-research@danepps-legal-research-codex`. If you used the installer's plain-copy fallback instead, run the installer line again.
 
-Everything below this line is for readers who want the details.
+Everything below this line is for readers who want the details. It uses some technical vocabulary; nothing in it is needed to install or use the skills.
 
 ---
 
@@ -116,7 +130,7 @@ Passing a validator confirms the structural and workflow requirements it specifi
 
 ## Claude Code plugin (`claude-code/`)
 
-The folder is a complete Claude Code plugin: a manifest at `.claude-plugin/plugin.json` and six skills under `skills/`, which load as `/legal-research:<skill>`. The skills reference one another through `${CLAUDE_PLUGIN_ROOT}`, the variable Claude Code substitutes with the plugin's install directory, so they work wherever the plugin is cached and need no fixed path.
+The folder is a complete Claude Code plugin: a manifest at `.claude-plugin/plugin.json`, six research skills and a setup helper under `skills/`, which load as `/legal-research:<skill>`. The skills reference one another through `${CLAUDE_PLUGIN_ROOT}`, the variable Claude Code substitutes with the plugin's install directory, so they work wherever the plugin is cached and need no fixed path.
 
 | Skill | What it does |
 |---|---|
@@ -126,6 +140,7 @@ The folder is a complete Claude Code plugin: a manifest at `.claude-plugin/plugi
 | **find-cite** | Quick, verified citation-finding for one proposition. A footnote-filler, not a memo. Prefers Supreme Court cites and flagship-journal scholarship, each with a pincite and a parenthetical, verified before delivery. |
 | **build-library** | Builds or extends a Zotero collection of verified sources via the Zotero Web API, then runs a deterministic check (`check_source.py`) that every added item must pass. Includes a whole-library inventory script, because delegating the duplicate check to a subagent produced duplicates. |
 | **case-prep** | Gathers the full document set for a Supreme Court case (questions presented, lower-court opinion, cert-stage and merits briefs, SG amicus, argument transcript), crops margins, and loads it onto a reMarkable tablet in a per-case folder. |
+| **setup** | One-time, conversational configuration. `setup.py status` reports what is present; its other subcommands save and test the CourtListener token (`~/.config/courtlistener/token`, mode 600), merge `WebFetch`/`WebSearch` into `permissions.allow` and set `enableWorkflows` in `~/.claude/settings.json`, and register a `uvx zotero-mcp` server in `~/.claude.json`. Every write backs up the file first and never removes a key it did not add. |
 
 ### Install for Claude Code
 
@@ -142,7 +157,7 @@ or, on versions before 2.1.275, the two-step form:
 /plugin install legal-research@danepps
 ```
 
-The same works from a shell with `claude plugin marketplace add danepps/legal-research-skills` and `claude plugin install legal-research@danepps`. Install at user scope (the default) and the plugin is available in every project. To try the plugin from a clone without installing it, run `claude --plugin-dir ./claude-code` from the repository root. To check what loaded, `claude plugin details legal-research` lists the six skills.
+Inside a session the two-step form opens the plugin's details panel, where you choose a scope and confirm; it does not install on its own. The same works from a shell with `claude plugin marketplace add danepps/legal-research-skills` and `claude plugin install legal-research@danepps`. Install at user scope (the default) and the plugin is available in every project. To try the plugin from a clone without installing it, run `claude --plugin-dir ./claude-code` from the repository root. To check what loaded, `claude plugin details legal-research` lists the seven skills.
 
 Updates follow Claude Code's plugin mechanism: `/plugin marketplace update danepps` fetches the catalog and installs a new version when the version in `plugin.json` has changed, and **Enable auto-update** on the marketplace (under `/plugin` > Marketplaces) does that at session start. Releases are versioned in [CHANGELOG.md](CHANGELOG.md).
 
@@ -150,14 +165,14 @@ A plugin installed at user scope serves the Terminal, the desktop app's **Code**
 
 Runtime notes specific to Claude Code:
 
-- cite-check, proofread, and legal-research use Claude Code's `Workflow` tool (the `.workflow.js` files) for multi-agent fan-out. Dynamic workflows must be enabled: they are on by default for Max, Team, and Enterprise plans and for API access, but **a Pro plan has to turn them on from the Dynamic workflows row in `/config`** ([docs](https://code.claude.com/docs/en/workflows)). Each run also asks for approval before it starts; in the desktop app that is an approval card with Once, Always, and Deny.
-- cite-check and find-cite assume a Zotero MCP server for library search; cite-check works out which library a project uses from the `zotero` server entries in `~/.claude.json`. build-library's `check_source.py` reads Zotero credentials from the environment variables above, falling back to that same entry.
+- cite-check, proofread, and legal-research use Claude Code's `Workflow` tool (the `.workflow.js` files) for multi-agent fan-out. Dynamic workflows must be enabled: they are on by default for Max, Team, and Enterprise plans and for API access, but **a Pro plan has to turn them on**: `/legal-research:setup` does this (it sets `enableWorkflows` in `~/.claude/settings.json`, the same key the Dynamic workflows row in `/config` writes; [docs](https://code.claude.com/docs/en/workflows)). Each run also asks for approval before it starts; in the desktop app that is an approval card with Once, Always, and Deny.
+- cite-check and find-cite assume a Zotero MCP server for library search; `/legal-research:setup` registers one, and cite-check works out which library a project uses from the `zotero` server entries in `~/.claude.json`. build-library's `check_source.py` reads Zotero credentials from the environment variables above, falling back to that same entry.
 - build-library's HeinOnline section assumes an institutional library proxy; replace `<proxy-host>` with yours.
 - case-prep assumes a reMarkable MCP server; the download-and-crop steps work without one.
 
 ### Quotation check (hook)
 
-The plugin also installs two hooks (`hooks/hooks.json`), active only in a session where one of its six skills has been invoked. They do nothing in your other sessions.
+The plugin also installs two hooks (`hooks/hooks.json`), active only in a session where one of its six research skills has been invoked (setup does not count). They do nothing in your other sessions.
 
 - After every `WebFetch` or `WebSearch` call, a note is attached to the result saying it is a summary written by a small model and nothing in it is verbatim, so the model fetches the raw text before quoting.
 - When the model finishes a turn, `quote_check.py` reads the session transcript and checks every quotation of five or more words in the reply, and in any `.md`, `.txt`, or `.html` file written or edited during that turn, for a verbatim match in raw tool output: results from every tool except `WebFetch` and `WebSearch`, including CourtListener, `Read`, Bash, and the subagent transcripts of `Agent` and `Workflow` runs; the user's own messages; and files a Bash result points at with "Full output saved to:". A `Read` of a file the model itself wrote this session does not count, and neither does the echo in a `Write` or `Edit` result, so a memo cannot vouch for itself. Matching ignores case, whitespace, curly versus straight quotes, dash variants, HTML entities and tags, and `Read` line numbers; ellipses and bracketed alterations split a quotation into segments that must each match. An unmatched quotation blocks the reply with the list, and the model fetches the source or drops the quotation marks and says it is paraphrasing. The tag `[unverified]` on the same line lets a quotation through when checking is impossible. After two consecutive blocks the reply is allowed with a note on stderr, so a stubborn case cannot loop.
@@ -218,17 +233,19 @@ OpenAI's docs list the user-level folder as shared by the Codex CLI, the Codex d
 
 ## Prerequisites and configuration
 
+In Claude Code, `/legal-research:setup` checks and arranges all of this for you. The table is for Codex users and for anyone who wants to know what is being set where.
+
 | Capability | What you need |
 |---|---|
 | Script execution | Python 3.11 or newer (the test suite runs on 3.11, 3.12, and 3.13). The scripts use only the standard library and sibling modules in the same skill folder. |
 | Current external research | Live web access or an authorized connected source in your runtime. Installing the skills does not supply this; deep-research says so explicitly when it is missing. |
-| Case identity screening | Your own `COURTLISTENER_API_TOKEN` (free, from [courtlistener.com](https://www.courtlistener.com/profile/api-token/)); `COURTLISTENER_TOKEN` and the file `~/.config/courtlistener/token` are read as fallbacks. The helper confirms a citation exists and resolves to the named case. Whether it supports the proposition still requires reading it. |
-| Zotero operations | Your own `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` (`user` or `group`), from [zotero.org/settings/keys](https://www.zotero.org/settings/keys). On macOS the Codex scripts also accept a Keychain generic-password entry under the service name `codex-zotero-mcp` (accounts `api-key` and `library-id`). |
+| Checking that a cited case exists | A token from a free [CourtListener](https://www.courtlistener.com/profile/api-token/) account. The scripts in both folders look for it in the environment variable `COURTLISTENER_API_TOKEN`, then `COURTLISTENER_TOKEN`, then the file `~/.config/courtlistener/token`, which is where `/legal-research:setup` puts it. The lookup confirms a citation exists and resolves to the named case; whether it supports the proposition still requires reading it. |
+| Zotero (optional) | An API key and your numeric user id (or a group's id), both from [zotero.org/settings/keys](https://www.zotero.org/settings/keys). For Claude Code, `/legal-research:setup` stores them as the `env` of a `zotero` MCP server entry in `~/.claude.json`, and the scripts read them from there. For Codex, set the environment variables `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` (`user` or `group`); on macOS the Codex scripts also accept a Keychain generic-password entry under the service name `codex-zotero-mcp` (accounts `api-key` and `library-id`). |
 | Word output | None beyond Python. Markdown is the canonical deliverable; the .docx helpers write OOXML with the standard library. |
 | PDF text extraction | `pdftotext` (poppler) where a helper reads a PDF, such as the memo skill's quantifier audit. Not needed for every task. |
-| Parallel review | A runtime that exposes subagents. The named custom roles and models in the orchestration references are preferences, not requirements; each skill falls back to the agents and models your runtime actually has and records the routing it used. |
+| Several agents working at once | Nothing to install; Claude Code and Codex both provide this. The agent roles and models named in the skill files are preferences, not requirements; each skill falls back to whatever your runtime has and records what it used. |
 
-Keep credentials, library identifiers, and account exports out of the repository and out of issues.
+Your token and keys stay on your own computer, in the places named above. Do not paste them into a GitHub issue, an email, or a shared draft; if one ever leaks, generate a new one on the site that issued it, and the old one stops working.
 
 ## Tests
 
