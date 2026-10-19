@@ -57,7 +57,7 @@ codex plugin add legal-research@danepps-legal-research-codex
 
 That installs the `legal-research` plugin, which holds the six Codex skills. Start a new Codex session (restart the desktop app if it was open) and they appear under Plugins as **Legal Research Skills**. The [Codex plugin guide](codex/README.md) has the skill names, updates, and removal.
 
-**Or let a script do it.** This one line installs for whichever tools it finds on your Mac, running the same plugin commands as above (and falling back to a plain copy of the skills if your Codex is too old for plugins):
+**Or let a script do it.** This one line installs for whichever tools it finds on your Mac, running the same plugin commands as above (and, if your Codex is too old for plugins, cloning this repository and linking its skills in):
 
 ```sh
 curl -fsSL https://danepps.github.io/legal-research-skills/install.sh | sh
@@ -151,7 +151,7 @@ A plugin installed at user scope serves the Terminal, the desktop app's **Code**
 Runtime notes specific to Claude Code:
 
 - cite-check, proofread, and legal-research use Claude Code's `Workflow` tool (the `.workflow.js` files) for multi-agent fan-out. Dynamic workflows must be enabled: they are on by default for Max, Team, and Enterprise plans and for API access, but **a Pro plan has to turn them on from the Dynamic workflows row in `/config`** ([docs](https://code.claude.com/docs/en/workflows)). Each run also asks for approval before it starts; in the desktop app that is an approval card with Once, Always, and Deny.
-- cite-check and find-cite assume a Zotero MCP server for library search; the scripts also read Zotero credentials from the `zotero` MCP server entry in `~/.claude.json`.
+- cite-check and find-cite assume a Zotero MCP server for library search; cite-check works out which library a project uses from the `zotero` server entries in `~/.claude.json`. build-library's `check_source.py` reads Zotero credentials from the environment variables above, falling back to that same entry.
 - build-library's HeinOnline section assumes an institutional library proxy; replace `<proxy-host>` with yours.
 - case-prep assumes a reMarkable MCP server; the download-and-crop steps work without one.
 
