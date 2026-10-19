@@ -1,7 +1,7 @@
 {
-  "name": "law",
+  "name": "legal-research",
   "displayName": "Legal Research Skills",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Cite-check a law-review draft footnote by footnote, find verified authorities, proofread a manuscript, build a verified Zotero library, write research memos, and assemble a Supreme Court brief set.",
   "author": {
     "name": "Daniel Epps",

@@ -5,7 +5,7 @@
 #   curl -fsSL https://danepps.github.io/legal-research-skills/install.sh | sh
 #
 # What it does:
-#   Claude Code: registers the "danepps" plugin marketplace and installs the "law"
+#   Claude Code: registers the "danepps" plugin marketplace and installs the "legal-research"
 #                plugin with the claude CLI (or prints the two commands to type in
 #                Claude Code if the CLI is not on your PATH).
 #   Codex:       registers the repository's Codex marketplace and installs the
@@ -22,7 +22,7 @@ set -e
 REPO="danepps/legal-research-skills"
 REPO_URL="https://github.com/$REPO.git"
 MARKET="danepps"
-PLUGIN="law"
+PLUGIN="legal-research"
 DEST="${LRS_HOME:-$HOME/legal-research-skills}"
 WANT_CLAUDE=""
 WANT_CODEX=""

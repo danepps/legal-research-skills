@@ -43,10 +43,10 @@ Once installed, you open the folder that holds your draft, in the Terminal or in
 **Claude Code: one command, typed into Claude Code itself.** Open Claude Code in the Terminal or the desktop app's Code tab, and type:
 
 ```text
-/plugin install law --marketplace danepps/legal-research-skills
+/plugin install legal-research --marketplace danepps/legal-research-skills
 ```
 
-That registers this repository as a plugin marketplace and installs the `law` plugin, which holds all six skills. (On a Claude Code older than 2.1.275, type `/plugin marketplace add danepps/legal-research-skills` and then `/plugin install law@danepps`.) Start a new session, or type `/reload-plugins`, and the skills appear in `/` autocomplete as `/law:cite-check`, `/law:proofread`, and so on. You rarely need to type those names: asking "cite-check this draft" in plain English is enough.
+That registers this repository as a plugin marketplace and installs the `legal-research` plugin, which holds all six skills. (On a Claude Code older than 2.1.275, type `/plugin marketplace add danepps/legal-research-skills` and then `/plugin install legal-research@danepps`.) Start a new session, or type `/reload-plugins`, and the skills appear in `/` autocomplete as `/legal-research:cite-check`, `/legal-research:proofread`, and so on. You rarely need to type those names: asking "cite-check this draft" in plain English is enough.
 
 **Codex: two commands in Terminal.** Open the Terminal app (on a Mac, press Cmd-Space and type "Terminal"), paste these, and press Return:
 
@@ -99,7 +99,7 @@ Two parallel implementations live here, one per runtime. They share a design phi
 
 | Folder | Runtime | How it installs |
 |---|---|---|
-| [`claude-code/`](claude-code/) | Claude Code (Anthropic) | A plugin named `law`, listed by the marketplace catalog at [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json); Claude Code copies it into its plugin cache |
+| [`claude-code/`](claude-code/) | Claude Code (Anthropic) | A plugin named `legal-research`, listed by the marketplace catalog at [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json); Claude Code copies it into its plugin cache |
 | [`codex/`](codex/) | Codex CLI (OpenAI) | A plugin named `legal-research`, listed by the catalog at [`.agents/plugins/marketplace.json`](.agents/plugins/marketplace.json); Codex caches it. Manual symlinks from `~/.agents/skills/` still work |
 
 ## What the skills share
@@ -116,7 +116,7 @@ Passing a validator confirms the structural and workflow requirements it specifi
 
 ## Claude Code plugin (`claude-code/`)
 
-The folder is a complete Claude Code plugin: a manifest at `.claude-plugin/plugin.json` and six skills under `skills/`, which load as `/law:<skill>`. The skills reference one another through `${CLAUDE_PLUGIN_ROOT}`, the variable Claude Code substitutes with the plugin's install directory, so they work wherever the plugin is cached and need no fixed path.
+The folder is a complete Claude Code plugin: a manifest at `.claude-plugin/plugin.json` and six skills under `skills/`, which load as `/legal-research:<skill>`. The skills reference one another through `${CLAUDE_PLUGIN_ROOT}`, the variable Claude Code substitutes with the plugin's install directory, so they work wherever the plugin is cached and need no fixed path.
 
 | Skill | What it does |
 |---|---|
@@ -132,17 +132,17 @@ The folder is a complete Claude Code plugin: a manifest at `.claude-plugin/plugi
 Inside a Claude Code session:
 
 ```text
-/plugin install law --marketplace danepps/legal-research-skills
+/plugin install legal-research --marketplace danepps/legal-research-skills
 ```
 
 or, on versions before 2.1.275, the two-step form:
 
 ```text
 /plugin marketplace add danepps/legal-research-skills
-/plugin install law@danepps
+/plugin install legal-research@danepps
 ```
 
-The same works from a shell with `claude plugin marketplace add danepps/legal-research-skills` and `claude plugin install law@danepps`. Install at user scope (the default) and the plugin is available in every project. To try the plugin from a clone without installing it, run `claude --plugin-dir ./claude-code` from the repository root. To check what loaded, `claude plugin details law` lists the six skills.
+The same works from a shell with `claude plugin marketplace add danepps/legal-research-skills` and `claude plugin install legal-research@danepps`. Install at user scope (the default) and the plugin is available in every project. To try the plugin from a clone without installing it, run `claude --plugin-dir ./claude-code` from the repository root. To check what loaded, `claude plugin details legal-research` lists the six skills.
 
 Updates follow Claude Code's plugin mechanism: `/plugin marketplace update danepps` fetches the catalog and installs a new version when the version in `plugin.json` has changed, and **Enable auto-update** on the marketplace (under `/plugin` > Marketplaces) does that at session start. Releases are versioned in [CHANGELOG.md](CHANGELOG.md).
 

@@ -7,7 +7,7 @@
   },
   "plugins": [
     {
-      "name": "law",
+      "name": "legal-research",
       "source": "./claude-code",
       "description": "Cite-check drafts against real sources, find verified authorities, proofread, build Zotero libraries, write research memos, and prep Supreme Court cases."
     }
