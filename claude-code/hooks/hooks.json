@@ -1,0 +1,28 @@
+{
+  "description": "legal-research quotation check: while one of this plugin's skills is in use, WebFetch/WebSearch results are marked as non-verbatim summaries, and a reply or written report may not quote text that no raw tool output in the session contains.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "WebFetch|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/summary_note.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -I \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/quote_check.py\"",
+            "timeout": 90
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -155,6 +155,15 @@ Runtime notes specific to Claude Code:
 - build-library's HeinOnline section assumes an institutional library proxy; replace `<proxy-host>` with yours.
 - case-prep assumes a reMarkable MCP server; the download-and-crop steps work without one.
 
+### Quotation check (hook)
+
+The plugin also installs two hooks (`hooks/hooks.json`), active only in a session where one of its six skills has been invoked. They do nothing in your other sessions.
+
+- After every `WebFetch` or `WebSearch` call, a note is attached to the result saying it is a summary written by a small model and nothing in it is verbatim, so the model fetches the raw text before quoting.
+- When the model finishes a turn, `quote_check.py` reads the session transcript and checks every quotation of five or more words in the reply, and in any `.md`, `.txt`, or `.html` file written or edited during that turn, for a verbatim match in raw tool output: results from every tool except `WebFetch` and `WebSearch`, including CourtListener, `Read`, Bash, and the subagent transcripts of `Agent` and `Workflow` runs; the user's own messages; and files a Bash result points at with "Full output saved to:". A `Read` of a file the model itself wrote this session does not count, and neither does the echo in a `Write` or `Edit` result, so a memo cannot vouch for itself. Matching ignores case, whitespace, curly versus straight quotes, dash variants, HTML entities and tags, and `Read` line numbers; ellipses and bracketed alterations split a quotation into segments that must each match. An unmatched quotation blocks the reply with the list, and the model fetches the source or drops the quotation marks and says it is paraphrasing. The tag `[unverified]` on the same line lets a quotation through when checking is impossible. After two consecutive blocks the reply is allowed with a note on stderr, so a stubborn case cannot loop.
+
+What it does not do: it confirms a quotation matches something retrieved this session, not that the retrieved source is the right one or that the pincite is correct; that is cite-check's job. Only the final turn's reply and written files are checked, and a model that writes a quotation to a file with a shell command rather than `Write` is outside its reach. To turn it off, set `LEGAL_RESEARCH_QUOTE_CHECK=off` in the `env` block of `~/.claude/settings.json`. Tests: `python3 claude-code/hooks/tests/test_quote_check.py`.
+
 `NOTES.md` session-handoff files and practice-run test data are not included.
 
 ## Codex skills (`codex/`)
@@ -223,7 +232,7 @@ Keep credentials, library identifiers, and account exports out of the repository
 
 ## Tests
 
-One offline command covers both folders. It runs every `test_*.py` entry point as its own process (several are standalone assertion scripts, not `unittest` cases), parses every Python file, checks every relative Markdown link, validates each skill's frontmatter and Codex UI metadata, and checks the plugin manifests (catalog and plugin agree, the changelog's top entry matches the plugin version, no hard-coded skill paths). It needs no credentials or network. `claude plugin validate .` and `claude plugin validate ./claude-code` run Claude Code's own manifest checks.
+One offline command covers both folders. It runs every `test_*.py` entry point as its own process (including the plugin hook tests under `claude-code/hooks/tests/`) (several are standalone assertion scripts, not `unittest` cases), parses every Python file, checks every relative Markdown link, validates each skill's frontmatter and Codex UI metadata, and checks the plugin manifests (catalog and plugin agree, the changelog's top entry matches the plugin version, no hard-coded skill paths). It needs no credentials or network. `claude plugin validate .` and `claude plugin validate ./claude-code` run Claude Code's own manifest checks.
 
 ```sh
 python3 run_tests.py
