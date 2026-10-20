@@ -2,6 +2,11 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.2.1 (2026-10-19)
+
+- Claude Code `cite-check`: a metadata correction (author name or order, volume, first page, year, title, edition) now has to be evidenced against the source's own record, opened during the run: the journal's page, the PDF's first page, a publisher or library catalog record, or a HeinOnline or SSRN citation page. Search snippets, URL slugs, casebooks, syllabi, and other articles' footnotes no longer count. The existence and verify agents tag each finding with the record they opened (an empty tag does not count), tentative notes an existence agent leaves on a source it could not pin down are carried into the report instead of dropped, and the report's section E splits into "Errors (fix)" for tagged findings and "Confirm" for everything else, which is phrased as something to check rather than something wrong. Author-order claims never reach "Errors (fix)" without a tag, since companion and multi-part articles rotate author order between parts. Prompted by a run that told the author to swap the authors of a Stanford Law Review article on the strength of an opencasebook.org URL slug; the journal's own page showed the draft was right.
+- Codex `cite-check`: the verification protocol states the same evidence rule for `metadata_error` findings.
+
 ## 1.2.0 (2026-10-19)
 
 - Claude Code: a seventh skill, `/legal-research:setup`, does the configuration in conversation so nobody has to edit a file. It checks Python, asks for the free CourtListener token and saves it to `~/.config/courtlistener/token` after testing it against a live lookup (the Codex scripts read the same file), pre-allows `WebFetch` and `WebSearch`, sets `enableWorkflows` (the Dynamic workflows switch a Pro plan needs), and can register a Zotero MCP server. Its script backs up every file it rewrites and never removes a setting it did not add.

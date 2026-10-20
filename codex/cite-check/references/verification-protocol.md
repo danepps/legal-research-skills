@@ -61,6 +61,8 @@ Use one verification basis:
 
 Use one unit status: `verified`, `partial`, `mismatch`, `unverified`, or `not_applicable`.
 
+A `metadata_error` finding that tells the author to change an author name or order, volume, first page, year, title, or edition must rest on the source's own record, actually opened during the run: the journal's article or issue page, the PDF's first page, a publisher or library catalog record, or a HeinOnline or SSRN citation page. Name that record in the finding. Search-result titles, snippets, and URL slugs do not count, and neither do casebooks, syllabi, reading lists, CVs, or other articles' footnotes, which copy each other's mistakes. If the only evidence is a snippet or a third-party listing, report the discrepancy as something to confirm, not as an error. Companion and multi-part articles routinely rotate author order and sit in different volumes, so match the exact part the draft cites before reporting an author-order or volume discrepancy; author order is never an error without the source's own title page or landing page.
+
 Use specific categories, including:
 
 - `identity_error`

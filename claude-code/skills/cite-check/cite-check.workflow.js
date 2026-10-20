@@ -120,7 +120,7 @@ const SOURCES = `FREE / OPEN-WEB SOURCES ONLY (no Westlaw/Lexis):
 - KNOWN FETCH BLOCKS: Justia and SSRN often return HTTP 403 to scripted fetches; bepress/
   digital-commons and some university repositories block too. Mirror chain that works: journal's own
   site → non-bepress repository → Wayback Machine → Google Books snippet. Cap attempts per source at
-  ${MIRROR_CAP}; then mark the item unverifiable with the unlock path (Hein pull), do NOT burn
+  ${MIRROR_CAP}; then mark the item unverifiable with the unlock path (Hein/JSTOR pull), do NOT burn
   retries.
 - PDFs: never WebFetch a PDF and never \`open\`/GUI-view one. Run the capped fetcher via Bash
   (load Bash with ToolSearch "select:Bash" if needed): python3 "${FETCH_PAGE}" "<url>"
@@ -479,6 +479,22 @@ Cap effort at ${MIRROR_CAP} attempts per source. NEVER call a source fabricated:
 sources checked" (exists=false, basis "unconfirmed") is the strongest negative allowed. Put any
 draft-vs-source discrepancy (wrong volume/year/author/title/edition) in metadataFindings, quoting the
 draft's cite text verbatim.
+
+METADATA CORRECTIONS — EVIDENCE RULE (the Bressman & Gluck lesson, 2026-10-19). A metadataFinding
+that tells the author to CHANGE something (author name or order, volume, first page, year, title,
+edition) must rest on the source's OWN record, actually opened with WebFetch / fetch_page / Zotero:
+the journal's article or issue page, the PDF's first page, the publisher's or a library catalog
+record, the HeinOnline or SSRN citation page. Search-result titles, snippets and URL slugs do NOT
+count, and neither do third-party casebooks, syllabi, reading lists, CVs or other articles' footnotes
+— they copy each other's mistakes (a real run "corrected" the author order of 66 Stan. L. Rev. 725
+from an opencasebook.org URL slug; the Stanford Law Review's own page showed the draft was right).
+- Every metadataFindings line ends with the evidence tag "[source: <URL or record you opened>]".
+- If the only evidence is a snippet or a third-party listing, do NOT write a metadataFinding: put the
+  possible discrepancy in the note field as "confirm: …" with what you saw, or open the source page first.
+- Multi-part and companion articles ("Part I"/"Part II", symposium pairs, "Foreword"/"Afterword")
+  routinely ROTATE author order and sit in different volumes; aggregators conflate the parts. Match
+  the exact part the draft cites before reporting any author-order or volume discrepancy.
+- Author ORDER specifically is never a finding without the source's own title page or landing page.
 ${SOURCES}`
 
 const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + (existBatches.length + secBatches.length) * 4000)
@@ -500,7 +516,20 @@ for (const r of existRaw.filter(Boolean)) {
 }
 const secBad = secondaryExistence.filter((s) => s.exists === false && s.basis !== 'unconfirmed')
 const secUnconfirmed = secondaryExistence.filter((s) => s.exists === false && s.basis === 'unconfirmed')
-const secMeta = secondaryExistence.flatMap((s) => (s.metadataFindings || []).map((m) => `[${s.key}] ${m}`))
+const secMetaAll = secondaryExistence.flatMap((s) => (s.metadataFindings || []).map((m) => `[${s.key}] ${m}`))
+// Evidence gate (2026-10-19): a metadata CORRECTION is only an "Error (fix)" when the agent tagged
+// the source record it actually opened ("[source: …]"). Untagged lines were derived from search
+// snippets / third-party listings and go to the report as "confirm", never as a fix — the
+// Bressman & Gluck author-order artifact came from an opencasebook.org URL slug.
+// The tag must carry a record ("[source: ]" alone does not count).
+const EVIDENCED = /\[source:\s*[^\]\s][^\]]*\]/i
+const secMeta = secMetaAll.filter((m) => EVIDENCED.test(m))
+// Tentative discrepancies the prompt told the agent to park in `note` as "confirm: …" would
+// otherwise vanish for sources that exist (only exists=false notes reach the report).
+const secConfirmNotes = secondaryExistence
+  .filter((s) => s.exists !== false && s.note && /\bconfirm\b/i.test(s.note))
+  .map((s) => `[${s.key}] ${s.note}`)
+const secMetaSoft = [...secMetaAll.filter((m) => !EVIDENCED.test(m)), ...secConfirmNotes]
 log(`Secondary-source existence: ${secondaryExistence.length}/${SECONDARY_CITES.length} checked, ${secBad.length} not found, ${secUnconfirmed.length} unconfirmed, ${secMeta.length} metadata findings.`)
 const existBad = existence.filter((e) => e.exists === false)
 const existFixed = existence.filter((e) => e.corrected)
@@ -605,7 +634,14 @@ PER-QUOTE VERDICTS (see the discipline rules below — apply them strictly):
 - unverifiable: could not fetch/read the source — give the unlock path. Never guess.
 Set severity honestly; fill sourceText for every high-severity verdict; report basis per verdict.
 Collect citation-metadata problems (reporter typo, wrong volume/page/year/court, author/title/journal
-discrepancy, impossible pincite) in metadataFindings.
+discrepancy, impossible pincite) in metadataFindings. EVIDENCE TAG (2026-10-19): end EVERY
+metadataFindings line with "[source: <the URL, Zotero key or record you actually read>]" — the fetched
+full text you verified the quotes against counts, and is usually the right tag. A line without a
+non-empty tag is treated as unevidenced and reaches the report only as "confirm …", never as a fix.
+Bibliographic corrections (author name or order, volume, first page, year, title, edition) rest on the
+source's OWN record (its first page, the journal's page, a catalog record), never on search snippets,
+URL slugs, casebooks, syllabi or other articles' footnotes; companion / multi-part articles rotate
+author order and volume between parts, so match the exact part the draft cites.
 
 METADATA-FINDING DISCIPLINE (violations of each caused false report findings in a real run):
 - Before alleging a caption/name/metadata error IN THE DRAFT, fetch the draft's actual footnote via
@@ -972,6 +1008,10 @@ const fmtFinding = (f) => {
 }
 
 const metaFindingsFlat = [...new Set(verifyResults.flatMap((v) => v.metadataFindings || []))]
+// Same evidence gate as the existence pass: a verify agent's metadata correction is a fix only
+// when it names the record it read; untagged lines are "confirm" items.
+const metaFindingsEvidenced = metaFindingsFlat.filter((m) => EVIDENCED.test(m))
+const metaFindingsSoft = metaFindingsFlat.filter((m) => !EVIDENCED.test(m))
 const urlFindings = verifyResults.map((v) => v.urlFinding).filter(Boolean)
 const supraReport = SUPRA_PROBLEMS.map((s) => `- n.${s.footnote}: "${s.claims}, supra note ${s.supra_note}" — target note ${s.supra_note} does not name ${s.claims} (holds: "${(s.target_excerpt || '').slice(0, 90)}…")`).join('\n')
 
@@ -992,10 +1032,15 @@ REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sect
 - **B. Verbatim slips (smaller)** — real but minor (a dropped word, a spelling, an unmarked comma).
 - **C. Broken supra references** — from the deterministic supra check below (a renumbering artifact).
 - **D. Wrong pincites & citation typos** — reporter typos, impossible pincites, off-by-some pincites.
-- **E. Article/book metadata discrepancies** — wrong volume/year/journal/author/title.
+- **E. Article/book metadata discrepancies** — wrong volume/year/journal/author/title. Two
+  sub-lists: "Errors (fix)" holds ONLY discrepancies an agent (existence or verify) evidenced
+  against the source's own record — the lines listed below as EVIDENCED, each tagged "[source: …]";
+  every line listed below as UNEVIDENCED goes under "Confirm" and is phrased as something to check,
+  not something wrong. Author-order claims never go in "Errors (fix)" without that tag (companion/
+  multi-part articles rotate author order between parts).
 - **F. URLs** — dead links (with archived replacements) and bot-blocked-but-live notes.
 - **G. Couldn't check (what would unlock each)** — unverifiable items, each with its unlock path
-  (Hein pull, add PDF to Zotero, physical copy).
+  (Hein/JSTOR pull, add PDF to Zotero, physical copy).
 - **H. Citation coverage ledger** — REQUIRED, from the ledger block below: what every citation
   instance got, and above all what did NOT get checked.
 - A short method note: deterministic extraction + supra/existence checks; quotes verified by agents
@@ -1032,8 +1077,10 @@ ${bySeverity('high').map(fmtFinding).join('\n') || '(none)'}
 === MEDIUM/LOW FINDINGS (sections B/D — verbatim slips, pincites) ===
 ${findings.filter((f) => f.severity !== 'high' && !f.artifact && !['verbatim', 'altered_marked', 'fragment_framing'].includes(f.verdict)).map(fmtFinding).join('\n') || '(none)'}
 
-=== CITATION-METADATA FINDINGS (sections D/E) ===
-${metaFindingsFlat.map((m) => `- ${m}`).join('\n') || '(none)'}
+=== CITATION-METADATA FINDINGS — EVIDENCED (sections D/E; from the verify agents, each tagged with the record read) ===
+${metaFindingsEvidenced.map((m) => `- ${m}`).join('\n') || '(none)'}
+=== CITATION-METADATA FINDINGS — UNEVIDENCED (sections D/E "Confirm" ONLY — no record tagged; phrase each as "confirm …", never as a correction) ===
+${metaFindingsSoft.map((m) => `- ${m}`).join('\n') || '(none)'}
 
 === BROKEN SUPRA REFERENCES (section C) — deterministic, high-confidence ===
 ${supraReport || '(none)'}
@@ -1054,8 +1101,10 @@ NOT FOUND (draft cites a source no catalog/site could locate — section E, phra
 ${secBad.map((s) => `- key ${s.key}: ${s.note || ''}`).join('\n') || '(none)'}
 UNCONFIRMED (section G, with what would unlock each):
 ${secUnconfirmed.map((s) => `- key ${s.key}: ${s.note || ''}`).join('\n') || '(none)'}
-METADATA DISCREPANCIES (section E):
+METADATA DISCREPANCIES — EVIDENCED (section E "Errors (fix)"; from the existence agents, each line names the source record the agent opened):
 ${secMeta.map((m) => `- ${m}`).join('\n') || '(none)'}
+METADATA DISCREPANCIES — UNEVIDENCED (section E "Confirm" ONLY — untagged findings and "confirm: …" notes, derived from search snippets or third-party listings, never from the source's own page; phrase each as "confirm …", never as a correction, and never promote one to the TL;DR):
+${secMetaSoft.map((m) => `- ${m}`).join('\n') || '(none)'}
 
 === CITATION COVERAGE LEDGER (section H — REQUIRED; place it AFTER section G and BEFORE Citation form) ===
 ${LEDGER.length} citation instances inventoried across ${FOOTNOTE_COUNT} footnotes. Dispositions: ${JSON.stringify(ledgerCounts)}.

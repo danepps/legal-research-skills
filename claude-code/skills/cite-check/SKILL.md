@@ -291,6 +291,16 @@ The workflow returns `{ report, counts, exitState, degradation, artifactsCaught,
 - **Quotes are verbatim or marked.** Honest bracket/ellipsis alterations are matched with the
   alteration masked — that is `altered_marked`, not a mismatch.
 - **Never verify from memory.** An unfetchable source is reported unverifiable with its unlock path.
+- **Metadata corrections come from the source's own record, never from search snippets or third-party
+  listings (the Bressman & Gluck lesson, 2026-10-19).** The existence and verify agents may report a
+  "fix" to an author, author order, volume, first page, year or title only after opening the journal's
+  page, the PDF's first page, a publisher/catalog record, or a Hein/SSRN citation page, and each such
+  line carries a non-empty `[source: …]` tag; untagged discrepancies, and the "confirm: …" notes an
+  existence agent leaves on a source it could not pin down, reach the report only under "Confirm". A
+  real run told the author to swap the authors of Part II of *Statutory Interpretation from the Inside*
+  (66 Stan. L. Rev. 725) on the strength of an opencasebook.org URL slug — the Stanford Law Review page
+  shows Bressman & Gluck, and the draft was right. Companion / multi-part articles rotate author order
+  and volume between parts; match the exact part cited.
 - **Never `open`/GUI-view a PDF; never install software without asking.** PDFs go through
   `fetch_page.py` (hard size cap).
 - **Syllabus is not the law.** A pincite equal to the first page of a U.S. Reports cite is
