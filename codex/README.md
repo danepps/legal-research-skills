@@ -47,7 +47,7 @@ confirming that it points to this repository and that you no longer need it.
 - Local file and command access in Codex.
 - Live web access or an authorized connected source for current external research.
 - Your own credentials for optional case-lookup and Zotero operations; see the
-  [configuration table](https://github.com/danepps/legal-research-skills#prerequisites-and-configuration).
+  [configuration table](https://github.com/danepps/legal-research-skills/blob/main/TECHNICAL.md#prerequisites-and-configuration).
 - Available subagents for workflows that require independent parallel review.
 
 Installing the plugin adds instructions and helper scripts. It does not supply
