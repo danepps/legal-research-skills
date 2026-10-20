@@ -1,5 +1,16 @@
 # Codex plugin changes
 
+## 1.3.0 — 2026-10-19
+
+- Add a setup skill for optional daily automatic updates through the native
+  Codex plugin manager, using per-user launchd, systemd, or Task Scheduler jobs.
+- Keep the updater outside the replaceable plugin cache; provide status,
+  immediate checks, and disable commands with installed-version readback.
+- Skip missing or disabled plugins, reject local/forked/pinned marketplace
+  sources, bound failed checks, and prevent overlapping updater operations.
+- Keep automatic updates off until the user opts in. Manual installs and
+  Claude-owned implementation/configuration are unchanged.
+
 ## 1.2.0 — 2026-10-19
 
 - Preserve custom-marked author notes without shifting printed footnote numbers;

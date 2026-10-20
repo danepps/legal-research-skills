@@ -1,0 +1,4 @@
+interface:
+  display_name: "Legal Research Setup"
+  short_description: "Manage optional automatic updates for this plugin"
+  default_prompt: "Use $setup to check automatic updates for my Legal Research Skills plugin."

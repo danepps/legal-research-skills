@@ -133,6 +133,7 @@ Done. Next steps:
        export COURTLISTENER_API_TOKEN="paste-your-token-here"
   3. Open a folder with a short draft and ask: "cite-check this draft."
 Updates: Claude Code can auto-update (/plugin > Marketplaces > danepps > Enable auto-update)
-or check on demand with /plugin marketplace update danepps. Codex: re-run this installer, which
-upgrades the marketplace and reinstalls the current version.
+or check on demand with /plugin marketplace update danepps. Codex native plugin: say
+"Use $legal-research:setup to enable automatic updates" for optional daily checks.
+For manual Codex updates (including plain-copy installs), re-run this installer.
 NEXT

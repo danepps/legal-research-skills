@@ -1,6 +1,6 @@
 # Legal Research Skills for Codex
 
-Install all six Codex research skills as one plugin. The package contains the
+Install all six Codex research skills and an optional update setup helper as one plugin. The package contains the
 same maintained skill folders used by the manual installer. It does not install
 the Claude skills or configure external accounts.
 
@@ -31,6 +31,7 @@ The plugin's skill names are:
 | Internal proofreading | `$legal-research:internal-proofread` |
 | Zotero library building | `$legal-research:build-zotero-library` |
 | Deep research | `$legal-research:deep-research` |
+| Automatic update setup | `$legal-research:setup` |
 
 You can also ask in plain English, such as "Cite-check this draft" or "Write a
 research memo on this question." Start with a short document to check your setup.
@@ -56,6 +57,18 @@ relevant skill. Authenticated source files must be supplied by the user.
 
 ## Updates and removal
 
+For optional automatic updates, start a Codex session and say:
+
+> Use $legal-research:setup to enable automatic updates.
+
+This installs a per-user schedule on macOS, Linux with systemd, or Windows. It
+checks for updates daily while you are logged in, including when Codex is closed.
+Automatic updates are off until you enable them. Start a new Codex session to use
+an updated plugin. Ask the same setup skill to show status, check now, or disable
+automatic updates. See [automatic updates](setup/references/automatic-updates.md)
+for requirements, failure behavior, and removal after the plugin is uninstalled.
+
+For manual updates, use these commands in order, stopping if the refresh fails.
 Refresh the repository marketplace and install its current plugin version:
 
 ```sh
@@ -63,7 +76,8 @@ codex plugin marketplace upgrade danepps-legal-research-codex
 codex plugin add legal-research@danepps-legal-research-codex
 ```
 
-Then start a new session. To remove the plugin:
+Then start a new session. Before removing the plugin, ask `$legal-research:setup`
+to disable automatic updates if you enabled them. Then remove the plugin:
 
 ```sh
 codex plugin remove legal-research@danepps-legal-research-codex
@@ -80,7 +94,7 @@ codex plugin marketplace remove danepps-legal-research-codex
 
 The Codex package root is `codex/`. Its supported Codex-format manifest is
 [.codex-plugin/plugin.json](.codex-plugin/plugin.json), which explicitly lists
-the six relative skill directories. This preserves existing manual installation
+the seven relative skill directories (six research skills and setup). This preserves existing manual installation
 paths and avoids maintaining duplicate skill copies. The repository catalog is
 [.agents/plugins/marketplace.json](https://github.com/danepps/legal-research-skills/blob/main/.agents/plugins/marketplace.json); its source
 points only to `./codex`.
@@ -88,7 +102,8 @@ points only to `./codex`.
 The package includes its [MIT license](LICENSE). Increment the plugin's semantic version when releasing changes. Run
 `python3 run_tests.py` from the repository root before publishing; this includes
 the offline packaging checks in `test_codex_plugin.py`. The package adds no MCP
-servers, lifecycle hooks, credential files, or browser companion.
+servers, lifecycle hooks, credential files, or browser companion. The optional
+updater uses the operating system scheduler only after explicit setup.
 
 Codex-specific changes are recorded in [CHANGELOG.md](CHANGELOG.md). Claude
 releases retain their independent version and changelog at the repository root.

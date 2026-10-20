@@ -18,7 +18,7 @@ Claude Code and Codex are the same models in a different setting. Instead of a c
 | What you get back | A reply you have to act on from memory | A report file, problems first, each with the exact words to Cmd+F in Word |
 | Consistency | Different each time | The same extraction and comparison scripts every run; the model is used only where judgment is needed |
 
-The skills in this repository are the instructions and scripts that make the model behave this way. Installing them is one command, after which they are available in both the Terminal and the desktop app. Updates are available through the plugin manager. Claude Code users can enable automatic updates during setup.
+The skills in this repository are the instructions and scripts that make the model behave this way. Installing them is one command, after which they are available in both the Terminal and the desktop app. Updates are available through the plugin manager, with optional automatic updates as described below.
 
 ## What you can ask for
 
@@ -82,7 +82,7 @@ codex plugin marketplace add danepps/legal-research-skills
 codex plugin add legal-research@danepps-legal-research-codex
 ```
 
-That installs the `legal-research` plugin, which holds the six Codex skills. Start a new Codex session (restart the desktop app if it was open) and they appear under Plugins as **Legal Research Skills**. The [Codex plugin guide](codex/README.md) has the skill names, updates, and removal. Codex has no setup skill, so give it the CourtListener token one of two ways: if you also have Claude Code, run `/legal-research:setup` there, which writes the token to a file (`~/.config/courtlistener/token`) that the Codex scripts read too; otherwise create that file yourself, or add this line to the end of `~/.zshrc` (Mac) and open a new Terminal window:
+That installs the `legal-research` plugin, which holds six Codex research skills and an update setup helper. Start a new Codex session (restart the desktop app if it was open) and they appear under Plugins as **Legal Research Skills**. For optional automatic updates, say **Use $legal-research:setup to enable automatic updates**. The [Codex plugin guide](codex/README.md) has the skill names, updates, and removal. Research credentials are separate: if you also have Claude Code, run `/legal-research:setup` there, which writes the CourtListener token to a file (`~/.config/courtlistener/token`) that the Codex scripts read too; otherwise create that file yourself, or add this line to the end of `~/.zshrc` (Mac) and open a new Terminal window:
 
 ```sh
 export COURTLISTENER_API_TOKEN="paste-your-token-here"
@@ -101,7 +101,7 @@ curl -fsSL https://danepps.github.io/legal-research-skills/install.sh | sh
 New releases are listed in [CHANGELOG.md](CHANGELOG.md).
 
 - **Claude Code** checks for updates the way it does for any plugin. To have new releases arrive on their own, type `/plugin`, open **Marketplaces**, select **danepps**, and choose **Enable auto-update**. Otherwise type `/plugin marketplace update danepps` whenever you want to check. Nothing changes without a release: you get a new copy only when the version number in the changelog moves.
-- **Codex** refreshes the catalog and installs the current version with `codex plugin marketplace upgrade danepps-legal-research-codex` followed by `codex plugin add legal-research@danepps-legal-research-codex`. If you used the installer's plain-copy fallback instead, run the installer line again.
+- **Codex:** say **Use $legal-research:setup to enable automatic updates** for optional daily checks on macOS, Linux with systemd, or Windows. Ask the same skill to show status or turn updates off. For manual updates, run `codex plugin marketplace upgrade danepps-legal-research-codex`, then `codex plugin add legal-research@danepps-legal-research-codex` only if the refresh succeeds. Start a new session afterward. If you used the installer's plain-copy fallback instead, run the installer line again. See the [update guide](codex/setup/references/automatic-updates.md).
 
 Everything below this line is for readers who want the details. It uses some technical vocabulary; nothing in it is needed to install or use the skills.
 
@@ -196,7 +196,7 @@ Independent implementations for Codex CLI. These skills combine source review wi
 
 ### Install for Codex
 
-**Plugin installation (Codex CLI and desktop app):** install all six skills together:
+**Plugin installation (Codex CLI and desktop app):** install the six research skills and update setup helper together:
 
 ```sh
 codex plugin marketplace add danepps/legal-research-skills
@@ -205,7 +205,7 @@ codex plugin add legal-research@danepps-legal-research-codex
 
 Start a new session, then look for **Legal Research Skills** in Plugins or use
 `$legal-research:cite-check`, `$legal-research:legal-research-memo`, and the other
-packaged skills. See the [Codex plugin guide](codex/README.md) for all six names,
+packaged skills. See the [Codex plugin guide](codex/README.md) for the skill names,
 updates, removal, and requirements. This is a repository marketplace; it does not
 imply inclusion in OpenAI's curated directory. Choose the plugin or the manual
 installation below to avoid duplicate workflows.

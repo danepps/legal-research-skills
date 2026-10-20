@@ -16,7 +16,7 @@ MANIFEST = PACKAGE / ".codex-plugin" / "plugin.json"
 MARKETPLACE = ROOT / ".agents" / "plugins" / "marketplace.json"
 EXPECTED_SKILLS = {
     "build-zotero-library", "cite-check", "deep-research", "find-cite",
-    "internal-proofread", "legal-research-memo",
+    "internal-proofread", "legal-research-memo", "setup",
 }
 
 
