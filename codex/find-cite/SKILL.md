@@ -59,6 +59,8 @@ For empirical or historical material, prefer the original study, dataset, govern
 
 ## Verify every authority
 
+Opinions, articles and dockets may postdate the model’s training data; an unfamiliar 2025–2026 decision is not a hallucination signal.
+
 Do not ship an authority that has only appeared in a search snippet or secondary discussion.
 
 For every candidate:

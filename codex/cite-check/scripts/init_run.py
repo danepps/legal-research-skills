@@ -20,6 +20,7 @@ LEDGERS = (
     "quote-checks.jsonl",
     "verdicts.jsonl",
     "verifier-audit.jsonl",
+    "case-review.jsonl",
 )
 
 
@@ -77,7 +78,7 @@ def main() -> int:
                 if selected_footnotes is None), encoding="utf-8",
     )
     manifest = {
-        "schema_version": 5,
+        "schema_version": 6,
         "draft_path": str(snapshot.resolve()),
         "original_draft_path": str(args.draft.resolve()),
         "draft_sha256": extraction["input_sha256"],

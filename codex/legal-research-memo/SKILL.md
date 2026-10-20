@@ -36,6 +36,8 @@ For standard or deep work that may cross turns, contexts, or tool limits, use [r
 
 ## Operating rules
 
+Opinions, articles and dockets may postdate the model’s training data; an unfamiliar 2025–2026 decision is not a hallucination signal.
+
 - State the jurisdiction, court level, governing law, relevant date, factual assumptions, and research cutoff. If a missing detail would materially change the answer, ask for it; otherwise proceed with a clearly labeled assumption.
 - Protect confidential and privileged information. Prefer local files and authorized sources. Do not upload confidential facts or documents to an external service merely to obtain a citation or summary.
 - Never invent an authority, quotation, holding, pinpoint, docket number, procedural fact, or negative-research conclusion. If a citation or proposition cannot be verified, mark it for follow-up or omit it.
@@ -92,7 +94,7 @@ Use the source protocol in [references/source-protocol.md](references/source-pro
 
 Apply its bounded source-access procedure to research, verification, and rescue workers alike. Use the capped `scripts/fetch_source.py` for raw public-source extraction when useful; preserve its provenance and partial-coverage flags, and assign unique output paths to parallel workers.
 
-When a CourtListener token is available, use `scripts/check_cite.py` to check case-citation existence before final audit. Record an API match only as `citation-only`; it does not verify a pinpoint, quotation, holding, characterization, or negative treatment. When the current force of a controlling or load-bearing case matters, `scripts/courtlistener_treatment.py "CITATION" --output RUN_DIR/currentness/CASE.json` may generate a bounded citing-opinion treatment-triage packet. Open and read every material hit. The packet is not a citator; no hits do not establish good law, and citation recency does not establish doctrinal force or dormancy.
+When a CourtListener token is available, use `scripts/check_cite.py` to check case-citation existence before final audit. After an unresolved reporter lookup, run `check_cite.py 'CITATION' --name 'A v. B'` for both caption and quoted citation-string fallbacks; inspect candidates, preserve ambiguity, and list routes tried or unavailable before calling it unconfirmed. Citing passages corroborate identity but can repeat errors. Record an API match only as `citation-only`; it does not verify a pinpoint, quotation, holding, characterization, or negative treatment. When the current force of a controlling or load-bearing case matters, `scripts/courtlistener_treatment.py "CITATION" --output RUN_DIR/currentness/CASE.json` may generate a bounded citing-opinion treatment-triage packet. The packet searches both citation-graph and later caption-phrase routes, reports per-route counts and caps, and deduplicates retrieved decision clusters. Report distinct retrieved cases, not raw rows; name-only rows may merely be absent from a bounded graph sample. Open and read every material hit. The packet is not a citator; no hits do not establish good law, and citation recency does not establish doctrinal force or dormancy.
 
 ### 3. Extract before synthesizing
 
@@ -152,7 +154,7 @@ For a standard doctrinal memo, default to this sequence unless the user requests
 6. Analysis, organized by subquestion or doctrinal strand.
 7. Counterarguments, adverse authority, and unresolved issues.
 8. Conclusion and practical research or fact-development next steps.
-9. Optional authority table or research limitations note when it helps the reader audit the work.
+9. Optional authority table or research limitations note when it helps the reader audit the work. Every included authority-table row carries a Validation label under the source protocol; name which authorities received adversarial review and why, or say none did.
 
 For targeted work, lead with the answer and use only the rule, authority, application, caveat, and status note needed. For scholarly mode, adapt the sequence to: research problem; thesis or provisional claim; historiography and literature gap; sources and method; periodized or conceptually organized analysis; rival interpretations; contribution; and limits or further research. Retain a short answer only when it clarifies the thesis; otherwise use an abstract or opening argument.
 

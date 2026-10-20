@@ -1,8 +1,8 @@
 # Ledger field reference
 
 Read this when constructing or updating a run. JSONL files contain one object per
-line. Field names below are literal. The initializer creates schema-v5 runs;
-schema-v2/v3/v4 runs remain readable with their existing coverage requirements.
+line. Field names below are literal. The initializer creates schema-v6 runs;
+schema-v2/v3/v4/v5 runs remain readable with their existing coverage requirements.
 Completion checks inspect declared evidence and consistency; they cannot establish
 that an agent actually opened or correctly interpreted a source.
 
@@ -129,3 +129,61 @@ Before validation, set manifest `status: ready_for_validation`,
 `completion_target: complete` or `complete_with_limits`, and counts for
 `prepared_units`, `quote_checks`, `verified`, `partial`, `mismatch`, and `unverified`.
 Only the validator's `--mark-complete` flag changes the final status.
+
+## Schema-v6 case review, verification scope and findings
+
+Each external citation verdict also requires boolean `identity_confirmed` and
+`support_read`. The latter means the relevant source text was read to assess the
+proposition; it does not imply the proposition passed. Metadata/snippets cannot
+set it true. `verified_support` requires it true; every verified external verdict
+requires confirmed identity. A `misattributed` verdict also names `actual_speaker`.
+
+Count external citation instances (exclude internal `not_applicable` pointers),
+not distinct authorities. Set manifest `counts.existence_only` to the count with
+`identity_confirmed: true` and `support_read: false`. Include this exact sentence
+with computed numbers in the report summary:
+
+```text
+Existence-only: X of Y citation instances were confirmed to exist but not read for proposition support.
+```
+
+`case-review.jsonl` has exactly one row per case `source_id`, with `history`,
+`treatment`, and `findings` (an empty list if no advisory findings). Each check is
+an object with `status: checked`, `partial`, `skipped`, `unavailable`, or
+`not_applicable`. Only Supreme Court history may be not applicable, with
+`court_id: scotus` and `court_identity_evidence` on the source's review row.
+State-court history still needs official-record and later-opinion review; a
+RECAP-only helper's not-applicable result cannot excuse the whole history pass.
+
+A checked history check needs `routes` for `docket` and `later_opinions`; checked
+treatment needs `graph` and `name`. Every checked route records `route`,
+`status: checked`, `query` (or direct record action), `checked_at`, `evidence`
+(locator and result) and `truncated` when applicable. The treatment route evidence
+must cover both recent-citing and treatment-language searches. A failed route or
+capped retrieval makes the overall check partial, with `reason` and `unlock_path`;
+skipped/unavailable checks also require both. These states require
+`complete_with_limits`, even if all ordinary citation verdicts are verified.
+
+In the advisory section include the exact coverage line per case, substituting
+its ID and actual statuses, plus every gap's reason and unlock path:
+
+```text
+Case review S1: history=partial; treatment=checked.
+```
+
+Each advisory finding records `unit_id`, `kind: history` or `treatment`, `verdict`
+(e.g. `omitted_required_history`, `contradicted_history`, `treatment_flag`), `find`
+(verbatim draft string), `label` (reader-facing action) and `evidence`. Required
+history omissions also need `rule_basis` identifying the applicable Rule 10.7
+requirement and exception analysis. High/critical adverse findings must also
+appear in the ordinary verdict/audit ledgers. Keep treatment flags separate from
+history corrections.
+
+Generate `findings.json` using `scripts/findings_diff.py --run-dir RUN_DIR
+--output RUN_DIR/findings.json` after finalizing the manifest and ledgers. The gate
+reconciles it to those records. It preserves each occurrence while grouping
+stable content keys for comparison. Keep previous findings in the hidden run as
+`previous-findings.json`, with manifest `previous_findings_sha256`; insert the
+helper's exact re-run block before **Needs your attention**. Completion with
+limits or focused coverage cannot resolve an absent previous finding. Keep all
+JSON artifacts hidden unless the user requests their publication.

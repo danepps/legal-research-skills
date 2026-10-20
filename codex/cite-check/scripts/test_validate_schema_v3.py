@@ -134,6 +134,7 @@ def main() -> int:
         )
         manifest_path = run / "run-manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["schema_version"] = 5  # Preserve pre-v6 fixture coverage.
         manifest["status"] = "ready_for_validation"
         manifest["completion_target"] = "complete"
         manifest["counts"].update(

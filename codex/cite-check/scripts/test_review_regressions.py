@@ -251,7 +251,7 @@ class CompletionTests(unittest.TestCase):
 
     def validate(self, directory, *args):
         path = directory / 'run-manifest.json'; manifest = json.loads(path.read_text())
-        manifest.update(status='ready_for_validation', completion_target='complete')
+        manifest.update(schema_version=5, status='ready_for_validation', completion_target='complete')  # Legacy fixtures.
         verdicts = read_rows(directory / 'verdicts.jsonl')
         manifest['counts'].update({status: sum(row['status'] == status for row in verdicts) for status in ('verified', 'partial', 'mismatch', 'unverified')})
         manifest['counts']['quote_checks'] = len(read_rows(directory / 'quote-checks.jsonl'))

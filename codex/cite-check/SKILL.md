@@ -9,6 +9,7 @@ Verify a draft against retrieved sources without modifying it. Use deterministic
 
 ## Non-negotiable rules
 
+- Opinions, articles and dockets may postdate the model’s training data; an unfamiliar 2025–2026 decision is not a hallucination signal.
 - Never verify from memory. Record the exact source and verification basis for every verdict.
 - Preserve the input draft. Keep all working artifacts in a hidden run directory.
 - Resolve `Id.`, `ibid.`, `supra`, and other cross-references before source grouping or verification.
@@ -56,7 +57,7 @@ Read [references/verification-protocol.md](references/verification-protocol.md) 
 
 Use `prepared-units.jsonl` as context scaffolding. Convert every citation instance—not only every quotation—into `citation-units.jsonl`.
 
-For new schema-v5 runs, reconcile every in-scope footnote in `footnote-coverage.jsonl` and every body paragraph in `body-coverage.jsonl`. Set `status: reviewed` and list the corresponding citation `unit_ids`, or use `no_citations`, an empty list, and a concrete `reason`. Body coverage inventories citations located in the body; citations appearing in footnotes remain in footnote coverage. A focused numbered-footnote run excludes body coverage and custom-marked notes. The initializer leaves coverage rows `pending`; the gate rejects omitted locations. This is a lead-reviewed inventory, not a claim that the extractor parses every citation or finds every quotation.
+For new schema-v6 runs, reconcile every in-scope footnote in `footnote-coverage.jsonl` and every body paragraph in `body-coverage.jsonl`. Set `status: reviewed` and list the corresponding citation `unit_ids`, or use `no_citations`, an empty list, and a concrete `reason`. Body coverage inventories citations located in the body; citations appearing in footnotes remain in footnote coverage. A focused numbered-footnote run excludes body coverage and custom-marked notes. The initializer leaves coverage rows `pending`; the gate rejects omitted locations. This is a lead-reviewed inventory, not a claim that the extractor parses every citation or finds every quotation.
 
 Review styled block quotations and every indented `block_quote_candidates` paragraph. Record `block_quote_review` and `block_quote_reason` in body coverage. For a confirmed indentation candidate, add a prepared unit with the full quotation, `paragraph_number`, and `block_quote: true`; do the same for any other missed block or short quotation. Inspect nested quotes and source attribution. `primary_inferred_from_paragraph: true` is only a suggestion; confirm the source relationship and set the citation unit's `attribution_reviewed: true` before verifying it.
 
@@ -84,7 +85,7 @@ Optionally screen case identities with:
 python3 <skill-dir>/scripts/check_cite.py --input-file <citation-text-file>
 ```
 
-Retrieve the opinion itself for quotes, holdings, propositions, and pins. For recent reporter cites absent from free indexes, search the case name plus citation and authoritative docket materials. If the cite is plausibly too recent, record `too_recent_for_free_index` and recommend a Westlaw/Lexis spot-check; do not imply the citation is false.
+Retrieve the opinion itself for quotes, holdings, propositions, and pins. Before calling a lookup miss unconfirmed, run both caption and quoted citation-string fallbacks with `check_cite.py 'CITATION' --name 'A v. B'`; inspect candidate identities and citing passages, and record all routes tried or unavailable. A citing passage is corroboration, not conclusive identity proof. Use `too_recent_for_free_index` only with a basis for that explanation, never merely because a citation is unfamiliar. Recommend a direct official-record or database spot-check when unresolved.
 
 Write one row per unique source to `source-ledger.jsonl` and one row per citation unit to `verdicts.jsonl`. For scholarship, inspect the project library before the web and compare cited and current versions of manuscripts. If no library is connected, state that once in the method section and continue to authoritative web sources. For an absent quote, search sibling sources named in the same footnote; use `misattributed` if the passage appears in a different cited source.
 
@@ -104,6 +105,10 @@ Keep exactly one final verdict per citation unit. A quote found only in a siblin
 
 For pincites, identify the pagination convention before proposing a correction: printed page, star/header marker preceding text, or footer marker following text. Record `page_delta` as an integer when proposing a page correction. Treat an exact-one-page difference as presumptively ambiguous until independently checked against the visual page; page corrections with no recoverable delta also require an audit.
 
+### 4a. Check subsequent history and treatment
+
+Read [references/case-review.md](references/case-review.md). Check every lower-court case for subsequent history and every case for treatment by both citation graph and caption-phrase routes. Use the history helper and the available companion treatment helper, or record equivalent direct searches. Read material hits and evaluate the draft's actual use. Reconcile one `case-review.jsonl` row per case source, including partial, skipped and unavailable passes. A skipped pass requires `complete_with_limits` and explicit disclosure; the advisory section separates required-history omissions, contradicted history, treatment flags and unchecked cases.
+
 ### 5. Verify the verifier
 
 Independently reconstruct every critical/high adverse finding, every `not_found_in_sources_checked`, and every exact-one-page pincite correction from:
@@ -117,7 +122,22 @@ Write `confirmed`, `revised`, or `retracted` to `verifier-audit.jsonl`. When one
 
 ### 6. Write and publish the report
 
-Write the canonical report to `<run-dir>/report.md`. Put genuine findings first; do not put cleared suspicions, near-findings, or internal deliberation in “Needs your attention.” Then include the complete footnote ledger and limitations.
+Write the canonical report to `<run-dir>/report.md`. Put genuine findings first; do not put cleared suspicions, near-findings, or internal deliberation in “Needs your attention.” Then include the history/treatment advisory, complete footnote ledger and limitations. State the existence-only share of citation instances using the exact summary sentence in the ledger reference; count instances, not unique sources.
+
+Save `findings.json` beside the hidden `report.md` with:
+
+```bash
+python3 <skill-dir>/scripts/findings_diff.py --run-dir RUN_DIR --output RUN_DIR/findings.json
+```
+
+Generate it after finalizing the ledgers, manifest counts and completion target. On a re-run, copy the prior findings file into the new hidden run as `previous-findings.json`, record its SHA-256 as manifest `previous_findings_sha256`, and open the report (after title/provenance) with:
+
+```bash
+python3 <skill-dir>/scripts/findings_diff.py RUN_DIR/previous-findings.json RUN_DIR/findings.json \
+  --output RUN_DIR/findings-diff.md
+```
+
+Insert that exact block. Keys use source/content/verdict, never footnote numbers or run IDs. An absent finding in an incomplete or focused re-run is **not rechecked**, not automatically resolved. Keep duplicate occurrence locations. If no previous structured file is available, disclose that no reliable automated comparison was possible. The structured files remain hidden under the publication policy; publish only the report unless the user explicitly requests the JSON sidecar, and retain the hidden file for the next run.
 
 Every adverse item must contain the footnote number, verbatim draft find string, draft and source text where applicable, category, severity, verification basis, evidence location, suggested action, and required audit result.
 

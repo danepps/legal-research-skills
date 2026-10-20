@@ -107,8 +107,8 @@ Independent implementations for Codex CLI. These skills combine source review wi
 
 | Skill | What it does |
 |---|---|
-| **legal-research-memo** | Verified legal or scholarly memos: doctrinal synthesis, historical research, literature reviews, resumable investigations. References cover source protocol, subagent orchestration, autonomous runs, and a review checklist. |
-| **cite-check** | Verifies citations, quotations, pincites, proposition support, cross-references, source versions, and URLs in a draft, with a documented verification protocol and schema-validated run output. |
+| **legal-research-memo** | Verified legal or scholarly memos: doctrinal synthesis, historical research, literature reviews, resumable investigations. Authority tables disclose validation tiers. Case tools perform reporter-identity fallback searches and bounded two-route treatment triage with deduplicated decision counts. References cover source protocol, subagent orchestration, autonomous runs, and a review checklist. |
+| **cite-check** | Verifies citations, quotations, pincites, proposition support, cross-references, source versions, and URLs in a draft, with schema-v6 case-history/treatment coverage, a separate advisory section, content-keyed re-run findings, actual-speaker attribution and existence-only instance counts. Earlier schemas remain readable; working JSON stays hidden. |
 | **internal-proofread** | Proofreads long drafts for internal textual defects using deterministic whole-document checks, bounded subagent review, independent recall and verification passes, and machine-enforced completion gates. Comparison against an externally supplied "challenger" report is optional. |
 | **find-cite** | A small set of verified, footnote-ready authorities for one proposition, delivered as a validated evidence packet. |
 | **build-zotero-library** | Builds or extends a verified Zotero collection, including full-text PDFs. Open-access PDFs are fetched directly; anything behind a paywall or login is attached from a file the user downloads, with provenance recorded. Nothing automates institutional access. |

@@ -1,5 +1,26 @@
 # Codex plugin changes
 
+## 1.4.0 — 2026-10-19
+
+- Add cite-check subsequent-history and treatment advisories, a bounded RECAP
+  history helper with empty-docket twin search, and schema-v6 case coverage.
+  Skipped, unavailable and capped passes require explicit limits. Older run
+  schemas retain their contracts.
+- Save content-keyed findings and compare re-runs without depending on footnote
+  numbering. Preserve repeated occurrences; incomplete/focused reviews cannot
+  automatically resolve findings absent from their scope.
+- Extend treatment triage to graph and caption-phrase routes, with per-route
+  totals, bounded pagination, and decision deduplication including duplicate
+  reporter versions. Never present sample-only graph gaps as missing edges.
+- Add caption and citation-text identity fallbacks to both citation helpers;
+  retain ambiguity and treat citing passages as corroboration, not proof.
+- Extend the existing misattribution verdict to wrong-speaker attribution and
+  require the actual speaker in new runs. Add post-training-cutoff guidance.
+- Add reader-facing authority validation tiers to research memos and exact
+  existence-only instance counts to cite-check summaries.
+- Add offline helper and completion tests. No Claude-side changes, new hooks,
+  schedulers or account configuration.
+
 ## 1.3.0 — 2026-10-19
 
 - Add a setup skill for optional daily automatic updates through the native

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from findings_diff import snapshot, diff, render
 from extract_cites import note_key
 from verify_docx_ooxml import VERIFICATION_METHOD
 
@@ -128,6 +129,107 @@ def confirmed_pin(verdict: dict, pin: object) -> bool:
             and nonempty_string(record.get("evidence")))
 
 
+def validate_review(run, manifest, units, sources, verdicts, corpus, report, final_status, errors):
+    """Schema-v6 additions only; preserve the v2-v5 completion contracts."""
+    unit_by_id = {u.get("unit_id"): u for u in units}
+    external = [v for v in verdicts if v.get("status") != "not_applicable"]
+    existence_only = 0
+    for verdict in external:
+        if not isinstance(verdict.get("identity_confirmed"), bool) or not isinstance(verdict.get("support_read"), bool):
+            errors.append("verdicts.jsonl requires boolean identity_confirmed and support_read")
+        if verdict.get("identity_confirmed") is True and verdict.get("support_read") is False:
+            existence_only += 1
+        if verdict.get("support_read") is True and verdict.get("verification_basis") not in FULL_TEXT_BASES:
+            errors.append("support_read requires a retrieved full-text basis")
+        if verdict.get("category") == "verified_support" and verdict.get("support_read") is not True:
+            errors.append("verified_support requires support_read true")
+        if verdict.get("status") == "verified" and verdict.get("identity_confirmed") is not True:
+            errors.append("verified verdict requires identity_confirmed true")
+        if verdict.get("category") == "misattributed" and not nonempty_string(verdict.get("actual_speaker")):
+            errors.append("misattributed requires actual_speaker")
+    summary = f"Existence-only: {existence_only} of {len(external)} citation instances were confirmed to exist but not read for proposition support."
+    if summary not in report:
+        errors.append("report.md lacks accurate existence-only summary: " + summary)
+    if manifest.get("counts", {}).get("existence_only") != existence_only:
+        errors.append("run-manifest.json existence_only count mismatch")
+    cases = {s.get("source_id") for s in sources if s.get("source_type") == "case" and s.get("status") != "not_applicable"}
+    cases.update(u.get("source_id") for u in units if u.get("source_type") == "case" and u.get("unit_kind") != "internal_reference")
+    reviews = load_jsonl(run / "case-review.jsonl", errors)
+    ids = [r.get("source_id") for r in reviews]
+    if set(ids) != cases or len(ids) != len(set(ids)):
+        errors.append("case-review.jsonl requires exactly one row per cited case source")
+    if "Subsequent history & treatment" not in report:
+        errors.append("report.md lacks Subsequent history & treatment advisory section")
+    section = report.split("Subsequent history & treatment", 1)[-1]
+    for row in reviews:
+        sid = row.get("source_id")
+        history, treatment = row.get("history", {}), row.get("treatment", {})
+        if not isinstance(history, dict) or not isinstance(treatment, dict):
+            errors.append(f"case review {sid}: history/treatment must be objects")
+            continue
+        disclosure = f"Case review {sid}: history={history.get('status')}; treatment={treatment.get('status')}."
+        if disclosure not in section:
+            errors.append(f"report.md omits case review coverage: {disclosure}")
+        for name, check in (("history", history), ("treatment", treatment)):
+            status = check.get("status")
+            if status not in {"checked", "partial", "skipped", "unavailable", "not_applicable"}:
+                errors.append(f"case review {sid}: invalid {name} status")
+            if status == "not_applicable":
+                if name != "history" or row.get("court_id") != "scotus" or not nonempty_string(row.get("court_identity_evidence")):
+                    errors.append(f"case review {sid}: only identified Supreme Court history may be not_applicable")
+            if status in {"partial", "skipped", "unavailable"}:
+                if final_status != "complete_with_limits":
+                    errors.append("unchecked case review requires complete_with_limits")
+                if not nonempty_string(check.get("reason")) or not nonempty_string(check.get("unlock_path")):
+                    errors.append(f"case review {sid}: {name} requires reason and unlock_path")
+                for key in ("reason", "unlock_path"):
+                    if check.get(key) and check[key] not in section:
+                        errors.append(f"report.md omits {sid} {name} {key}")
+            routes = check.get("routes", [])
+            if not isinstance(routes, list) or any(not isinstance(route, dict) for route in routes):
+                errors.append(f"case review {sid}: routes must be objects")
+                continue
+            if status == "checked":
+                required = {"graph", "name"} if name == "treatment" else {"docket", "later_opinions"}
+                if not required <= {r.get("route") for r in routes if r.get("status") == "checked"}:
+                    errors.append(f"case review {sid}: checked {name} lacks required routes")
+            for route in routes:
+                if route.get("status") == "checked" and any(not route.get(k) for k in ("query", "checked_at", "evidence")):
+                    errors.append(f"case review {sid}: checked route requires query, checked_at, evidence")
+                if status == "checked" and (route.get("status") != "checked" or route.get("truncated") is True):
+                    errors.append(f"case review {sid}: incomplete/truncated route must remain partial")
+        findings = row.get("findings")
+        if not isinstance(findings, list) or any(not isinstance(f, dict) for f in findings):
+            errors.append(f"case review {sid}: findings must be a list of objects (empty if none)")
+            continue
+        for finding in findings:
+            unit = unit_by_id.get(finding.get("unit_id"), {})
+            if unit.get("source_id") != sid:
+                errors.append(f"case review {sid}: finding references unrelated citation unit")
+            if not occurs_in_draft(finding.get("find"), corpus):
+                errors.append(f"case review {sid}: finding find-string absent from draft")
+            if finding.get("kind") not in {"history", "treatment"} or not all(finding.get(k) for k in ("verdict", "label", "evidence")):
+                errors.append(f"case review {sid}: incomplete advisory finding")
+            if finding.get("verdict") == "omitted_required_history" and not finding.get("rule_basis"):
+                errors.append(f"case review {sid}: required-history finding needs applicable Rule 10.7 basis")
+    try:
+        expected = snapshot(run)
+        actual = load_json(run / "findings.json", errors)
+        if actual != expected:
+            errors.append("findings.json is stale or differs from the final ledgers; regenerate it")
+        previous = run / "previous-findings.json"
+        if previous.exists() or manifest.get("previous_findings_sha256"):
+            if not previous.is_file() or file_sha256(previous) != manifest.get("previous_findings_sha256"):
+                errors.append("previous-findings.json missing or hash differs from manifest")
+            else:
+                prior = load_json(previous, errors)
+                block = render(prior, expected, diff(prior, expected)).strip()
+                if block not in report.split("Needs your attention", 1)[0]:
+                    errors.append("report.md must open with the current findings diff before Needs your attention")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        errors.append(f"cannot reconcile findings.json: {exc}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
@@ -159,7 +261,7 @@ def main() -> int:
     verdicts = load_jsonl(args.run_dir / "verdicts.jsonl", errors)
     audits = load_jsonl(args.run_dir / "verifier-audit.jsonl", errors)
     schema_version = manifest.get("schema_version")
-    if schema_version not in {2, 3, 4, 5}:
+    if schema_version not in {2, 3, 4, 5, 6}:
         errors.append("run-manifest.json: unsupported schema_version")
         schema_version = 2
     quote_check_path = args.run_dir / "quote-checks.jsonl"
@@ -713,6 +815,10 @@ def main() -> int:
                 unlock = str(row.get("unlock_path", "")).strip()
                 if unlock and unlock not in limit_section:
                     errors.append(f"report.md Couldn't check section omits unlock_path for: {item_id}")
+
+        if schema_version >= 6:
+            validate_review(args.run_dir, manifest, units, sources, verdicts, corpus,
+                            report.read_text(encoding="utf-8") if report.is_file() else "", final_status, errors)
 
         publication_policy = manifest.get("publication_policy", "markdown_only")
         if publication_policy not in {"matched_pair", "markdown_only", "docx_only"}:

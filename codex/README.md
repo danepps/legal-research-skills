@@ -70,6 +70,17 @@ manual installations remain valid; the plugin installer does not remove them.
 Keeping both can expose duplicate workflows. Remove a manual link only after
 confirming that it points to this repository and that you no longer need it.
 
+## Verification coverage
+
+Cite-check includes an advisory subsequent-history and treatment pass, reports
+which cases could not be checked, and states how many citation instances were
+confirmed to exist without reading for proposition support. Re-runs compare
+content-keyed findings even after footnotes move; working JSON stays in the hidden
+run directory. CourtListener searches use both citation links and case-name
+phrases with disclosed caps. They are discovery aids, not a commercial citator.
+Research memo authority tables distinguish adversarial review, existence plus a
+treatment probe, and authorities not validated to either tier.
+
 ## Requirements
 
 - Python 3.11 or newer for the included scripts.

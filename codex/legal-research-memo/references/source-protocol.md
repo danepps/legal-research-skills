@@ -23,6 +23,7 @@ Maintain a compact ledger while researching. It may be a Markdown table, spreads
 | Precedential effect | Majority holding; plurality; concurrence/dissent; summary disposition; equally divided/nonprecedential; binding noncase text; or persuasive/historical only |
 | Distinct contribution | What this source adds: controlling rule, new test, narrowing move, transition, corroboration, counterexample, or rival account |
 | Verification | Direct-full-text; authoritative-reproduction; secondary-corroboration; citation-only; or unverified; separately note quotation and citation checks |
+| Validation tier | Adversarially verified / checked by existence + treatment probe / not validated; see definitions below |
 | Location | Local path, official URL, or database reference |
 | Currentness check | Service/database, exact query or citator action, date, result, and limitation when current force matters |
 | Notes | Distinctions, adverse language, later treatment, or uncertainty |
@@ -49,6 +50,32 @@ Any global statement about verification must match the weakest material authorit
 
 For deep, scholarly, or high-stakes work, include a compact verification appendix for material authorities. For standard work, include such a table when verification levels are mixed; otherwise a truthful methods or limitations paragraph is enough. In targeted work, flag only a load-bearing source that remains at `secondary-corroboration`, `citation-only`, or `unverified`.
 
+## Reader-facing validation tier
+
+In every authority table or verification appendix include a **Validation** column,
+separate from the existing verification-basis label. Preserve both: reading full
+text and running a treatment probe are different checks.
+
+- **Adversarially verified:** a documented refutation pass independently challenged
+  the source identity, relied-on passage, pinpoint, speaker/holding attribution,
+  contrary reading and relevant currentness. Name the reviewer or distinct pass
+  and evidence record; this does not require a three-voter panel.
+- **Checked by existence + treatment probe:** identity was confirmed and both
+  treatment routes were performed with material hits read. Disclose caps, gaps and
+  the open-source limits; an attempted but unavailable route does not earn this
+  tier. This label alone does not mean proposition support was checked.
+- **Not validated:** neither tier above was completed. State what *was* done,
+  such as full-text support review, identity-only screening, or an unavailable
+  treatment route. For noncase authorities an adversarial check can earn the
+  first tier; otherwise use this label with the actual source check and explain
+  that a case-treatment probe is inapplicable. Do not imply the source is false.
+
+Add one sentence naming which authorities got the heavier check and why (for
+example controlling or disputed authorities); if none did, say so. A targeted
+answer need not grow an authority table solely for these labels. These are
+instruction-level disclosures, not new automatic legal judgments by the research
+validator, and they never replace the existing full-text support requirement.
+
 ## Source hierarchy and selection
 
 - Start with the law that governs: text, controlling precedent, and authoritative procedural materials.
@@ -74,7 +101,7 @@ Before delivery, check each citation against the source:
 6. The disposition and precedential effect support the characterization, especially for pluralities, summary dispositions, and equally divided affirmances.
 7. A short cite is used only after a full cite makes the source unambiguous.
 
-When available, run `scripts/check_cite.py` over the case citations as a deterministic existence and reporter-identity check. Treat a match as `citation-only` unless the relied-on passage was separately read. The API does not check pinpoints, quotations, holdings, characterization, or negative treatment.
+When available, run `scripts/check_cite.py` over the case citations as a deterministic existence and reporter-identity check. Treat a match as `citation-only` unless the relied-on passage was separately read. The API does not check pinpoints, quotations, holdings, characterization, or negative treatment. On an unresolved reporter cite, use `check_cite.py 'CITATION' --name 'A v. B'` to search both distinctive caption words and the quoted citation string in full text. Inspect the resulting records/passages before resolving identity. Record routes tried and unavailable; a copied citation can repeat an error, and a lookup miss is never evidence of fabrication.
 
 Prefer a short paraphrase when a quote would obscure the holding or when the surrounding context materially narrows the language. Preserve a longer excerpt in research notes only when it helps a later reviewer verify the analysis.
 
@@ -108,8 +135,11 @@ When authorities disagree, create a mini conflict table with the court, date, ru
 
 For each controlling or load-bearing case whose current force matters, record the service or database, exact query or citator action, date, result, and limitations of the check. A search-engine query or list of citing opinions can seed review but is not equivalent to KeyCite, Shepard's, or a comparable citator and must not be described as one.
 
-When CourtListener coverage is useful, run `scripts/courtlistener_treatment.py` to preserve the exact citing-opinion and treatment-language queries in a hidden currentness artifact. Treat every signal as a lead: open the citing opinion and determine which authority the language concerns, the type and scope of treatment, the relevant court, and whether the discussion affects the proposition used. Do not infer good law from an empty probe or infer dormancy from an old newest-citation date.
+When CourtListener coverage is useful, run `scripts/courtlistener_treatment.py` to preserve both the citation-graph and full-text caption-phrase routes, each with recent-citing and treatment-language queries in a hidden currentness artifact. Treat every signal as a lead: open the citing opinion and determine which authority the language concerns, the type and scope of treatment, the relevant court, and whether the discussion affects the proposition used. Do not infer good law from an empty probe or infer dormancy from an old newest-citation date.
+
+Report `distinct_case_count` as distinct **retrieved decisions** (clusters/URLs, with duplicate versions merged by shared reporter citation, court and date), not a corpus-wide count or a count of whole litigations. Search responses can group multiple opinions; majority and dissent are not separate cases. Preserve per-route API totals, returned-row counts and truncation. A caption hit absent from the retrieved graph sample does not prove that the complete graph lacks it.
 
 ## Confidentiality
 
 Keep client names, privileged communications, internal strategy, and nonpublic facts in local working files unless the user has expressly authorized external transmission. When a web search can be framed using a generic legal issue, remove identifying facts. If the assignment cannot be researched safely without exposing confidential material, say so and request a redacted version.
+

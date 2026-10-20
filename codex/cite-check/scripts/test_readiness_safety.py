@@ -30,6 +30,8 @@ def read_rows(path: Path) -> list[dict]:
 def synchronize(run: Path, *, target: str = "complete") -> None:
     path = run / "run-manifest.json"
     manifest = json.loads(path.read_text())
+    if manifest["schema_version"] == 6:
+        manifest["schema_version"] = 5  # This suite exercises the legacy contract.
     manifest.update(status="ready_for_validation", completion_target=target)
     verdicts = read_rows(run / "verdicts.jsonl")
     manifest["counts"].update({
