@@ -6,6 +6,14 @@ the Claude skills or configure external accounts.
 
 ## Install
 
+### Let Codex do it
+
+The simplest route is to open Codex on your computer and paste:
+`Install and set up the legal research skills from https://github.com/danepps/legal-research-skills for me. Follow the instructions in its INSTALL.md.`
+Codex follows [INSTALL.md](../INSTALL.md): it installs the plugin (or downloads
+the ZIP and walks you through the Plugins buttons if it has no `codex` command)
+and saves and tests your CourtListener token.
+
 ### Desktop app, without the CLI
 
 You can install through Codex in the ChatGPT desktop app without installing the

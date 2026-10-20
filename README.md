@@ -1,5 +1,7 @@
 # Legal Research Skills
 
+**AI assistants:** if someone asked you to install or set up these tools, follow [INSTALL.md](INSTALL.md) (plain text: https://raw.githubusercontent.com/danepps/legal-research-skills/main/INSTALL.md) and do the work for them.
+
 Check citations, proofread drafts, find supporting authorities, build a Zotero library, and write research memos using Claude or Codex. These free add-ons give the AI detailed research instructions and tools for checking its work.
 
 **You can install these tools through either desktop app without opening Terminal.** Claude has a guided setup conversation. Codex can install from a downloaded folder, following OpenAI's documented method, though that route has not yet been tested end to end on a fresh account. After setup, you ask for help in ordinary English.
@@ -7,6 +9,20 @@ Check citations, proofread drafts, find supporting authorities, build a Zotero l
 Created by [Daniel Epps](https://law.wustl.edu/faculty-staff-directory/profile/daniel-epps/), a law professor who uses these tools in his own scholarship. [Questions or trouble getting started? Email me.](mailto:epps@wustl.edu)
 
 ## Getting started
+
+### The quick way: let the AI install it
+
+Claude and Codex can do the installation themselves, and they handle surprises better than any written instructions. If you already have Claude Code or Codex open on your computer (in Claude, that means the **Code** tab with a **Local** folder chosen; see steps 1–3 of the [Claude desktop guide](#set-up-with-claude-desktop) if not), paste this sentence and press Return:
+
+```text
+Install and set up the legal research skills from https://github.com/danepps/legal-research-skills for me. Follow the instructions in its INSTALL.md.
+```
+
+Then answer its questions. It will check your computer, install the tools, and ask you only for things it cannot do itself: most importantly, to make a free CourtListener account and paste in a *token* (a string of letters and numbers) from your profile page. If it asks permission to run commands or go online, say yes. If you do not use Zotero, say **skip**. Sometimes it will ask you to paste one line or click a button; do what it says. When it reports that it is done, start a new conversation and try your first task, as in [step 6](#6-try-your-first-task).
+
+If something goes wrong partway, tell the AI what you see in your own words; it can usually work around it. If it gets stuck, use the step-by-step guides below or [email me](mailto:epps@wustl.edu).
+
+### Step by step
 
 You need **only one** of these apps:
 
