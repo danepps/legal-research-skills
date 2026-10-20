@@ -44,7 +44,9 @@ Default the run directory to `<project>/.codex-memo/runs/<run-id>/` and initiali
 python3 <skill-dir>/scripts/init_run.py <draft> --run-dir <hidden-run-dir> --scope standard
 ```
 
-For a focused pass, add `--scope focused --footnotes 45-80` (or explicit numbers). The run directory itself must not already exist; create its parent, then pass a new run-id child. The initializer freezes a source snapshot inside the run and writes the manifest, extraction, scope-filtered prepared quote units, and empty ledgers. Review only that snapshot; report its hash and disclose later changes to the live draft without invalidating the snapshot review. If tracked changes exist, disclose that extraction includes visible insertions and excludes deletions; do not silently accept or reject changes.
+For a focused pass, add `--scope focused --footnotes 45-80` (or explicit numbers). The run directory itself must not already exist; create its parent, then pass a new run-id child. The initializer freezes a source snapshot inside the run and writes the manifest, extraction, scope-filtered prepared quote units, and empty ledgers. Review only that snapshot; report its hash and disclose later changes to the live draft without invalidating the snapshot review. If tracked changes exist, disclose that extraction includes visible insertions/move destinations and excludes deletions/move origins, including changes inside footnotes; do not silently accept or reject changes.
+
+Inspect `blocking_issues` before continuing. Referenced endnotes, missing note text, and unsupported numbering/restarts block completion. A separately normalized copy can be used only when its text and note mapping to the supplied draft are verified; disclose the transformation and initialize a new run. Otherwise disclose that the requested review could not be completed. Never alter the supplied draft. Custom-marked author notes have `number: null`, a stable `note_id`, and a `custom_mark` display label; preserve those IDs instead of assigning a footnote number.
 
 ### 2. Read the protocol
 
@@ -54,19 +56,23 @@ Read [references/verification-protocol.md](references/verification-protocol.md) 
 
 Use `prepared-units.jsonl` as context scaffolding. Convert every citation instance—not only every quotation—into `citation-units.jsonl`.
 
-For new schema-v4 runs, reconcile every in-scope footnote in `footnote-coverage.jsonl`. Set its `status` to `reviewed` and list every corresponding `unit_id` in `unit_ids`. If the footnote contains no citations, use `no_citations`, an empty `unit_ids` list, and a concrete `reason`. The initializer leaves these rows `pending`; the readiness gate will reject an omitted footnote. This is a lead-reviewed inventory, not a claim that the extractor can parse every citation or find every short quotation automatically.
+For new schema-v5 runs, reconcile every in-scope footnote in `footnote-coverage.jsonl` and every body paragraph in `body-coverage.jsonl`. Set `status: reviewed` and list the corresponding citation `unit_ids`, or use `no_citations`, an empty list, and a concrete `reason`. Body coverage inventories citations located in the body; citations appearing in footnotes remain in footnote coverage. A focused numbered-footnote run excludes body coverage and custom-marked notes. The initializer leaves coverage rows `pending`; the gate rejects omitted locations. This is a lead-reviewed inventory, not a claim that the extractor parses every citation or finds every quotation.
+
+Review styled block quotations and every indented `block_quote_candidates` paragraph. Record `block_quote_review` and `block_quote_reason` in body coverage. For a confirmed indentation candidate, add a prepared unit with the full quotation, `paragraph_number`, and `block_quote: true`; do the same for any other missed block or short quotation. Inspect nested quotes and source attribution. `primary_inferred_from_paragraph: true` is only a suggestion; confirm the source relationship and set the citation unit's `attribution_reviewed: true` before verifying it.
 
 For each unit:
 
-- copy `draft_citation_text` verbatim from the footnote;
+- copy `draft_citation_text` verbatim from its extracted footnote or body paragraph;
 - preserve `full_footnote` and relevant `body_context`;
 - choose a short `draft_find_string` that occurs verbatim in the extracted draft;
 - resolve cross-references into a separate `resolved_source_label` and record the resolution path;
 - use `caption_in_draft: footnote`, `body`, or `none`; never synthesize a caption;
-- attach each quote or proposition to the citation syntax makes responsible, and preserve its `prepared_unit_id`;
+- attach each quotation or proposition to the citation that the footnote's syntax and placement make responsible for it, and preserve its `prepared_unit_id`;
 - assign a stable `source_id` and collapse repeated authorities only after resolution.
 
 If resolution remains uncertain, preserve the uncertainty. Do not use placeholders or best-guess captions.
+
+Use the exact keys in the protocol's [ledger field reference](references/ledger-fields.md). Body-only citations use `location: body`, `paragraph_number`, and the complete extracted paragraph as `body_context`, with no footnote identity. Keep every cited pincite in `pincite`; unavailable pagination requires a partial verdict, not omission of the pin. Reporter extraction and leading-Id flags are screening aids, not an exhaustive citation inventory or an automatic resolver.
 
 ### 4. Retrieve and verify by source bundle
 
@@ -80,7 +86,7 @@ python3 <skill-dir>/scripts/check_cite.py --input-file <citation-text-file>
 
 Retrieve the opinion itself for quotes, holdings, propositions, and pins. For recent reporter cites absent from free indexes, search the case name plus citation and authoritative docket materials. If the cite is plausibly too recent, record `too_recent_for_free_index` and recommend a Westlaw/Lexis spot-check; do not imply the citation is false.
 
-Write one row per unique source to `source-ledger.jsonl` and one row per citation unit to `verdicts.jsonl`. For scholarship, inspect the project library before the web and compare cited and current versions of manuscripts. For an absent quote, search sibling sources named in the same footnote; use `misattributed` if the passage appears in a different cited source.
+Write one row per unique source to `source-ledger.jsonl` and one row per citation unit to `verdicts.jsonl`. For scholarship, inspect the project library before the web and compare cited and current versions of manuscripts. If no library is connected, state that once in the method section and continue to authoritative web sources. For an absent quote, search sibling sources named in the same footnote; use `misattributed` if the passage appears in a different cited source.
 
 Store each retrieved or extracted full-text source under the hidden run directory, preserving form feeds or explicit page markers when available. For each source bundle, create a JSON array whose rows contain `prepared_unit_id`, `unit_id`, `source_id`, `quote`, and any resolved `pincite`, then run:
 
@@ -91,6 +97,8 @@ python3 <skill-dir>/scripts/verify_quotes.py RUN_DIR/cached-sources/SOURCE.txt \
 ```
 
 Use `verbatim` and `normalized` as deterministic match evidence. An `altered` result requires a human/model review of whether the marked brackets or ellipses are honest; set `alteration_reviewed: true` only after that review. `not_found` means only that the quote did not match this retrieved file. If no source text could be obtained, add an `unavailable` quote-check row with the reason and concrete unlock path. Never convert a fuzzy hint into source text without opening the indicated passage.
+
+Explicit page markers use `<<pg. N>>` at the **start** of the page. For markers placed after their page, pass `--marker-follows`. For form-feed text, `--first-page` means the printed number of the first physical text segment, including any cover sheet: remove a nonpaginated cover from the working text copy or use calibrated explicit markers. Check at least one recovered page against a visible or authoritative page before relying on the mapping. Paragraph/section pins are not page numbers; record their direct confirmation in `pincite_verification`, or use `partial` and an unlock path. Review `bracket_map` alongside the complete `match_excerpt`; matching a bracket wildcard does not approve the substitution.
 
 Keep exactly one final verdict per citation unit. A quote found only in a sibling source cannot verify the source assigned to the unit; resolve the attribution or report the discrepancy. For each `partial` or `unverified` verdict, record a concrete `unlock_path`. An unavailable source also needs `reason` (or `retrieval_notes`) and `unlock_path`. List those unit/source IDs and their exact unlock paths in **Couldn't check**, and use `complete_with_limits`.
 
@@ -125,7 +133,7 @@ Tokens: <aggregate exact runtime usage or unavailable (runtime did not expose ex
 
 Append the required `Topic:`, local `Date:`, `By: Codex-<exact lead model label>`, and `Production details:` block after all substantive content. Include elapsed time through audit, actual subagent roles (or `subagents: none`), and aggregate runtime usage or `tokens unavailable (runtime did not expose exact usage)`. Preserve the provenance header for the validator. Follow any user-specified publication location or naming policy.
 
-For a requested DOCX, use one direct Pandoc conversion from the canonical Markdown with minimal styling. Then run `scripts/verify_docx_ooxml.py DOCX --markdown MARKDOWN --output <run-dir>/docx-verification.json`, inspect the extracted OOXML text for substantive synchronization, and disclose that pagination and visual layout were not rendered. Never invoke `soffice`, `libreoffice`, `render_docx.py`, the documents skill, or any command/helper/runtime that launches LibreOffice; do not run DOCX-to-PDF-to-image conversion inside or outside the sandbox. A DOCX failure must not block publication of the audited Markdown.
+For a requested DOCX, use one direct Pandoc conversion from the canonical Markdown with minimal styling. Pandoc is required only for this optional derivative; if absent, publish the Markdown and disclose that DOCX is unavailable. Then run `scripts/verify_docx_ooxml.py DOCX --markdown MARKDOWN --output <run-dir>/docx-verification.json`, inspect the extracted OOXML text for substantive synchronization, and disclose that pagination and visual layout were not rendered. Never invoke `soffice`, `libreoffice`, `render_docx.py`, the documents skill, or any command/helper/runtime that launches LibreOffice; do not run DOCX-to-PDF-to-image conversion inside or outside the sandbox. A DOCX failure must not block publication of the audited Markdown.
 
 The ordinary readiness gate checks the canonical Markdown even when a legacy manifest says `matched_pair` or `docx_only`. To check the optional derivative record afterward, run `validate_run.py <run-dir> --require-ready --require-docx` separately. Do not add `--require-docx` to the Markdown publication gate.
 

@@ -18,7 +18,7 @@ Claude Code and Codex are the same models in a different setting. Instead of a c
 | What you get back | A reply you have to act on from memory | A report file, problems first, each with the exact words to Cmd+F in Word |
 | Consistency | Different each time | The same extraction and comparison scripts every run; the model is used only where judgment is needed |
 
-The skills in this repository are the instructions and scripts that make the model behave this way. Installing them is one command, after which they are available in both the Terminal and the desktop app, and updates arrive the way app updates do.
+The skills in this repository are the instructions and scripts that make the model behave this way. Installing them is one command, after which they are available in both the Terminal and the desktop app. Updates are available through the plugin manager. Claude Code users can enable automatic updates during setup.
 
 ## What you can ask for
 

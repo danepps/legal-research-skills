@@ -101,6 +101,11 @@ def main() -> int:
             encoding="utf-8",
         )
         synchronize(baseline)
+        write_rows(baseline / "body-coverage.jsonl", [
+            {"paragraph_number": number, "status": "no_citations", "unit_ids": [],
+             "reason": "These propositions use the separately inventoried footnotes."}
+            for number in range(1, 3)
+        ])
         validate(baseline)
 
         def variant(name: str) -> Path:

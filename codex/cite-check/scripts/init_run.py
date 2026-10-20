@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -63,15 +64,20 @@ def main() -> int:
     )
     now = datetime.now(timezone.utc).isoformat()
     coverage = [
-        {"footnote_number": row["number"], "status": "pending", "unit_ids": []}
+        {"footnote_number": row["number"], "note_id": row.get("note_id"), "status": "pending", "unit_ids": []}
         for row in extraction.get("footnotes", [])
         if selected_footnotes is None or row["number"] in selected_footnotes
     ]
     (args.run_dir / "footnote-coverage.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in coverage), encoding="utf-8"
     )
+    (args.run_dir / "body-coverage.jsonl").write_text(
+        "".join(json.dumps({"paragraph_number": number, "status": "pending", "unit_ids": []}) + "\n"
+                for number in range(1, len(extraction["paragraphs"]) + 1)
+                if selected_footnotes is None), encoding="utf-8",
+    )
     manifest = {
-        "schema_version": 4,
+        "schema_version": 5,
         "draft_path": str(snapshot.resolve()),
         "original_draft_path": str(args.draft.resolve()),
         "draft_sha256": extraction["input_sha256"],
@@ -88,8 +94,10 @@ def main() -> int:
     )
     for name in LEDGERS:
         (args.run_dir / name).touch()
+    for issue in extraction.get("blocking_issues", []):
+        print(f"BLOCKED: {issue}", file=sys.stderr)
     print(str(args.run_dir.resolve()))
-    return 0
+    return 1 if extraction.get("blocking_issues") else 0
 
 
 if __name__ == "__main__":

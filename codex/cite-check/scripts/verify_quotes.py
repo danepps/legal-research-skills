@@ -37,6 +37,7 @@ for character in "‐‑‒–—―−":
     FOLD[character] = "-"
 FOLD[" "] = " "
 LIGATURES = {
+    "…": "...",
     "ﬀ": "ff",
     "ﬁ": "fi",
     "ﬂ": "fl",
@@ -46,7 +47,7 @@ LIGATURES = {
     "ﬆ": "st",
 }
 PAGE_MARKER = re.compile(r"<<pg\.\s*(\d+)>>")
-STAR_MARKER = re.compile(r"\*(\d{1,4})")
+STAR_MARKER = re.compile(r"(?<!\*)\*(?!\*)(\d{1,4})(?!\d)")
 ELLIPSIS = re.compile(r"\.[ ]?\.[ ]?\.(?:[ ]?\.)?")
 BRACKET = re.compile(r"\[([^\][]{0,80})\]")
 PUNCTUATION = re.compile(r"[^0-9A-Za-z]+")
@@ -62,13 +63,13 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def page_spans(raw: str) -> tuple[list[tuple[int, int, int | None]], str]:
+def page_spans(raw: str, marker_follows: bool = False) -> tuple[list[tuple[int, int, int | None]], str]:
     explicit = [
         (match.start(), match.end(), int(match.group(1)))
         for match in PAGE_MARKER.finditer(raw)
     ]
     if explicit:
-        return explicit, "explicit_page_marker"
+        return explicit, "explicit_page_marker_footer" if marker_follows else "explicit_page_marker"
     form_feeds = [(match.start(), match.end(), None) for match in re.finditer("\f", raw)]
     if form_feeds:
         return form_feeds, "form_feed"
@@ -83,7 +84,7 @@ def page_spans(raw: str) -> tuple[list[tuple[int, int, int | None]], str]:
         and 0 < right - left <= 5
         for left, right in zip(numbers, numbers[1:])
     ):
-        return stars, "star_marker_sequence"
+        return stars, "star_marker_sequence_footer" if marker_follows else "star_marker_sequence"
     return [], "none"
 
 
@@ -101,6 +102,7 @@ def normalize(
     pending_space = False
     page_rows = spans or []
     page_index = 0
+    parallel_stars = bool(page_rows and raw[page_rows[0][0]:].startswith("*"))
 
     def emit(character: str, source_index: int) -> None:
         nonlocal pending_space
@@ -121,12 +123,34 @@ def normalize(
             page_index += 1
             pending_space = True
             continue
+        if parallel_stars:
+            parallel = re.match(r"\*{2,3}\d{1,4}(?!\d)", raw[index:]) if raw.startswith("**", index) else None
+            if parallel:
+                index += parallel.end()
+                pending_space = True
+                continue
         character = raw[index]
         if character.isspace():
             pending_space = True
             index += 1
             continue
         if fold:
+            # Compose combining sequences without losing raw-file offsets.
+            cursor = index + 1
+            while cursor < len(raw) and unicodedata.combining(raw[cursor]):
+                cursor += 1
+            if cursor > index + 1:
+                for composed in unicodedata.normalize("NFC", raw[index:cursor]):
+                    emit(composed, index)
+                index = cursor
+                continue
+            if unicodedata.category(character) == "Cf":
+                index += 1
+                continue
+            if character in "‒–—―−":
+                pending_space = True
+                index += 1
+                continue
             character = FOLD.get(character, character)
             if character == "­":
                 index += 1
@@ -186,6 +210,8 @@ def printed_page(
 ) -> int | None:
     if not boundaries:
         return None
+    if marker.endswith("_footer"):
+        return next((page for offset, page in boundaries if offset > position), None)
     boundary_index = bisect_right([row[0] for row in boundaries], position) - 1
     if boundary_index < 0:
         explicit = boundaries[0][1]
@@ -204,10 +230,11 @@ def printed_page(
 def parse_pincite(value: object) -> tuple[int, int] | None:
     if value in (None, ""):
         return None
-    text = str(value)
-    numbers = re.findall(r"\d+", text.split("n.")[0] or text)
-    if not numbers:
+    text = str(value).strip()
+    matched = re.fullmatch(r"(?:at\s+)?\*?(\d+)(?:\s*[-–]\s*(\d+))?(?:\s+n\.\s*\d+)?", text, re.IGNORECASE)
+    if not matched:
         return None
+    numbers = [part for part in matched.groups() if part is not None]
     start = int(numbers[0])
     end = start
     if len(numbers) > 1:
@@ -225,21 +252,22 @@ def marked_segments(quote: str) -> list[str]:
 def segment_pattern(segment: str) -> re.Pattern[str]:
     pieces: list[str] = []
     cursor = 0
-    for match in BRACKET.finditer(segment):
+    for number, match in enumerate(BRACKET.finditer(segment)):
         pieces.append(re.escape(segment[cursor : match.start()]))
         inner = match.group(1).strip()
         if inner.casefold() == "sic":
-            pieces.append(r"\s?")
+            wildcard = r"\s?"
         elif len(inner) <= 2:
-            pieces.append(r".{0,4}")
+            wildcard = r".{0,4}"
         else:
-            pieces.append(r".{0,%d}?" % (len(inner) + 20))
+            wildcard = r".{0,%d}?" % (len(inner) + 20)
+        pieces.append(f"(?P<b{number}>{wildcard})")
         cursor = match.end()
     pieces.append(re.escape(segment[cursor:]))
     return re.compile("".join(pieces))
 
 
-def match_marked(source: str, patterns: list[re.Pattern[str]]) -> tuple[int, int, list[int]] | None:
+def match_marked(source: str, patterns: list[re.Pattern[str]]) -> tuple[int, int, list[int], list[re.Match[str]]] | None:
     anchor = 0
     for _ in range(MAX_CHAIN_RESTARTS):
         first = patterns[0].search(source, anchor)
@@ -248,6 +276,7 @@ def match_marked(source: str, patterns: list[re.Pattern[str]]) -> tuple[int, int
         cursor = first.end()
         gaps: list[int] = []
         final = first
+        matches = [first]
         for pattern in patterns[1:]:
             following = pattern.search(source, cursor)
             if following is None:
@@ -255,8 +284,9 @@ def match_marked(source: str, patterns: list[re.Pattern[str]]) -> tuple[int, int
             gaps.append(following.start() - cursor)
             cursor = following.end()
             final = following
+            matches.append(following)
         else:
-            return first.start(), final.end(), gaps
+            return first.start(), final.end(), gaps, matches
         anchor = first.start() + 1
     return None
 
@@ -420,19 +450,24 @@ def check_quote(
 
     if status is None:
         segments = marked_segments(folded_quote)
-        marked = len(segments) > 1 or BRACKET.search(folded_quote)
+        marked = ELLIPSIS.search(folded_quote) or BRACKET.search(folded_quote)
         if marked and segments:
             marked_match = match_marked(
                 folded_source, [segment_pattern(segment) for segment in segments]
             )
             if marked_match:
-                start, end, gaps = marked_match
+                start, end, gaps, matched_segments = marked_match
                 status = "altered"
                 selected_view = True
                 span = (start, end)
                 result["alteration_reviewed"] = False
                 result["requires_judgment"] = True
                 result["note"] = "marked alteration matched; honesty and framing require review"
+                result["bracket_map"] = [
+                    {"draft": bracket.group(0), "source_normalized": matched.group(f"b{number}")}
+                    for segment, matched in zip(segments, matched_segments)
+                    for number, bracket in enumerate(BRACKET.finditer(segment))
+                ]
                 if any(gap > MAX_ELLIPSIS_GAP for gap in gaps):
                     result["warnings"].append("large_gap_between_ellipsis_segments")
 
@@ -457,7 +492,11 @@ def check_quote(
     start, end = span
     raw_start = offsets[start]
     raw_end = offsets[end - 1] + 1
-    result["match_excerpt"] = raw[raw_start:raw_end][:400]
+    while raw_end < len(raw) and unicodedata.combining(raw[raw_end]):
+        raw_end += 1
+    result["match_excerpt"] = raw[raw_start:raw_end]
+    result["match_start"] = raw_start
+    result["match_end"] = raw_end
     page = printed_page(boundaries, marker, first_page, start)
     if page is not None:
         result["page"] = page
@@ -469,6 +508,10 @@ def check_quote(
         result["requires_judgment"] = True
     pincite = item.get("pincite")
     parsed_pin = parse_pincite(pincite)
+    if pincite and parsed_pin is None:
+        result["pincite"] = str(pincite)
+        result["pincite_ok"] = None
+        result["warnings"].append("non_page_pincite_requires_separate_verification")
     if parsed_pin:
         result["pincite"] = str(pincite)
         if page is None:
@@ -530,6 +573,9 @@ def artifact_rows(
         }
         for field in (
             "match_excerpt",
+            "match_start",
+            "match_end",
+            "bracket_map",
             "occurrences",
             "page",
             "page_end",
@@ -582,6 +628,7 @@ def main() -> int:
         help="asserted printed number of the first physical page for form-feed text",
     )
     parser.add_argument("--output", type=Path, help="write validator-ready quote-check JSONL")
+    parser.add_argument("--marker-follows", action="store_true", help="explicit or star page markers describe the text before them (footers)")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--append", action="store_true")
     mode.add_argument("--replace", action="store_true")
@@ -591,7 +638,9 @@ def main() -> int:
     try:
         items = load_items(args)
         raw = args.source.read_text(encoding="utf-8", errors="replace")
-        spans, marker = page_spans(raw)
+        spans, marker = page_spans(raw, args.marker_follows)
+        if args.marker_follows and not marker.endswith("_footer"):
+            raise ValueError("--marker-follows requires explicit or star page markers")
         views = {
             fold: normalize(raw, fold=fold, spans=spans)
             for fold in (False, True)

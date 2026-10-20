@@ -19,6 +19,7 @@ from xml.etree import ElementTree
 REQUIRED_PARTS = {"[Content_Types].xml", "_rels/.rels", "word/document.xml"}
 WORD_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 TEXT_PARTS = ("word/document.xml", "word/footnotes.xml", "word/endnotes.xml")
+VERIFICATION_METHOD = "ooxml_structure_text_extraction_and_sync"
 
 
 def sha256(path: Path) -> str:
@@ -134,7 +135,7 @@ def main() -> int:
     record = {
         "schema_version": 1,
         "status": "passed",
-        "verification_method": "ooxml_structure_text_extraction_and_sync",
+        "verification_method": VERIFICATION_METHOD,
         "visual_verification": "not_performed",
         "office_application_launched": False,
         "docx_sha256": sha256(args.docx),

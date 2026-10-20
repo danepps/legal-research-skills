@@ -1,5 +1,20 @@
 # Codex plugin changes
 
+## 1.2.0 — 2026-10-19
+
+- Preserve custom-marked author notes without shifting printed footnote numbers;
+  exclude deleted references and move origins, and disclose revisions in notes.
+- Support body citation units with schema-v5 paragraph coverage. Block completion
+  on unsupported endnotes, numbering restarts, and missing referenced note text.
+- Improve quotation attribution, nested/styled block extraction, supra candidates,
+  long Id. context packets, typography matching, and page-marker handling.
+- Restrict not-applicable verdicts to documented internal pointers, require full
+  text for substantive verification, and reject weak metadata-correction evidence.
+- Retain complete match excerpts and bracket comparisons, support explicit
+  paragraph/section pinpoint verification, and repair the optional DOCX gate.
+- Document exact ledger fields and add offline extraction, matching, and
+  completion regression tests. Claude-owned resources remain unchanged.
+
 ## 1.1.0 — 2026-10-19
 
 - Strengthen evidence, coverage, source-identity, and completion checks across

@@ -10,6 +10,10 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+from extract_cites import note_key
+from verify_docx_ooxml import VERIFICATION_METHOD
 
 
 REQUIRED_FILES = (
@@ -43,6 +47,8 @@ VERIFICATION_BASES = {
     "secondary_reproduction",
     "unavailable",
 }
+FULL_TEXT_BASES = {"primary_full_text", "authoritative_reproduction", "repository_full_text", "local_library_full_text"}
+SOURCE_STATUSES = {"retrieved", "metadata_only", "snippet_only", "unavailable", "not_applicable"}
 QUOTE_CHECK_STATUSES = {"verbatim", "normalized", "altered", "not_found", "unavailable"}
 UNIT_STATUSES = {"verified", "partial", "mismatch", "unverified", "not_applicable"}
 SEVERITIES = {"critical", "high", "medium", "low", "info"}
@@ -113,6 +119,15 @@ def page_delta(value: object) -> int | None:
     return None
 
 
+def confirmed_pin(verdict: dict, pin: object) -> bool:
+    record = verdict.get("pincite_verification")
+    return (isinstance(record, dict) and record.get("confirmed") is True
+            and str(record.get("pincite", "")) == str(pin)
+            and record.get("pagination_convention") in PAGINATION_CONVENTIONS - {"unknown", "unpaginated"}
+            and nonempty_string(record.get("evidence_location"))
+            and nonempty_string(record.get("evidence")))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
@@ -144,7 +159,7 @@ def main() -> int:
     verdicts = load_jsonl(args.run_dir / "verdicts.jsonl", errors)
     audits = load_jsonl(args.run_dir / "verifier-audit.jsonl", errors)
     schema_version = manifest.get("schema_version")
-    if schema_version not in {2, 3, 4}:
+    if schema_version not in {2, 3, 4, 5}:
         errors.append("run-manifest.json: unsupported schema_version")
         schema_version = 2
     quote_check_path = args.run_dir / "quote-checks.jsonl"
@@ -157,6 +172,7 @@ def main() -> int:
     coverage: list[dict] = []
     if schema_version >= 4:
         coverage = load_jsonl(args.run_dir / "footnote-coverage.jsonl", errors)
+    body_coverage = load_jsonl(args.run_dir / "body-coverage.jsonl", errors) if schema_version >= 5 else []
     if extraction.get("schema_version") != 1:
         errors.append("extraction.json: unsupported schema_version")
     if manifest.get("draft_sha256") != extraction.get("input_sha256"):
@@ -173,6 +189,8 @@ def main() -> int:
     )
 
     if args.require_ready:
+        for issue in extraction.get("blocking_issues", []):
+            errors.append(f"extraction is blocked: {issue}")
         if not units:
             errors.append("citation-units.jsonl is empty")
         if not sources:
@@ -209,14 +227,12 @@ def main() -> int:
             units,
             {
                 "unit_id",
-                "footnote_number",
                 "source_id",
                 "source_type",
                 "draft_citation_text",
                 "resolved_source_label",
                 "draft_find_string",
                 "caption_in_draft",
-                "full_footnote",
             },
             "citation-units.jsonl",
             errors,
@@ -243,6 +259,8 @@ def main() -> int:
             errors,
         )
         for index, source in enumerate(sources, 1):
+            if source.get("status") not in SOURCE_STATUSES:
+                errors.append(f"source-ledger.jsonl row {index}: invalid status")
             if source.get("verification_basis") not in VERIFICATION_BASES:
                 errors.append(f"source-ledger.jsonl row {index}: invalid verification_basis")
         for index, unit in enumerate(units, 1):
@@ -250,9 +268,25 @@ def main() -> int:
                 errors.append(f"citation-units.jsonl row {index}: invalid caption_in_draft")
             if not occurs_in_draft(unit.get("draft_find_string"), corpus):
                 errors.append(f"citation-units.jsonl row {index}: draft_find_string not found in draft")
-            if not occurs_in_draft(unit.get("draft_citation_text"), str(unit.get("full_footnote", ""))):
+            if unit.get("location") == "body":
+                paragraph = unit.get("paragraph_number")
+                paragraphs = extraction.get("paragraphs", [])
+                if not isinstance(paragraph, int) or isinstance(paragraph, bool) or not 1 <= paragraph <= len(paragraphs):
+                    errors.append(f"citation-units.jsonl row {index}: invalid body paragraph_number")
+                    context = ""
+                else:
+                    context = paragraphs[paragraph - 1]
+                    if unit.get("body_context") != context:
+                        errors.append(f"citation-units.jsonl row {index}: body_context must equal the extracted paragraph")
+                if unit.get("footnote_number") is not None or unit.get("note_id") is not None:
+                    errors.append(f"citation-units.jsonl row {index}: body unit must not name a footnote")
+            else:
+                context = str(unit.get("full_footnote", ""))
+                if note_key(unit) is None or not context:
+                    errors.append(f"citation-units.jsonl row {index}: missing footnote_number/note_id or full_footnote")
+            if not occurs_in_draft(unit.get("draft_citation_text"), context):
                 errors.append(
-                    f"citation-units.jsonl row {index}: draft_citation_text not found in full_footnote"
+                    f"citation-units.jsonl row {index}: draft_citation_text not found in its draft location"
                 )
 
         for index, verdict in enumerate(verdicts, 1):
@@ -265,8 +299,8 @@ def main() -> int:
             if verdict.get("category") == "fabricated":
                 errors.append(f"verdicts.jsonl row {index}: use not_found_in_sources_checked")
             if verdict.get("category") == "metadata_error" and verdict.get("status") == "mismatch":
-                if verdict.get("verification_basis") in {"snippet_only", "unavailable"}:
-                    errors.append(f"verdicts.jsonl row {index}: metadata correction cannot rest on snippets or unavailable evidence")
+                if verdict.get("verification_basis") in {"snippet_only", "unavailable", "secondary_reproduction"}:
+                    errors.append(f"verdicts.jsonl row {index}: metadata correction cannot rest on snippets, secondary reproductions, or unavailable evidence")
                 record = verdict.get("metadata_record")
                 if not isinstance(record, dict):
                     errors.append(f"verdicts.jsonl row {index}: metadata_error lacks metadata_record")
@@ -277,6 +311,14 @@ def main() -> int:
                         errors.append(f"verdicts.jsonl row {index}: unsupported metadata record type")
                     if not isinstance(record.get("location"), str) or not record["location"].strip():
                         errors.append(f"verdicts.jsonl row {index}: metadata record lacks location")
+                    location = str(record.get("location", ""))
+                    parsed_url = urlparse(location)
+                    if parsed_url.scheme in {"http", "https"} and (
+                        re.search(r"(?:^|/)(?:search|results)(?:/|$)", parsed_url.path, re.IGNORECASE)
+                        or (parsed_url.hostname in {"google.com", "www.google.com", "bing.com", "www.bing.com", "duckduckgo.com"}
+                            and parse_qs(parsed_url.query))
+                    ):
+                        errors.append(f"verdicts.jsonl row {index}: metadata record must be a direct record, not search results")
                     fields = record.get("fields")
                     if not isinstance(fields, list) or not fields or any(
                         not isinstance(field, str) or not field.strip() for field in fields
@@ -318,7 +360,7 @@ def main() -> int:
             errors.append("verdicts.jsonl must contain exactly one verdict per citation unit")
 
         if schema_version >= 4:
-            notes = {row.get("number"): row for row in extraction.get("footnotes", [])}
+            notes = {note_key(row): row for row in extraction.get("footnotes", [])}
             selected = manifest.get("selected_footnotes")
             if selected is not None and (
                 not isinstance(selected, list)
@@ -327,10 +369,10 @@ def main() -> int:
                 errors.append("run-manifest.json selected_footnotes must name extracted footnotes")
                 selected = []
             expected_notes = set(notes) if selected is None else set(selected)
-            covered_notes: set[int] = set()
+            covered_notes: set[int | str] = set()
             for index, row in enumerate(coverage, 1):
-                number = row.get("footnote_number")
-                if not isinstance(number, int) or isinstance(number, bool) or number not in expected_notes:
+                number = note_key(row)
+                if isinstance(number, bool) or number not in expected_notes:
                     errors.append(f"footnote-coverage.jsonl row {index}: unknown or out-of-scope footnote")
                     continue
                 if number in covered_notes:
@@ -340,7 +382,7 @@ def main() -> int:
                 if not isinstance(ids, list) or any(not isinstance(value, str) for value in ids):
                     errors.append(f"footnote-coverage.jsonl row {index}: unit_ids must be a string list")
                     continue
-                expected_ids = {unit.get("unit_id") for unit in units if unit.get("footnote_number") == number}
+                expected_ids = {unit.get("unit_id") for unit in units if unit.get("location") != "body" and note_key(unit) == number}
                 if len(ids) != len(set(ids)) or set(ids) != expected_ids:
                     errors.append(f"footnote-coverage.jsonl row {index}: unit_ids do not reconcile with citation units")
                 if row.get("status") == "reviewed":
@@ -351,24 +393,99 @@ def main() -> int:
                         errors.append(f"footnote-coverage.jsonl row {index}: no_citations requires a reason and no units")
                 else:
                     errors.append(f"footnote-coverage.jsonl row {index}: footnote has not been reviewed")
-            for number in sorted(expected_notes - covered_notes):
+            for number in sorted(expected_notes - covered_notes, key=str):
                 errors.append(f"footnote lacks coverage review: {number}")
             for index, unit in enumerate(units, 1):
-                number = unit.get("footnote_number")
+                if unit.get("location") == "body":
+                    if selected is not None:
+                        errors.append(f"citation-units.jsonl row {index}: body unit outside focused footnote scope")
+                    continue
+                number = note_key(unit)
                 if number not in expected_notes:
                     errors.append(f"citation-units.jsonl row {index}: unknown or out-of-scope footnote")
                 elif unit.get("full_footnote") != notes[number].get("text"):
                     errors.append(f"citation-units.jsonl row {index}: full_footnote differs from extraction")
+                elif unit.get("note_id") is not None and unit["note_id"] != notes[number].get("note_id"):
+                    errors.append(f"citation-units.jsonl row {index}: note_id differs from extraction")
 
-        unchecked_units = [
-            row for row in verdicts
-            if row.get("status") in {"unverified", "partial"}
-            or row.get("verification_basis") == "unavailable"
-        ]
-        unavailable_sources = [
-            row for row in sources
-            if row.get("status") == "unavailable" or row.get("verification_basis") == "unavailable"
-        ]
+        if schema_version >= 5:
+            expected_paragraphs = set(range(1, len(extraction.get("paragraphs", [])) + 1)) if manifest.get("selected_footnotes") is None else set()
+            seen_paragraphs = set()
+            for row in body_coverage:
+                number = row.get("paragraph_number")
+                if not isinstance(number, int) or isinstance(number, bool) or number not in expected_paragraphs or number in seen_paragraphs:
+                    errors.append("body-coverage.jsonl: unknown, duplicate, or out-of-scope paragraph")
+                    continue
+                seen_paragraphs.add(number)
+                ids = row.get("unit_ids")
+                expected_ids = {u["unit_id"] for u in units if u.get("location") == "body" and u.get("paragraph_number") == number}
+                if not isinstance(ids, list) or any(not isinstance(v, str) for v in ids) or len(ids) != len(set(ids)) or set(ids) != expected_ids:
+                    errors.append(f"body-coverage.jsonl paragraph {number}: unit_ids do not reconcile")
+                if row.get("status") == "reviewed":
+                    if not ids:
+                        errors.append(f"body-coverage.jsonl paragraph {number}: reviewed paragraph lacks units")
+                elif row.get("status") != "no_citations" or ids or not nonempty_string(row.get("reason")):
+                    errors.append(f"body-coverage.jsonl paragraph {number}: review or reason required")
+            for number in sorted(expected_paragraphs - seen_paragraphs):
+                errors.append(f"body paragraph lacks coverage review: {number}")
+            # Indentation alone is ambiguous. Record the lead's decision instead of
+            # silently treating every indented paragraph as a source quotation.
+            for number in extraction.get("block_quote_candidates", []):
+                if number not in expected_paragraphs:
+                    continue
+                row = next((r for r in body_coverage if r.get("paragraph_number") == number), {})
+                decision = row.get("block_quote_review")
+                if decision not in {"quotation", "not_quotation"} or not nonempty_string(row.get("block_quote_reason")):
+                    errors.append(f"body paragraph {number}: indented block needs block_quote_review and block_quote_reason")
+                elif decision == "quotation" and not any(r.get("paragraph_number") == number and r.get("block_quote") is True for r in prepared):
+                    errors.append(f"body paragraph {number}: confirmed block quotation lacks a prepared block unit")
+
+        unit_by_id_for_basis = {row.get("unit_id"): row for row in units}
+        source_by_id = {row.get("source_id"): row for row in sources}
+        unchecked_units = []
+        for verdict in verdicts:
+            unit = unit_by_id_for_basis.get(verdict.get("unit_id"), {})
+            source = source_by_id.get(unit.get("source_id"), {})
+            status = verdict.get("status")
+            if status == "not_applicable":
+                target = unit.get("internal_target")
+                target_number = target.get("paragraph_number") if isinstance(target, dict) else None
+                paragraphs = extraction.get("paragraphs", [])
+                target_valid = (isinstance(target_number, int) and not isinstance(target_number, bool)
+                                and 1 <= target_number <= len(paragraphs)
+                                and target.get("text") == paragraphs[target_number - 1]
+                                and not (unit.get("location") == "body" and unit.get("paragraph_number") == target_number))
+                internal_syntax = re.fullmatch(
+                    r"\s*(?:see\s+)?(?:infra|supra)\s+(?:part|section|§|appendix)\s+[\w.()-]+\.?\s*",
+                    str(unit.get("draft_citation_text", "")), re.IGNORECASE,
+                )
+                if (unit.get("unit_kind") != "internal_reference"
+                        or not nonempty_string(verdict.get("reason"))
+                        or not target_valid or not internal_syntax
+                        or source.get("status") != "not_applicable"
+                        or any(c.get("unit_id") == unit.get("unit_id") for c in quote_checks)):
+                    errors.append(f"not_applicable is restricted to explained internal references without quotations: {unit.get('unit_id')}")
+            elif source.get("status") == "not_applicable":
+                errors.append(f"external citation has a not_applicable source: {unit.get('unit_id')}")
+            if status == "verified":
+                has_quote = any(c.get("unit_id") == unit.get("unit_id") for c in quote_checks)
+                if (has_quote or unit.get("pincite") or verdict.get("category") not in {"verified_identity", "identity_correct", "metadata_correct"}) and (
+                    verdict.get("verification_basis") not in FULL_TEXT_BASES
+                    or source.get("verification_basis") not in FULL_TEXT_BASES
+                    or source.get("status") != "retrieved"
+                ):
+                    errors.append(f"verified quotation, support, or pincite requires retrieved full text: {unit.get('unit_id')}")
+                if verdict.get("verification_basis") == "snippet_only" or source.get("verification_basis") == "snippet_only" or source.get("status") == "snippet_only":
+                    errors.append(f"snippet-only evidence cannot fully verify a unit: {unit.get('unit_id')}")
+                if unit.get("pincite") and not has_quote and not confirmed_pin(verdict, unit["pincite"]):
+                    errors.append(f"verified nonquotation unit requires pincite_verification: {unit.get('unit_id')}")
+            unavailable_source = source.get("status") == "unavailable" or source.get("verification_basis") == "unavailable"
+            # An unavailable sibling-source check does not erase a successful
+            # assigned-source match. Unavailable assigned-source checks do.
+            unavailable_assigned = any(c.get("unit_id") == unit.get("unit_id") and c.get("source_id") == unit.get("source_id") and c.get("status") == "unavailable" for c in quote_checks)
+            if status in {"unverified", "partial"} or verdict.get("verification_basis") == "unavailable" or unavailable_source or unavailable_assigned:
+                unchecked_units.append(verdict)
+        unavailable_sources = [row for row in sources if row.get("status") == "unavailable" or row.get("verification_basis") == "unavailable"]
         if (unchecked_units or unavailable_sources) and final_status != "complete_with_limits":
             errors.append("unchecked items require completion_target/status complete_with_limits")
         for row in unchecked_units:
@@ -495,6 +612,10 @@ def main() -> int:
                 verdict = verdict_by_unit.get(unit_id)
                 if verdict is None:
                     continue
+                if (prepared_row.get("primary_inferred_from_paragraph")
+                        and verdict.get("status") == "verified"
+                        and unit_by_id.get(unit_id, {}).get("attribution_reviewed") is not True):
+                    errors.append(f"paragraph-inferred attribution needs explicit review: {unit_id}")
                 adequate_matches = [
                     check
                     for check in checks
@@ -518,7 +639,9 @@ def main() -> int:
                         for check in adequate_matches
                         if str(check.get("pincite", "")) == str(unit_pin)
                     ]
-                    if not pin_checks:
+                    if confirmed_pin(verdict, unit_pin):
+                        pass
+                    elif not pin_checks:
                         errors.append(
                             f"verified quotation unit {unit_id} lacks a check for its pincite"
                         )
@@ -607,8 +730,10 @@ def main() -> int:
                 verification = load_json(verification_record_path, errors)
                 if verification.get("status") != "passed":
                     errors.append("docx-verification.json status must be passed")
-                if verification.get("verification_method") != "ooxml_structure_and_text_extraction":
+                if verification.get("verification_method") != VERIFICATION_METHOD:
                     errors.append("docx-verification.json has the wrong verification method")
+                if not isinstance(verification.get("substantive_sync"), dict) or verification["substantive_sync"].get("status") != "passed":
+                    errors.append("docx-verification.json lacks passed substantive synchronization screening")
                 if verification.get("visual_verification") != "not_performed":
                     errors.append("docx-verification.json must disclose that visual verification was not performed")
                 if verification.get("office_application_launched") is not False:

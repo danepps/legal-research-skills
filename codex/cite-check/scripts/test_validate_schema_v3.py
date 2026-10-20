@@ -80,6 +80,10 @@ def main() -> int:
         write_jsonl(run / "footnote-coverage.jsonl", [
             {"footnote_number": 1, "status": "reviewed", "unit_ids": ["U1"]}
         ])
+        write_jsonl(run / "body-coverage.jsonl", [{
+            "paragraph_number": 1, "status": "no_citations", "unit_ids": [],
+            "reason": "The quotation's citation is inventoried in footnote 1."
+        }])
         write_jsonl(run / "source-ledger.jsonl", [source])
         write_jsonl(run / "verdicts.jsonl", [verdict])
 

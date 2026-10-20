@@ -22,6 +22,19 @@ API = "https://www.courtlistener.com/api/rest/v4/citation-lookup/"
 TOKEN_FILE = Path("~/.config/courtlistener/token").expanduser()
 
 
+def lookup_state(result: dict) -> str:
+    status = result.get("status")
+    if len(result.get("clusters") or []) > 1 or status == 300:
+        return "ambiguous"
+    if status == 200 and result.get("clusters"):
+        return "matched"
+    if status == 404:
+        return "not_found_in_index"
+    if status == 429:
+        return "rate_limited"
+    return "unresolved"
+
+
 def token() -> str | None:
     for name in ("COURTLISTENER_API_TOKEN", "COURTLISTENER_TOKEN"):
         value = os.environ.get(name, "").strip()
@@ -71,12 +84,18 @@ def main() -> int:
     except Exception as exc:
         print(f"CourtListener lookup failed: {exc}; verify directly.", file=sys.stderr)
         return 1
+    if not isinstance(results, list) or any(not isinstance(row, dict) for row in results):
+        print("CourtListener returned an unexpected response shape; verify directly.", file=sys.stderr)
+        return 1
     output = []
-    for result in results if isinstance(results, list) else []:
+    for result in results:
         clusters = result.get("clusters") or []
+        state = lookup_state(result)
         row = {
             "citation": result.get("citation"),
-            "found": result.get("status") == 200,
+            "found": True if state == "matched" else False if state == "not_found_in_index" else None,
+            "lookup_state": state,
+            "lookup_status": result.get("status"),
             "verification_scope": "identity_only",
         }
         if clusters:
