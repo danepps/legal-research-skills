@@ -22,6 +22,12 @@ generous instead (25 MB download, 400 PDF pages, no char truncation) and
 stdout gets only a one-line summary (chars, page count, sha256). Do NOT cat
 the file into context — read it with targeted tools.
 
+PDF coverage is always stated: the summary reports pages extracted out of
+the PDF's total (via pdfinfo, or a probe for a page past the cap when pdfinfo
+is absent). When the cap dropped pages, BOTH modes say PARTIAL, the text ends
+with a [TRUNCATED ...] marker, and "full text" is never claimed — a quote not
+found in a partial extraction may simply be on an unextracted page.
+
 Exit codes: 0 = text delivered; 1 = fetch refused/failed (treat as a failed
 attempt and move to the next fallback); 2 = usage error.
 
@@ -70,6 +76,51 @@ class TextExtractor(html.parser.HTMLParser):
             self.chunks.append(data)
 
 
+def pdf_pages_in(text):
+    """Pages in pdftotext output (it ends every page, the last included, with
+    a form feed, so a bare count is one too many)."""
+    text = text.rstrip("\f\n\r\t ")
+    return text.count("\f") + 1 if text else 0
+
+
+def pdf_page_count(path, cap, pages_extracted):
+    """Total pages of the PDF at `path`: pdfinfo when installed; otherwise
+    probe one page past `cap` with pdftotext — a page-range error means the
+    document ends within the cap (total = pages_extracted), output means it
+    does not (count unknown). Returns an int, or None when undeterminable."""
+    if shutil.which("pdfinfo"):
+        try:
+            info = subprocess.run(["pdfinfo", path], capture_output=True, text=True, timeout=30)
+            m = re.search(r"^Pages:\s*(\d+)\s*$", info.stdout, re.M)
+            if info.returncode == 0 and m:
+                return int(m.group(1))
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    try:
+        probe = subprocess.run(
+            ["pdftotext", "-f", str(cap + 1), "-l", str(cap + 1), path, "-"],
+            capture_output=True, text=True, timeout=30)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if probe.returncode != 0 and "page range" in (probe.stderr or "").lower():
+        # pdftotext refuses a first page past the last one: the document has
+        # at most `cap` pages, so the extraction covered all of it.
+        return pages_extracted
+    return None
+
+
+def coverage_note(pages_extracted, total_pages, cap, partial):
+    if not partial:
+        if total_pages is not None:
+            return "%d page(s), complete (%d of %d)" % (pages_extracted, pages_extracted, total_pages)
+        return "%d page(s)" % pages_extracted
+    if total_pages is not None:
+        return ("PARTIAL: %d of %d page(s) extracted — pages %d–%d NOT extracted (%d-page cap)"
+                % (pages_extracted, total_pages, pages_extracted + 1, total_pages, cap))
+    return ("PARTIAL: first %d page(s) extracted; total page count unknown, more pages exist "
+            "beyond the %d-page cap" % (pages_extracted, cap))
+
+
 def main(argv):
     args = list(argv)
     out_path = None
@@ -111,6 +162,9 @@ def main(argv):
         return 1
 
     is_pdf = "pdf" in ctype or body[:5] == b"%PDF-"
+    total_pages = None          # PDF page count, or None when unknowable
+    pages_extracted = None
+    partial = False
     if is_pdf:
         if not shutil.which("pdftotext"):
             print(
@@ -133,10 +187,17 @@ def main(argv):
             except subprocess.TimeoutExpired:
                 print("PDF extraction timed out — treat as fetch failure.", file=sys.stderr)
                 return 1
+            if proc.returncode == 0:
+                pages_extracted = pdf_pages_in(proc.stdout)
+                total_pages = pdf_page_count(f.name, pdf_pages, pages_extracted)
         if proc.returncode != 0:
             print(f"PDF extraction failed: {proc.stderr[:300]}", file=sys.stderr)
             return 1
         text = proc.stdout
+        # Partial when the PDF is known to be longer than the cap, or when the
+        # cap was reached and the total could not be determined.
+        partial = (total_pages is not None and total_pages > pdf_pages) or \
+                  (total_pages is None and pages_extracted >= pdf_pages)
     else:
         parser = TextExtractor()
         try:
@@ -154,6 +215,12 @@ def main(argv):
     if not text:
         print("FETCH REFUSED: no extractable text at this URL.", file=sys.stderr)
         return 1
+    if is_pdf and partial:
+        text += (
+            "\n\n[TRUNCATED by fetch_page.py: %s. A quotation or pincite not found above "
+            "may be on an unextracted page — report it as NOT CHECKED, never as missing "
+            "from the source]" % coverage_note(pages_extracted, total_pages, pdf_pages, True)
+        )
     if out_path:
         try:
             with open(out_path, "w", encoding="utf-8") as f:
@@ -161,19 +228,34 @@ def main(argv):
         except OSError as e:
             print(f"FETCH FAILED: cannot write --out file: {e}", file=sys.stderr)
             return 1
-        pages = text.count("\f") + 1
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        print(
-            f"WROTE {out_path}: {len(text):,} chars, {pages} page(s), sha256 {digest}. "
-            "Full text, not truncated — do not cat it into context; run file-side "
-            "tools (e.g. verify_quotes.py) against it."
-        )
+        if is_pdf:
+            pages_note = coverage_note(pages_extracted, total_pages, pdf_pages, partial)
+        else:
+            pages_note = "%d page(s)" % (text.count("\f") + 1)
+        if partial:
+            print(
+                f"WROTE {out_path}: {len(text):,} chars, {pages_note}, sha256 {digest}. "
+                "INCOMPLETE SOURCE TEXT (page cap) — the file ends with a [TRUNCATED] "
+                "marker; do not cat it into context; run file-side tools (e.g. "
+                "verify_quotes.py) against it and treat a quote not found as unchecked, "
+                "not missing."
+            )
+        else:
+            print(
+                f"WROTE {out_path}: {len(text):,} chars, {pages_note}, sha256 {digest}. "
+                "Full text, not truncated — do not cat it into context; run file-side "
+                "tools (e.g. verify_quotes.py) against it."
+            )
         return 0
     if len(text) > MAX_CHARS:
         text = text[:MAX_CHARS] + (
             f"\n\n[TRUNCATED at {MAX_CHARS:,} chars by fetch_page.py — quote and "
             "pincite only from the text above this marker]"
         )
+    if is_pdf:
+        print("[fetch_page.py: PDF coverage — %s]"
+              % coverage_note(pages_extracted, total_pages, pdf_pages, partial), file=sys.stderr)
     print(text)
     return 0
 

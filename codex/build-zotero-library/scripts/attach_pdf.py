@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import html
+import io
 import json
 import mimetypes
 import os
@@ -111,6 +112,36 @@ def fetch_pdf(url: str) -> bytes:
 
 def digest(body: bytes, algorithm: str) -> str:
     return hashlib.new(algorithm, body).hexdigest()
+
+
+def validate_pdf(body: bytes) -> dict[str, Any]:
+    """Parse the page tree before calling bytes a structurally verified PDF."""
+    if not body.startswith(b"%PDF-"):
+        raise RuntimeError("source bytes are not a PDF; likely a login or bot-wall page")
+    try:
+        from pypdf import PdfReader
+        parser = "pypdf"
+    except ImportError:
+        try:
+            from PyPDF2 import PdfReader
+            parser = "PyPDF2"
+        except ImportError as exc:
+            raise RuntimeError("PDF structural verification requires pypdf or PyPDF2; attachment not verified") from exc
+    try:
+        reader = PdfReader(io.BytesIO(body), strict=True)
+        if reader.is_encrypted and not reader.decrypt(""):
+            raise ValueError("PDF is encrypted and cannot be inspected")
+        count = len(reader.pages)
+        if count < 1:
+            raise ValueError("PDF has no pages")
+        for page in reader.pages:
+            _ = page.mediabox
+            contents = page.get_contents()
+            if contents is not None:
+                contents.get_data()
+    except Exception as exc:
+        raise RuntimeError(f"PDF structural verification failed: {exc}") from exc
+    return {"status": "parsed", "parser": parser, "page_count": count}
 
 
 def append_ledger(path: Path, result: dict[str, Any]) -> None:
@@ -280,11 +311,10 @@ def main() -> int:
             attachment_key, metadata = matches[0]
             stored_path = f"{base}/items/{urllib.parse.quote(attachment_key, safe='')}/file"
             body = fetch_stored_file(stored_path, key)
-            if body[:5] != b"%PDF-":
-                raise RuntimeError("stored Zotero attachment bytes are not a PDF")
+            pdf_validation = validate_pdf(body)
             md5 = digest(body, "md5")
             recorded_md5 = str(metadata.get("md5", ""))
-            verified = bool(recorded_md5) and recorded_md5 == md5
+            verified = bool(recorded_md5) and recorded_md5 == md5 and metadata.get("parentItem") == args.item
             result = {
                 "schema_version": 1,
                 "status": "VERIFIED" if verified else "UNVERIFIED",
@@ -294,6 +324,7 @@ def main() -> int:
                 "filename": metadata.get("filename") or f"{attachment_key}.pdf",
                 "content_type": "application/pdf",
                 "size": len(body),
+                "pdf_validation": pdf_validation,
                 "md5": md5,
                 "sha256": digest(body, "sha256"),
                 "source_url": args.source_url,
@@ -311,8 +342,7 @@ def main() -> int:
             body = source_path.read_bytes()
             guessed = source_path.name
             source_mode = args.source_mode or "file"
-        if body[:5] != b"%PDF-":
-            raise RuntimeError("source bytes are not a PDF; likely a login or bot-wall page")
+        pdf_validation = validate_pdf(body)
         parent_key = urllib.parse.quote(args.item, safe="")
         _, parent_response, _ = api_request(f"{base}/items/{parent_key}", key)
         parent_metadata = (
@@ -404,6 +434,7 @@ def main() -> int:
             "filename": filename,
             "content_type": "application/pdf",
             "size": size,
+            "pdf_validation": pdf_validation,
             "md5": md5,
             "sha256": sha256,
             "source_url": source_url,

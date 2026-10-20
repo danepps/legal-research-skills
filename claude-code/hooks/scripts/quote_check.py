@@ -6,9 +6,13 @@ verbatim in raw tool output from this session.
 Sources (the corpus): tool results in the session transcript and in every
 subagent transcript stored beside it (Agent and Workflow runs), the user's own
 messages, and any "Full output saved to:" files that Bash results point at.
-Not sources: WebFetch and WebSearch results (model summaries), the
-acknowledgements of Write/Edit calls, and a Read of a file Claude itself wrote
-or edited this session (otherwise a memo could vouch for itself).
+Not sources: WebFetch and WebSearch results (model summaries), the report an
+Agent/Workflow run hands back (another model's prose, whether it arrives as the
+tool result, as a <task-notification>, or as a relayed hand-back message), the
+prompt the parent wrote to a subagent, the acknowledgements of Write/Edit calls,
+and a Read of a file Claude itself wrote or edited this session (otherwise a
+memo could vouch for itself). Text a subagent fetched counts because its raw
+tool results are read from the subagent's own transcript.
 
 A quotation is text in straight or curly double quotes, or a Markdown
 blockquote, of QUOTE_MIN_WORDS or more words. Fenced code is ignored. Ellipses
@@ -34,8 +38,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from quote_common import (  # noqa: E402
-    EXCLUDED_RESULT_TOOLS, block_text, disabled_reason, iter_records, read_stdin,
-    skill_active, subagent_transcripts,
+    EXCLUDED_RESULT_TOOLS, block_text, disabled_reason, harness_record, iter_records,
+    read_stdin, skill_active, strip_agent_blocks, subagent_transcripts,
 )
 
 QUOTE_MIN_WORDS = 5
@@ -65,13 +69,19 @@ def words(s: str) -> int:
     return len(re.findall(r"[a-z0-9]+", s))
 
 
-def is_prompt(content) -> bool:
-    """A user record that is the person's own message, not a tool result."""
+def is_prompt(o) -> bool:
+    """A user record that is the person's own message: not a tool result, and not a
+    notice the harness or a subagent put in the transcript."""
+    msg = o.get("message")
+    if o.get("type") != "user" or not isinstance(msg, dict) or harness_record(o):
+        return False
+    content = msg.get("content")
     if isinstance(content, str):
-        return True
+        return bool(strip_agent_blocks(content).strip())
     if isinstance(content, list):
-        return any(isinstance(b, dict) and b.get("type") == "text" for b in content) and \
-            not any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content)
+        if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in content):
+            return False
+        return bool(strip_agent_blocks(block_text(content)).strip())
     return False
 
 
@@ -130,14 +140,21 @@ class Session:
                 if texts and recs is self.main:
                     self.last_assistant = "\n".join(texts)
             elif typ == "user":
+                # Plain text in a user record is the person's own words only in the
+                # main transcript and only when the harness did not write it; in a
+                # subagent transcript it is the parent model's prompt. Tool results
+                # count in both.
+                own = recs is self.main and not harness_record(o)
                 if isinstance(content, str):
-                    self.corpus.append(content)
+                    if own:
+                        self.corpus.append(strip_agent_blocks(content))
                 elif isinstance(content, list):
                     for b in content:
                         if not isinstance(b, dict):
                             continue
                         if b.get("type") == "text":
-                            self.corpus.append(b.get("text", ""))
+                            if own:
+                                self.corpus.append(strip_agent_blocks(b.get("text", "")))
                         elif b.get("type") == "tool_result":
                             tid = b.get("tool_use_id")
                             name = tool_names.get(tid, "")
@@ -159,8 +176,7 @@ class Session:
     def _final_turn(self):
         start = 0
         for i, o in enumerate(self.main):
-            msg = o.get("message")
-            if o.get("type") == "user" and isinstance(msg, dict) and is_prompt(msg.get("content")):
+            if is_prompt(o):
                 start = i
         for o in self.main[start:]:
             msg = o.get("message")

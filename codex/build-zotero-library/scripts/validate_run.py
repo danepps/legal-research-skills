@@ -118,6 +118,8 @@ def main() -> int:
     reuse_results = load_jsonl(run_dir / "reuse-results.jsonl", issues)
     attachment_path = run_dir / "attachment-results.jsonl"
     attachments = load_jsonl(attachment_path, issues) if attachment_path.exists() else []
+    target_library = ""
+    target_collection = ""
 
     if not isinstance(run, dict) or run.get("schema_version") != 1:
         issues.append("run.json must use schema_version 1")
@@ -130,6 +132,10 @@ def main() -> int:
             issues.append("run.json must identify the target library")
         if not isinstance(collection, dict) or not collection.get("key"):
             issues.append("run.json must identify the target collection key")
+        if isinstance(library, dict):
+            target_library = f"{library.get('type')}:{library.get('id')}"
+        if isinstance(collection, dict):
+            target_collection = str(collection.get("key", ""))
 
     candidate_by_id: dict[str, dict[str, Any]] = {}
     add_ids: list[str] = []
@@ -150,6 +156,11 @@ def main() -> int:
             continue
         if not candidate.get("reason"):
             issues.append(f"{candidate_id} has no decision reason")
+        if decision in {"add", "reuse"}:
+            item = candidate.get("item")
+            collections = item.get("collections") if isinstance(item, dict) else None
+            if not isinstance(collections, list) or target_collection not in collections:
+                issues.append(f"{candidate_id} item must include the target collection")
 
         duplicate = candidate.get("duplicate_check")
         if decision in {"add", "reuse", "skip_duplicate"}:
@@ -222,6 +233,8 @@ def main() -> int:
             issues.append(f"{candidate_id} reuse operation did not succeed")
         if str(result.get("item_key", "")) != str(candidate.get("existing_item_key", "")):
             issues.append(f"{candidate_id} reuse result item key mismatch")
+        if result.get("library") != target_library or result.get("collection_key") != target_collection:
+            issues.append(f"{candidate_id} reuse result destination mismatch")
 
     written_keys: list[str] = []
     written_candidate_by_key: dict[str, str] = {}
@@ -231,6 +244,8 @@ def main() -> int:
         else:
             if write_result.get("operation") != "create-items":
                 issues.append("write-result.json operation must be create-items")
+            if write_result.get("library") != target_library:
+                issues.append("write-result library does not match the target library")
             if write_result.get("request_count") != len(planned):
                 issues.append("write-result request_count does not match planned items")
             if write_result.get("candidate_ids") != planned_ids:
@@ -278,11 +293,19 @@ def main() -> int:
     elif write_result:
         warnings.append("write-result.json exists but there are no add candidates")
 
+    target_candidate_by_key = dict(written_candidate_by_key)
+    for candidate_id in reuse_ids:
+        key = str(candidate_by_id[candidate_id].get("existing_item_key", ""))
+        if key:
+            target_candidate_by_key[key] = candidate_id
+    target_keys = set(target_candidate_by_key)
     verification_by_key: dict[str, dict[str, Any]] = {}
-    if written_keys:
+    if target_keys:
         if not isinstance(verification, dict) or not isinstance(verification.get("results"), list):
-            issues.append("verification.json is required for written items")
+            issues.append("verification.json is required for added and reused items")
         else:
+            if verification.get("library") != target_library or verification.get("source") != "zotero":
+                issues.append("verification must read back items from the target Zotero library")
             for result in verification["results"]:
                 if isinstance(result, dict) and result.get("key"):
                     result_key = str(result["key"])
@@ -308,20 +331,31 @@ def main() -> int:
             issues.append(f"manual verification for {key} must check title and another field")
         if not entry.get("note"):
             issues.append(f"manual verification for {key} lacks a note")
-        expected_candidate = written_candidate_by_key.get(key)
+        expected_candidate = target_candidate_by_key.get(key)
         if expected_candidate and str(entry.get("candidate_id", "")) != expected_candidate:
             issues.append(f"manual verification for {key} has the wrong candidate_id")
         manual_by_key[key] = entry
 
-    for key in written_keys:
+    for key in sorted(target_keys):
         machine = verification_by_key.get(key)
+        stored = machine.get("stored_item") if machine else None
+        if not isinstance(stored, dict) or stored.get("key") != key:
+            issues.append(f"item {key} lacks stored Zotero metadata readback")
+        else:
+            collections = stored.get("collections")
+            if not isinstance(collections, list) or target_collection not in collections:
+                issues.append(f"stored item {key} is absent from the target collection")
+            planned_item = candidate_by_id[target_candidate_by_key[key]].get("item", {})
+            for field in material_fields(planned_item):
+                if stored.get(field) != planned_item[field]:
+                    issues.append(f"stored item {key} differs from the planned {field}")
         if machine and machine.get("verdict") == "PASS":
             continue
         if machine and key in manual_by_key and machine.get("verdict") in {"NO_IDENTIFIER", "UNRESOLVED", "UNAVAILABLE"}:
             continue
         verdict = machine.get("verdict") if machine else "missing"
         issues.append(f"item {key} has no PASS or MANUAL_PASS (machine verdict: {verdict})")
-    extra_verified = set(verification_by_key) - set(written_keys)
+    extra_verified = set(verification_by_key) - target_keys
     if extra_verified:
         warnings.append("verification includes non-written keys: " + ", ".join(sorted(extra_verified)))
 
@@ -335,6 +369,13 @@ def main() -> int:
             issues.append(f"attachment results repeat parent item {parent}")
         if entry.get("schema_version") != 1 or entry.get("status") != "VERIFIED":
             issues.append(f"attachment for {parent} is not VERIFIED schema version 1")
+        if entry.get("library") != target_library:
+            issues.append(f"attachment for {parent} library does not match the target library")
+        parsed = entry.get("pdf_validation")
+        if (not isinstance(parsed, dict) or parsed.get("status") != "parsed"
+                or parsed.get("parser") not in {"pypdf", "PyPDF2"}
+                or type(parsed.get("page_count")) is not int or parsed.get("page_count", 0) < 1):
+            issues.append(f"attachment for {parent} lacks PDF structural verification")
         if not re.fullmatch(r"[A-Z0-9]{8}", str(entry.get("attachment_item_key", ""))):
             issues.append(f"attachment for {parent} lacks a valid Zotero attachment key")
         if entry.get("content_type") != "application/pdf" or not str(entry.get("filename", "")).lower().endswith(".pdf"):
@@ -381,11 +422,11 @@ def main() -> int:
         "exclude": sum(1 for value in candidates if value.get("decision") == "exclude"),
         "written": len(written_keys),
         "machine_pass": sum(
-            1 for key in written_keys
+            1 for key in target_keys
             if verification_by_key.get(key, {}).get("verdict") == "PASS"
         ),
         "manual_pass": sum(
-            1 for key in written_keys
+            1 for key in target_keys
             if key in manual_by_key
             and verification_by_key.get(key, {}).get("verdict") in {"NO_IDENTIFIER", "UNRESOLVED", "UNAVAILABLE"}
         ),

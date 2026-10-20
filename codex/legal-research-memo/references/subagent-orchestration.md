@@ -123,6 +123,7 @@ For a low-end model, omit “Synthesis” or restrict it to a one-sentence descr
 - Do not let one subagent’s unverified conclusion become another subagent’s premise during the first research pass.
 - Keep client identifiers and privileged strategy out of prompts unless the environment and user have authorized their use.
 - Use local files and redacted issue descriptions when external research is needed.
+- Apply the bounded source-access protocol to every lane and rescue/fill pass: normally three retrieval attempts per source, stop on repeated paywalls or authorization failures, preserve extraction limits, and use unique per-run/per-source output paths. No worker may change permissions, configuration, or login state to keep a stalled source search going.
 
 ## When not to fan out
 

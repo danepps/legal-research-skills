@@ -84,6 +84,14 @@ For date-sensitive research, state “Research current through [date].” Verify
 
 When browsing, search by the issue, doctrinal label, statutory provision, distinctive phrase, and predecessor terminology. Open the underlying opinion, statute, or article. Capture the publication date and the relevant text. Do not cite a search-result page.
 
+## Bounded source access
+
+Inspect supplied files and any authorized, available project library or Zotero collection before repeating external retrieval. Treat library metadata, prior memos, and unread sources as leads; verify the relied-on text. For a blocked source, prefer an official HTML version, an authorized repository or author copy, or an already authorized database connector. Do not infer access from an installed integration, and do not change browser permissions, global configuration, or login state to obtain a source.
+
+Give each researcher, verifier, and rescue/fill worker a per-source access cap: normally three retrieval attempts total, including alternate copies and any transient retry. Stop on repeated authorization failures or a paywall; report the best source location, evidence reached, and remaining gap. An explicitly authorized access workflow may use its own bounded procedure. A missing central source warrants a lead decision to narrow or disclose the claim, not an open-ended sequence of browser, proxy, or SSO attempts.
+
+When a raw public page or PDF needs local extraction, use `scripts/fetch_source.py URL --out RUN_DIR/sources/UNIQUE_SOURCE.txt`. Create the parent directory first and give parallel workers unique per-run, per-source output names. The helper refuses existing files, caps downloaded bytes and PDF pages, preserves PDF page separators, and writes an adjacent `.json` record with requested/final URLs, raw/text hashes, and extraction limits. Inspect `complete_text` and `limit_note`; unknown or capped PDF coverage must remain partial. `complete_text=true` means the helper did not truncate the retrieved representation, not that source identity, version, OCR, or proposition support has been verified. Read targeted passages from the saved text instead of placing an entire document in context. The stdout form has a smaller character cap and reports truncation explicitly.
+
 ## Negative research
 
 Negative conclusions require calibrated language. Prefer:

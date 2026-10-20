@@ -9,7 +9,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from common import file_sha256, read_json, read_jsonl
+from common import file_sha256, read_json, read_jsonl, validate_finding_location
 
 
 REQUIRED = (
@@ -25,11 +25,20 @@ REJECTION_STATUSES = {"confirmed_rejection", "reopen", "revised"}
 REJECTION_CATEGORIES = {"possible_omission", "duplication", "xref", "numbering"}
 
 
-def load_result(path: Path, errors: list[str]) -> dict:
+def load_result(path: Path, errors: list[str], blocks: dict[str, dict] | None = None) -> dict:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(value, dict):
             raise ValueError("top level is not an object")
+        findings = value.get("findings")
+        if not isinstance(findings, list) or any(not isinstance(row, dict) for row in findings):
+            errors.append(f"{path.name}: findings must be an array of objects")
+        elif blocks is not None:
+            for row in findings:
+                try:
+                    validate_finding_location(row, blocks)
+                except ValueError as exc:
+                    errors.append(f"{path.name}: {exc}")
         return value
     except (OSError, json.JSONDecodeError, ValueError) as exc:
         errors.append(f"{path.name}: {exc}")
@@ -85,14 +94,21 @@ def main() -> int:
     if source_hash != document.get("input_sha256") or source_hash != symbols.get("source_sha256"):
         errors.append("source hashes differ across manifest, document, and symbols")
     draft = Path(str(manifest.get("draft_path", "")))
-    if draft.is_file() and file_sha256(draft) != source_hash:
+    if not draft.is_file():
+        errors.append("frozen source snapshot is missing")
+    elif file_sha256(draft) != source_hash:
         errors.append("draft changed after extraction; start a fresh run")
     block_ids = [block.get("block_id") for block in document.get("blocks", []) + document.get("notes", [])]
+    source_blocks = {block.get("block_id"): block for block in document.get("blocks", []) + document.get("notes", [])}
     if len(block_ids) != len(set(block_ids)):
         errors.append("document contains duplicate block IDs")
     for row in static + challenger + findings:
         if row.get("source_sha256") != source_hash:
             errors.append(f"finding has stale source hash: {row.get('finding_id')}")
+        try:
+            validate_finding_location(row, source_blocks)
+        except ValueError as exc:
+            errors.append(f"invalid finding {row.get('finding_id')}: {exc}")
 
     if args.require_ready:
         if not chunks:
@@ -124,6 +140,7 @@ def main() -> int:
             (run_dir / "static-findings.jsonl").stat().st_mtime,
             (run_dir / "challenger-findings.jsonl").stat().st_mtime,
         )
+        clean_chunks: list[dict] = []
         for chunk in chunks:
             chunk_id = str(chunk.get("chunk_id"))
             path = run_dir / "agent-results" / f"{chunk_id}.json"
@@ -131,7 +148,7 @@ def main() -> int:
                 errors.append(f"missing chunk result: {chunk_id}")
                 continue
             latest_result_mtime = max(latest_result_mtime, path.stat().st_mtime)
-            result = load_result(path, errors)
+            result = load_result(path, errors, source_blocks)
             if result.get("chunk_id") != chunk_id or result.get("source_sha256") != source_hash:
                 errors.append(f"chunk result identity/hash mismatch: {chunk_id}")
             if result.get("status") != "complete":
@@ -142,6 +159,28 @@ def main() -> int:
                 errors.append(f"chunk result note coverage mismatch: {chunk_id}")
             if not isinstance(result.get("findings", []), list):
                 errors.append(f"chunk result findings must be an array: {chunk_id}")
+            elif result.get("findings") == []:
+                clean_chunks.append(chunk)
+
+        audited_clean_chunks: list[dict] = []
+        for chunk in clean_chunks:
+            chunk_id = str(chunk.get("chunk_id"))
+            path = run_dir / "agent-results" / f"{chunk_id}-audit.json"
+            if not path.is_file():
+                continue
+            audited_clean_chunks.append(chunk)
+            latest_result_mtime = max(latest_result_mtime, path.stat().st_mtime)
+            result = load_result(path, errors, source_blocks)
+            if result.get("chunk_id") != chunk_id or result.get("source_sha256") != source_hash:
+                errors.append(f"clean-chunk audit identity/hash mismatch: {chunk_id}")
+            if result.get("status") != "complete":
+                errors.append(f"clean-chunk audit is not complete: {chunk_id}")
+            if (set(result.get("reviewed_block_ids", [])) != set(chunk.get("core_block_ids", []))
+                    or set(result.get("reviewed_note_ids", [])) != set(chunk.get("owned_note_ids", []))):
+                errors.append(f"clean-chunk audit coverage mismatch: {chunk_id}")
+        minimum_clean_audits = (len(clean_chunks) + 9) // 10
+        if len(audited_clean_chunks) < minimum_clean_audits:
+            errors.append(f"clean-chunk audit requires at least {minimum_clean_audits} completed sample(s)")
 
         if manifest.get("recall_required", False):
             if not recall_packets:
@@ -169,7 +208,7 @@ def main() -> int:
                     errors.append(f"missing recall result: {packet_id}")
                     continue
                 latest_result_mtime = max(latest_result_mtime, path.stat().st_mtime)
-                result = load_result(path, errors)
+                result = load_result(path, errors, source_blocks)
                 if result.get("packet_id") != packet_id or result.get("source_sha256") != source_hash:
                     errors.append(f"recall result identity/hash mismatch: {packet_id}")
                 if result.get("status") != "complete":
@@ -187,7 +226,7 @@ def main() -> int:
                 errors.append(f"missing global lane result: {lane}")
                 continue
             latest_result_mtime = max(latest_result_mtime, path.stat().st_mtime)
-            result = load_result(path, errors)
+            result = load_result(path, errors, source_blocks)
             if result.get("lane") != lane or result.get("source_sha256") != source_hash:
                 errors.append(f"lane result identity/hash mismatch: {lane}")
             if result.get("status") != "complete":
@@ -225,6 +264,18 @@ def main() -> int:
         disposition_by_id = {row.get("finding_id"): row for row in dispositions}
         if len(disposition_by_id) != len(dispositions):
             errors.append("dispositions.jsonl contains duplicate finding IDs")
+        audit_ids = {str(chunk.get("chunk_id")) for chunk in audited_clean_chunks}
+        audit_misses = [row for row in findings
+                       if disposition_by_id.get(row.get("finding_id"), {}).get("status") in {"confirmed", "fixed"}
+                       and audit_ids.intersection(row.get("corroborated_by", []))]
+        audit_words = sum(int(chunk.get("core_word_count", 0)) for chunk in audited_clean_chunks)
+        audit_words += sum(int(source_blocks.get(note_id, {}).get("word_count", 0))
+                           for chunk in audited_clean_chunks for note_id in chunk.get("owned_note_ids", []))
+        high_miss = any(row.get("impact") == "high" for row in audit_misses)
+        lower_misses = sum(row.get("impact") != "high" for row in audit_misses)
+        expand_audit = high_miss or lower_misses > 2 * max(1, (audit_words + 4999) // 5000)
+        if expand_audit and len(audited_clean_chunks) != len(clean_chunks):
+            errors.append("clean-chunk audit miss threshold requires independent review of every clean chunk")
         for finding_id in sorted(str(value) for value in set(finding_ids) - set(disposition_by_id)):
             errors.append(f"finding lacks disposition: {finding_id}")
         for finding_id in sorted(str(value) for value in set(disposition_by_id) - set(finding_ids)):

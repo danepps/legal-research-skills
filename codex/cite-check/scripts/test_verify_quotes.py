@@ -23,10 +23,10 @@ SOURCE = (
 )
 
 
-def run(arguments: list[str]) -> tuple[int, dict]:
+def run(arguments: list[str], text: str = SOURCE) -> tuple[int, dict]:
     with tempfile.TemporaryDirectory() as directory:
         source = Path(directory) / "source.txt"
-        source.write_text(SOURCE, encoding="utf-8")
+        source.write_text(text, encoding="utf-8")
         process = subprocess.run(
             [sys.executable, str(SCRIPT), str(source), *arguments],
             capture_output=True,
@@ -51,6 +51,19 @@ def main() -> int:
     assert report["results"][0]["alteration_reviewed"] is False
 
     code, report = run(
+        ["The witness resigned the contract after the call."],
+        "The witness re-signed the contract after the call.",
+    )
+    assert code == 1 and report["results"][0]["status"] == "not_found"
+    for source, quote in (
+        ("The limita-\ntions period begins today.", "The limitations period begins today."),
+        ("The well-\nsettled rule applies here.", "The well-settled rule applies here."),
+        ("The limita\u00adtions period begins today.", "The limitations period begins today."),
+    ):
+        code, report = run([quote], source)
+        assert code == 0 and report["results"][0]["status"] == "normalized"
+
+    code, report = run(
         [
             "equitable tolling is reserved for circumstances beyond the "
             "litigant's control, and mere excusable neglect will suffice"
@@ -68,7 +81,9 @@ def main() -> int:
     assert code == 0 and result["page"] == 462
     assert "printed_page_depends_on_asserted_first_page" not in result["warnings"]
 
-    marked = "<<pg. 979>> Alpha beta gamma. <<pg. 980>> Zeta eta theta."
+    # The same quoted passage may appear in the syllabus and opinion, or twice
+    # in the opinion. A correct later-page pinpoint must remain verifiable.
+    marked = "<<pg. 979>> Zeta eta theta. <<pg. 980>> Zeta eta theta."
     with tempfile.TemporaryDirectory() as directory:
         source = Path(directory) / "marked.txt"
         source.write_text(marked, encoding="utf-8")
@@ -107,6 +122,7 @@ def main() -> int:
         row = json.loads(output.read_text(encoding="utf-8"))
         assert row["status"] == "verbatim"
         assert row["page"] == 980 and row["pincite_ok"] is True
+        assert "multiple_matches" in row["warnings"]
         assert len(row["source_sha256"]) == 64
 
     print("verify_quotes tests passed")

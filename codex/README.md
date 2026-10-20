@@ -90,6 +90,9 @@ The package includes its [MIT license](LICENSE). Increment the plugin's semantic
 the offline packaging checks in `test_codex_plugin.py`. The package adds no MCP
 servers, lifecycle hooks, credential files, or browser companion.
 
+Codex-specific changes are recorded in [CHANGELOG.md](CHANGELOG.md). Claude
+releases retain their independent version and changelog at the repository root.
+
 For a checkout that has not been pushed yet, test discovery by adding that
 checkout as a local marketplace:
 

@@ -21,7 +21,9 @@ Match tiers, reported per quote as `status`:
   verbatim    exact text, modulo whitespace runs / line wraps
   normalized  + typographic folding only (curly vs straight quotes, dash
               forms, soft hyphens, line-break hyphenation, ligatures,
-              nested-quote-mark level) — identical as printed
+              nested-quote-mark level) — identical as printed. Invisible
+              format characters (zero-width space etc.) and the Unicode
+              normalization form are ignored at every tier.
   altered     matches once the draft's MARKED alterations are honored:
               ellipsis omissions (segments in document order, gaps bounded)
               and [bracketed] changes wildcarded
@@ -50,6 +52,28 @@ for _c in "‘’‚‛′‵“”„‟″‶'\"":
 for _c in "‐‑‒–—―−":
     FOLD[_c] = "-"
 FOLD[" "] = " "
+
+# Dashes that may JOIN two word halves (a hyphenated word, or pdftotext's
+# line-end hyphenation): the ASCII hyphen-minus, U+2010 hyphen, U+2011
+# non-breaking hyphen. En/em dashes, the horizontal bar and the minus sign are
+# always punctuation — a closed-up em dash ("knows—or") is the standard
+# typographic form in law reviews and opinions, and folding it into a joiner
+# turned "knows—or" into "knowsor", which no draft spelling could match.
+JOIN_DASHES = frozenset("-\u2010\u2011")
+# An INLINE hyphen between letters (no whitespace after it) is ambiguous: a wrap
+# hyphen that a re-flowed source left inline ("estab-lished") or a meaningful
+# one ("re-signed" is not "resigned"). It joins its halves only when (a) the
+# joined token actually occurs in the other text being compared and (b) the
+# left half is not a bare English prefix — a prefix hyphen is exactly where
+# joining changes meaning, and "re-signed"/"resigned" both yield a token the
+# draft contains, so (a) alone cannot tell them apart. Otherwise it is a word
+# boundary, and the difference surfaces in word_diff. Hyphens at a line wrap
+# (newline after them) always join, as before.
+HYPHEN_PREFIXES = frozenset(
+    "re pre co non un de anti pro sub inter intra multi post semi self ex quasi over "
+    "under counter cross bi tri mid mis dis trans super ultra pseudo neo vice "
+    "extra pan uni".split())
+_JOIN_HALVES = re.compile(r"([A-Za-z]+)[-\u2010\u2011]([A-Za-z]+)")
 
 LIGATURES = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi",
              "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"}
@@ -88,12 +112,37 @@ def find_page_spans(raw):
     return [], "none"
 
 
-def normalize(raw, fold, page_spans=()):
+def _tokens(text):
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def source_join_candidates(raw):
+    """Joined forms of every inline letter-hyphen-letter pair in the source."""
+    return {(a + b).lower() for a, b in _JOIN_HALVES.findall(raw)}
+
+
+def _inline_join_ok(norm, raw, j, join_tokens):
+    """Whether the inline hyphen just before raw[j] may join its halves."""
+    k = len(norm)
+    while k > 0 and norm[k - 1].isalpha():
+        k -= 1
+    left = "".join(norm[k:]).lower()
+    m = j
+    while m < len(raw) and raw[m].isalpha():
+        m += 1
+    right = raw[j:m].lower()
+    if left in HYPHEN_PREFIXES:
+        return False
+    return bool(join_tokens) and (left + right) in join_tokens
+
+
+def normalize(raw, fold, page_spans=(), join_tokens=None):
     """Collapse whitespace (and optionally fold typography) with an offset map.
 
     Returns (norm, omap, bounds): omap[i] = raw index of norm[i]; bounds =
     [(norm_pos, printed_no)] for each page boundary, boundary owning the text
-    that FOLLOWS it (page starts at the boundary).
+    that FOLLOWS it (page starts at the boundary). `join_tokens` is the token
+    set of the OTHER text, consulted for inline hyphens (see HYPHEN_PREFIXES).
     """
     norm, omap, bounds = [], [], []
     pending_ws = False
@@ -124,11 +173,15 @@ def normalize(raw, fold, page_spans=()):
             pending_ws = True
             i += 1
             continue
+        if unicodedata.category(c) == "Cf":
+            # Format characters are never printed: soft hyphen, zero-width
+            # space/joiner/non-joiner, BOM, word joiner. Word output is full of
+            # U+200B, and one of them inside a quote blocked every match tier.
+            i += 1
+            continue
         if fold:
+            raw_c = c
             c = FOLD.get(c, c)
-            if c == "­":               # soft hyphen: never printed
-                i += 1
-                continue
             if c in LIGATURES:
                 for ch in LIGATURES[c]:
                     emit(ch, i)
@@ -169,7 +222,11 @@ def normalize(raw, fold, page_spans=()):
                         break
                 had_ws = j > ws_start
                 if (prev_alpha and j < n and raw[j].isalpha() and ndash == 1
-                        and (not had_ws or crossed_nl)):
+                        and raw_c in JOIN_DASHES and (not had_ws or crossed_nl)):
+                    if not had_ws and not _inline_join_ok(norm, raw, j, join_tokens):
+                        pending_ws = True      # meaningful hyphen: word boundary
+                        i = j
+                        continue
                     i = j if had_ws else i + 1
                     continue
                 pending_ws = True
@@ -260,15 +317,46 @@ def chain_match(src_norm, seg_res):
     return None
 
 
-def count_occurrences(src_norm, needle):
-    n, start = 0, 0
-    while n < 5:
+OCCURRENCE_LIMIT = 20
+
+
+def find_occurrences(src_norm, needle, limit=OCCURRENCE_LIMIT):
+    """Start offsets of up to `limit` non-overlapping occurrences."""
+    out, start = [], 0
+    while len(out) < limit:
         i = src_norm.find(needle, start)
         if i < 0:
             break
-        n += 1
+        out.append(i)
         start = i + max(1, len(needle))
-    return n
+    return out
+
+
+def count_occurrences(src_norm, needle):
+    return len(find_occurrences(src_norm, needle))
+
+
+def choose_occurrence(occ, length, bounds, first_page, pr):
+    """Among repeated matches, prefer the first whose printed page range
+    intersects the cited pincite range `pr` = (lo, hi); else the first.
+    Returns (chosen_start, pages_per_occurrence, chosen_index)."""
+    pages = []
+    for o in occ:
+        a = page_of(bounds, first_page, o)
+        b = page_of(bounds, first_page, o + max(1, length) - 1)
+        pages.append(a if a == b else (a, b))
+    pick = 0
+    if pr and bounds:
+        lo, hi = pr
+        for idx, o in enumerate(occ):
+            a = page_of(bounds, first_page, o)
+            b = page_of(bounds, first_page, o + max(1, length) - 1)
+            if a is None or b is None:
+                continue
+            if a <= hi and b >= lo:
+                pick = idx
+                break
+    return occ[pick], pages, pick
 
 
 def fuzzy_hint(src_norm, omap, raw, probe):
@@ -354,34 +442,44 @@ def word_diff(probe, window):
     return out
 
 
-def check_quote(raw, views, first_page, quote, pincite):
-    """views = {False: (norm, omap, bounds), True: (...)} keyed by fold."""
+def check_quote(raw, views, first_page, quote, pincite, fold_view=None):
+    """views = {False: (norm, omap, bounds), True: (...), "src_tokens": set}
+    keyed by fold. `fold_view(tokens)` returns the folded source view whose
+    inline hyphens may join against the given quote tokens (cached in main)."""
+    quote = unicodedata.normalize("NFC", quote)
     out = {"quote": quote if len(quote) <= 240 else quote[:240] + "…", "warnings": []}
     q_plain = normalize(quote, fold=False)[0]
-    q_fold = normalize(quote, fold=True)[0]
+    q_fold = normalize(quote, fold=True, join_tokens=views.get("src_tokens"))[0]
+    pr = parse_pincite(pincite)
 
-    status = span = None
+    status = span = mv = None
+    occ = []
     if q_plain:
         src_norm, _, _ = views[False]
-        i = src_norm.find(q_plain)
-        if i >= 0:
-            status, span = "verbatim", (i, i + len(q_plain))
-            out["occurrences"] = count_occurrences(src_norm, q_plain)
-    fsrc_norm, fomap, fbounds = views[True]
+        occ = find_occurrences(src_norm, q_plain)
+        if occ:
+            status, mv = "verbatim", views[False]
+            span = (occ[0], occ[0] + len(q_plain))
+    q_tokens = _tokens(q_fold)
+    fsrc_norm, fomap, fbounds = fold_view(q_tokens) if fold_view else views[True]
     if status is None and q_fold:
-        i = fsrc_norm.find(q_fold)
-        if i >= 0:
-            status, span = "normalized", (i, i + len(q_fold))
-            out["occurrences"] = count_occurrences(fsrc_norm, q_fold)
+        occ = find_occurrences(fsrc_norm, q_fold)
+        if occ:
+            status, mv = "normalized", (fsrc_norm, fomap, fbounds)
+            span = (occ[0], occ[0] + len(q_fold))
             out["note"] = "matches after typographic folding only — identical as printed"
     if status is None:
         segs = segments_of(q_fold)
-        marked = len(segs) > 1 or BRACKET_RE.search(q_fold)
+        # A quote with only a LEADING or TRAILING ellipsis has one segment but
+        # is still a marked alteration; without this it never reached the
+        # altered tier and was reported not_found even when verbatim.
+        marked = (len(segs) > 1 or BRACKET_RE.search(q_fold)
+                  or ELLIPSIS_RE.search(q_fold))
         if segs and marked:
             res = chain_match(fsrc_norm, [segment_regex(s) for s in segs])
             if res:
                 s, e, gaps = res
-                status, span = "altered", (s, e)
+                status, span, mv = "altered", (s, e), (fsrc_norm, fomap, fbounds)
                 out["note"] = ("matches with the draft's marked alterations honored "
                                f"({len(segs)} segment(s), gaps {gaps or 'n/a'})")
                 for seg in segs:
@@ -410,21 +508,47 @@ def check_quote(raw, views, first_page, quote, pincite):
         return out
 
     out["status"] = status
-    # Page + excerpt come from the folded view for normalized/altered matches,
-    # the plain view for verbatim (span indexes that view's omap).
-    norm, omap, bounds = views[status != "verbatim"]
+    # Page + excerpt come from the view the match was found in.
+    norm, omap, bounds = mv
+    if len(occ) > 1:
+        # Repeated passage: prefer the occurrence on the cited page (a quote
+        # printed on pp. 10 and 15 and pinned to 15 used to report p. 10 and a
+        # false pincite_ok), and always say where the others are.
+        length = span[1] - span[0]
+        chosen, pages, pick = choose_occurrence(occ, length, bounds, first_page, pr)
+        span = (chosen, chosen + length)
+        out["occurrences"] = len(occ) if len(occ) < OCCURRENCE_LIMIT else "%d+" % OCCURRENCE_LIMIT
+        if bounds:
+            out["occurrence_pages"] = pages
+            out["warnings"].append(
+                "multiple_matches(%s) on pages %s — %s"
+                % (out["occurrences"], pages,
+                   "reported the one inside the pincite" if pr and pick > 0 or (pr and bounds and pick == 0 and pages and _page_in(pages[0], pr))
+                   else ("none falls inside the pincite; page reported for the first" if pr
+                         else "page reported for the first")))
+        else:
+            out["warnings"].append("multiple_matches(%s) — no page boundaries, first reported"
+                                   % out["occurrences"])
+    elif occ:
+        out["occurrences"] = 1
     s, e = span
     a, b = omap[s], omap[e - 1] + 1
     out["match_excerpt"] = raw[a:b][:280]
+    if status == "normalized":
+        # Inline hyphens inside the MATCHED passage that were joined to reach
+        # the match: say so, since "estab-lished" may equally be a real hyphen.
+        used = sorted({(x + y).lower() for x, y in _JOIN_HALVES.findall(raw[a:b])} & q_tokens)
+        if used:
+            out["note"] += " (inline hyphen(s) joined as wrap artifacts: %s)" % ", ".join(used)
+            out["warnings"].append("inline_hyphen_joined(%s) — a hyphen inside the matched "
+                                   "source passage was treated as a line-wrap artifact; "
+                                   "confirm it is not a meaningful hyphen" % ", ".join(used))
     pg = page_of(bounds, first_page, s)
     if pg is not None:
         out["page"] = pg
         pg_end = page_of(bounds, first_page, e - 1)
         if pg_end != pg:
             out["page_end"] = pg_end
-    if out.get("occurrences", 1) > 1:
-        out["warnings"].append(f"multiple_matches({out['occurrences']}+) — page reported for the first")
-    pr = parse_pincite(pincite)
     if pr:
         out["pincite"] = pincite
         if pg is not None:
@@ -435,6 +559,13 @@ def check_quote(raw, views, first_page, quote, pincite):
             out["pincite_ok"] = None
             out["warnings"].append("pincite not judged — no page boundaries in source text")
     return out
+
+
+def _page_in(page, pr):
+    if page is None or pr is None:
+        return False
+    a, b = page if isinstance(page, tuple) else (page, page)
+    return a is not None and b is not None and a <= pr[1] and b >= pr[0]
 
 
 def main(argv):
@@ -448,7 +579,9 @@ def main(argv):
 
     try:
         data = open(args.source, "rb").read()
-        raw = data.decode("utf-8", "replace")
+        # NFC so a decomposed accent (e + U+0301) matches its composed form;
+        # ligatures and "…" are left to the fold pass (NFC keeps them).
+        raw = unicodedata.normalize("NFC", data.decode("utf-8", "replace"))
     except OSError as e:
         print(f"cannot read source: {e}", file=sys.stderr)
         return 2
@@ -471,10 +604,22 @@ def main(argv):
 
     spans, marker = find_page_spans(raw)
     views = {fold: normalize(raw, fold=fold, page_spans=spans) for fold in (False, True)}
+    views["src_tokens"] = _tokens(views[True][0])
+    views["src_candidates"] = source_join_candidates(raw)
+    cache = {frozenset(): views[True]}
+
+    def fold_view(tokens):
+        """Folded source view in which inline hyphens may join against the
+        quote's own tokens; one view per distinct candidate set, cached."""
+        jt = frozenset(tokens & views["src_candidates"])
+        if jt not in cache:
+            cache[jt] = normalize(raw, fold=True, page_spans=spans, join_tokens=jt)
+        return cache[jt]
 
     results = []
     for it in items:
-        r = check_quote(raw, views, args.first_page, str(it.get("quote", "")), it.get("pincite"))
+        r = check_quote(raw, views, args.first_page, str(it.get("quote", "")), it.get("pincite"),
+                        fold_view=fold_view)
         if "id" in it:
             r = {"id": it["id"], **r}
         results.append(r)

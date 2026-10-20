@@ -24,6 +24,18 @@ const AS_OF = A.asOfDate || 'today'
 const NOTES = A.notes || ''
 const DEEP = !!A.deep // opt-in heavier mode: more vectors, more reads, adversarial verify
 const PROJECT_DIR = A.projectDir || '' // the user's working directory — enables the local-corpus sweep
+// Run tag for scratch filenames (CLAUDE-07): cite-check chunks and refutation voters run
+// concurrently and share /tmp, so every source dump needs a path unique to this run AND to the
+// authority/voter writing it. Date.now()/Math.random() are unavailable in workflow scripts (they
+// break resume), so the tag is a deterministic hash of the run's inputs; args.runTag overrides.
+const RUN_TAG = (() => {
+  const given = String(A.runTag || '').replace(/[^A-Za-z0-9_-]/g, '')
+  if (given) return given.slice(0, 24)
+  let h = 5381
+  const s = `${QUESTION}|${MODE}|${AS_OF}|${NOTES}`
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0
+  return h.toString(36)
+})()
 
 const DO_CASES = MODE === 'caselaw' || MODE === 'both'
 const DO_SCHOLARSHIP = MODE === 'scholarship' || MODE === 'both'
@@ -412,12 +424,20 @@ const VERDICT_SCHEMA = {
   },
 }
 
-// Deep mode: one adversarial vote on one load-bearing authority.
+// Deep mode: one adversarial vote on one load-bearing authority. `basis` is REQUIRED: the
+// aggregate verdict's evidence level is read off the votes that actually came back, never
+// assumed from the instruction to open the source (a paywalled voter reports what it reached).
+const BASIS_LEVELS = ['direct-full-text', 'authoritative-reproduction', 'secondary-corroboration', 'citation-only']
 const REFUTE_SCHEMA = {
   type: 'object',
-  required: ['refuted'],
+  required: ['refuted', 'basis'],
   properties: {
     refuted: { type: 'boolean' },
+    basis: {
+      type: 'string',
+      enum: BASIS_LEVELS,
+      description: 'strongest source access you ACTUALLY achieved: read the passage in the full source / in a reliable reproduction (CourtListener, LII, Justia) / confirmed only through secondary material / confirmed only that the citation exists (e.g. the CourtListener API hit). A paywall or bot wall means you did NOT reach full text — report the level you reached.',
+    },
     reason: { type: 'string' },
     correctedCitation: { type: 'string' },
     quoteAccurate: { type: 'boolean' },
@@ -648,8 +668,11 @@ if (!selectedIdx.length) selectedIdx = pool.slice(0, READ_CAP).map((_, i) => i)
 // Budget check: trim the read list (worst-ranked first) rather than die before Draft. The floor
 // scales with declared issues on historical questions so trimming can't zero out whole eras.
 // Degradation events are collected so the run can return an honest exit state (ported from the
-// Codex deep-research-cli exit-state contract).
+// Codex deep-research-cli exit-state contract). `degradation` holds BUDGET cuts (→
+// budget_exhausted); `coverageGaps` holds non-budget holes in the record — dead agents, failed
+// opens, unrecovered authorities (→ complete_with_limits). Both are returned under `degradation`.
 const degradation = []
+const coverageGaps = []
 const plannedReads = selectedIdx.length
 while (selectedIdx.length > READ_FLOOR && tight(RESERVE_DRAFT + RESERVE_FINALIZE + selectedIdx.length * PER_READ)) selectedIdx.pop()
 if (selectedIdx.length < plannedReads) {
@@ -943,6 +966,11 @@ const toVerify = [
   })),
 ].map((c, i) => ({ ...c, gi: i, wasRead: !!c.gapFill || readKeys.has(norm(c.citation)) }))
 
+// Per-run, per-chunk, per-authority scratch path for source dumps (CLAUDE-07). `idx` is the
+// authority's global index, or the literal "<index>" placeholder the agent substitutes.
+const srcFile = (ch, idx) => `/tmp/lr-${RUN_TAG}-c${ch[0].gi}-src-${idx}.txt`
+const refuteFile = (c, k) => `/tmp/lr-${RUN_TAG}-refute-${c.gi}-v${k}.txt`
+
 const chunkPrompt = (ch) => `You are a cite-checker confirming authorities a legal memo relies on.
 
 STEP 0 — deterministic case lookup, FIRST, for all the CASE citations below in one shot. Run via
@@ -962,8 +990,13 @@ actually names this case's parties). A signal row about THIS case (e.g. "overrul
 in currentTreatment — name the treating case and, if the snippet shows it, the scope (full
 overruling / partial abrogation / narrowing); if scope isn't visible, report the signal with
 "scope unconfirmed". Rows about OTHER cases are noise — ignore them; the tool's caveats explain.
-Also glance at most_recent_citing_date: if nothing has cited the case in ~5+ years, note
-"dormant — most recent citing case <date>" in currentTreatment. If the script errors, fall back
+Also report most_recent_citing_date as a plain fact in currentTreatment — "most recent citing
+opinion in the CourtListener index: <date>" — and, if that date is old, add that the index covers
+only the opinions CourtListener holds and the probe read only the top rows. That field shows
+recency WITHIN THE RETRIEVED INDEX, nothing more: do NOT describe the case as "dormant", "in
+disuse", "moribund", or the like on that basis alone — such a characterization needs separate
+support (a treatise, a court saying so, a citing-opinion count across a complete citator), and
+without it you report only the date and the limitation. If the script errors, fall back
 to the quick web search ("<case name> overruled" / "abrogated"). No hits is NOT proof of good
 law — this approximates, not replaces, Shepard's/KeyCite.
 Authorities tagged [READ IN FULL THIS RUN] were already opened and quoted by a research agent this
@@ -971,10 +1004,14 @@ run — skip existence re-confirmation for those; check only citation format and
 ${DEEP
     ? `Be adversarial — try to disprove each; open the source to confirm quotes. When you open a
 source to check a quote, settle verbatim-ness deterministically: python3 "${FETCH_PAGE}" "<url>"
---out /tmp/src.txt, then python3 "${VERIFY_QUOTES}" /tmp/src.txt "<quote>" — its
+--out ${srcFile(ch, '<index>')}, then python3 "${VERIFY_QUOTES}" ${srcFile(ch, '<index>')} "<quote>" — its
 verbatim/normalized/altered/not_found status (and word_diff on misses) is the answer; save your
 judgment for whether the passage supports the proposition.`
-    : 'Be efficient — a reliable search/catalog/API hit confirming the case name, reporter, and year is enough for existence; only open the source if something looks off. You are confirming, not re-researching (but if you DO open a source to check a quote, run it through the deterministic verifier: python3 "' + FETCH_PAGE + '" "<url>" --out /tmp/src.txt && python3 "' + VERIFY_QUOTES + '" /tmp/src.txt "<quote>").'}
+    : 'Be efficient — a reliable search/catalog/API hit confirming the case name, reporter, and year is enough for existence; only open the source if something looks off. You are confirming, not re-researching (but if you DO open a source to check a quote, run it through the deterministic verifier: python3 "' + FETCH_PAGE + '" "<url>" --out ' + srcFile(ch, '<index>') + ' && python3 "' + VERIFY_QUOTES + '" ' + srcFile(ch, '<index>') + ' "<quote>").'}
+SCRATCH FILES: other cite-check agents are running at the same time and share /tmp, so write
+source dumps ONLY to the path pattern above, substituting the authority's [bracketed] index for
+<index> (one file per authority); never reuse a file for a different authority and never write to
+a generic name like /tmp/src.txt.
 ACCESS DISCIPLINE: at most 2 access attempts per authority, via WebSearch/WebFetch only — never
 browser automation, library proxies, or SSO/login flows. If a source sits behind a paywall or bot
 wall, stop and report the strongest basis you actually reached (secondary-corroboration or
@@ -994,14 +1031,20 @@ ${ch
   .join('\n')}
 ${SOURCES}`
 
-const chunkJob = (ch) => () =>
-  agent(chunkPrompt(ch), {
-    label: `verify:${ch[0].gi}-${ch[ch.length - 1].gi} (${ch.length})`,
-    phase: 'Verify',
-    schema: VERDICT_SCHEMA,
-    model: VERIFY_MODEL,
-    effort: 'low',
-  }).then((o) => (o && o.verdicts) || [])
+const chunkAgent = (ch) => agent(chunkPrompt(ch), {
+  label: `verify:${ch[0].gi}-${ch[ch.length - 1].gi} (${ch.length})`,
+  phase: 'Verify',
+  schema: VERDICT_SCHEMA,
+  model: VERIFY_MODEL,
+  effort: 'low',
+})
+// A dead chunk agent would leave up to VERIFY_CHUNK authorities with no verdict (and Finalize
+// would then caveat every one of them in the memo): retry once, then account below.
+const chunkJob = (ch) => async () => {
+  let o = await chunkAgent(ch)
+  if (!o) { log(`verify:${ch[0].gi}-${ch[ch.length - 1].gi} died — retrying once`); o = await chunkAgent(ch) }
+  return (o && o.verdicts) || []
+}
 
 // Deep mode: each load-bearing authority gets 3 independent refutation votes; ≥2 refutes kill it.
 const refutePrompt = (c, k) => `You are independent cite-checker #${k} of 3. Your job is to try to
@@ -1011,10 +1054,12 @@ accurate; (3) OPEN the source — does the quote appear VERBATIM, and does it su
 proposition at the given pincite; (4) for cases: overruled, abrogated, or superseded?
 For (3), settle verbatim-ness DETERMINISTICALLY, not by eye: save the source text to a file and
 run the quote verifier —
-  python3 "${FETCH_PAGE}" "<url>" --out /tmp/refute-src.txt
-  python3 "${VERIFY_QUOTES}" /tmp/refute-src.txt "<the quote>"
-(text obtained any other way — Zotero fulltext, a saved page — goes into a scratch file the same
-way). Its status is the verbatim-ness answer: verbatim/normalized -> the quote is good;
+  python3 "${FETCH_PAGE}" "<url>" --out ${refuteFile(c, k)}
+  python3 "${VERIFY_QUOTES}" ${refuteFile(c, k)} "<the quote>"
+(text obtained any other way — Zotero fulltext, a saved page — goes into that same scratch file).
+Use EXACTLY that path — other voters and cite-checkers are running concurrently in the same /tmp,
+and a shared filename would let you verify the quote against someone else's source.
+Its status is the verbatim-ness answer: verbatim/normalized -> the quote is good;
 altered -> check the marked alterations are honest; not_found -> read the word_diff — draft_only/
 source_only/changed words are substantive (grounds to refute), "cosmetic" entries on an OCR'd
 scan are scan noise, not a refutation. It also reports the printed page of the match — use that
@@ -1032,6 +1077,12 @@ adversarial effort on the quote and the pincite.
 ACCESS DISCIPLINE: at most 3 access attempts, via WebSearch/WebFetch only — never browser
 automation, library proxies, or SSO/login flows. "I could not open the source" is NOT a refutation
 by itself: if the source is paywalled, judge on what you could reach and say so in your reasoning.
+BASIS (required): report the strongest source access you ACTUALLY achieved — "direct-full-text"
+only if you read the passage in the full source; "authoritative-reproduction" if you read it in
+CourtListener/LII/Justia or a comparable reproduction; "secondary-corroboration" if you confirmed
+it only through secondary material; "citation-only" if you confirmed no more than that the cite
+exists (e.g. the CourtListener API hit). Being INSTRUCTED to open the source does not make your
+basis full-text — a paywall or bot wall means you report the level you reached.
 
 AUTHORITY: ${c.citation}
 URL: ${c.url || '(locate it yourself)'}
@@ -1039,30 +1090,64 @@ Proposition: ${c.proposition || ''}
 Quote: ${c.quote || '(none)'} ${c.pincite ? '@ ' + c.pincite : ''}
 ${SOURCES}`
 
+const refuteVoter = (c, k) => agent(refutePrompt(c, k), {
+  label: `refute:${(c.citation || '').slice(0, 40)}#${k}`,
+  phase: 'Verify',
+  schema: REFUTE_SCHEMA,
+  model: VERIFY_MODEL,
+  effort: 'medium',
+})
+// Strongest evidence level any RETURNED vote actually reported. Never assumed: a panel whose
+// voters all hit a paywall reports citation-only even though each was told to open the source.
+const strongestBasis = (vs) => {
+  let best
+  for (const v of vs) {
+    const i = BASIS_LEVELS.indexOf(v.basis)
+    if (i >= 0 && (best == null || i < best)) best = i
+  }
+  return best == null ? undefined : BASIS_LEVELS[best]
+}
+// Authorities whose refutation panel came back short (CLAUDE-01): {gi, citation, votes}.
+const refuteGaps = []
 const refuteJob = (c) => () =>
   parallel(
-    [1, 2, 3].map((k) => () =>
-      agent(refutePrompt(c, k), {
-        label: `refute:${(c.citation || '').slice(0, 40)}#${k}`,
-        phase: 'Verify',
-        schema: REFUTE_SCHEMA,
-        model: VERIFY_MODEL,
-        effort: 'medium',
-      })
-    )
+    [1, 2, 3].map((k) => async () => {
+      // A dead voter is NOT a non-refuting vote: retry once, then count only what came back.
+      let v = await refuteVoter(c, k)
+      if (!v) { log(`refute:${(c.citation || '').slice(0, 40)}#${k} died — retrying once`); v = await refuteVoter(c, k) }
+      return v
+    })
   ).then((votes) => {
     const vs = votes.filter(Boolean)
     const refutes = vs.filter((v) => v.refuted).length
     const corrected = vs.find((v) => v.correctedCitation)?.correctedCitation
     const treatment = vs.find((v) => v.currentTreatment)?.currentTreatment
+    const basis = strongestBasis(vs)
+    const reasons = vs.map((v) => v.reason).filter(Boolean).slice(0, 2).join(' | ')
+    if (vs.length < 3) refuteGaps.push({ gi: c.gi, citation: c.citation, votes: vs.length })
+    if (!vs.length) {
+      // Nothing was checked. "Verified" here would be the absence of evidence dressed as evidence.
+      return [{
+        index: c.gi,
+        citation: c.citation,
+        verdict: 'unverified',
+        notes: 'NOT CHECKED — all 3 refutation voters failed (after one retry each); no evidence either way',
+      }]
+    }
+    // Majority of the votes that actually came back: 3 votes → 2 refutes kill; 2 votes → 1;
+    // 1 vote → that vote decides and is flagged single-voter. A short panel never verifies more
+    // easily than a full one.
+    const killAt = Math.ceil(vs.length / 2)
+    const verdict = refutes >= killAt ? 'unverified' : corrected ? 'needs-correction' : 'verified'
+    const panelNote = vs.length < 3 ? `${vs.length === 1 ? 'SINGLE-VOTER' : 'SHORT PANEL'} — ${3 - vs.length} of 3 refutation voters returned nothing` : ''
     return [{
       index: c.gi,
       citation: c.citation,
-      verdict: refutes >= 2 ? 'unverified' : corrected ? 'needs-correction' : 'verified',
-      basis: 'direct-full-text', // refutation voters are required to open the source
+      verdict,
+      basis, // what the voters reported; undefined if none reported one
       correctedCitation: corrected,
       currentTreatment: treatment,
-      notes: vs.map((v) => v.reason).filter(Boolean).slice(0, 2).join(' | ') || `${refutes}/3 refute votes`,
+      notes: [panelNote, basis ? '' : 'basis not reported by any voter', reasons || `${refutes}/${vs.length} refute votes`].filter(Boolean).join(' | '),
     }]
   })
 
@@ -1101,12 +1186,17 @@ if (verifyList.length) {
 // a positional fallback can stamp "verified" on the wrong authority.
 const vmap = new Map()
 for (const v of verdicts) if (Number.isInteger(v.index) && !vmap.has(v.index)) vmap.set(v.index, v)
+// Authorities no checker returned anything for (dead chunk agent after retry, or an agent that
+// skipped an index). They are "unverified" in the memo and disclosed as NOT CHECKED — distinct
+// from an authority a checker examined and could not confirm.
+const noVerdict = []
 const vFor = (c) => {
   if (skippedSet.has(c.gi)) return { verdict: 'unchecked', notes: 'cite-check skipped — token budget' }
-  const v =
-    vmap.get(c.gi) ||
-    verdicts.find((v) => v.citation && norm(v.citation) === norm(c.citation)) ||
-    { verdict: 'unverified', notes: 'no verdict returned' }
+  let v = vmap.get(c.gi) || verdicts.find((v) => v.citation && norm(v.citation) === norm(c.citation))
+  if (!v) {
+    noVerdict.push({ gi: c.gi, citation: c.citation })
+    v = { verdict: 'unverified', notes: 'NOT CHECKED — no verdict returned (cite-check agent failed after one retry, or skipped this index)' }
+  }
   // A source a research agent opened and quoted this run is direct-full-text even if the
   // cite-checker (told to skip existence re-checks for it) reported a weaker basis.
   if (c.wasRead && v.verdict === 'verified') v.basis = 'direct-full-text'
@@ -1117,7 +1207,19 @@ const okCount = tagged.filter((t) => t.v.verdict === 'verified').length
 const fixCount = tagged.filter((t) => t.v.verdict === 'needs-correction').length
 const badCount = tagged.filter((t) => t.v.verdict === 'unverified').length
 const skipCount = tagged.filter((t) => t.v.verdict === 'unchecked').length
-log(`Authorities checked: ${okCount} verified, ${fixCount} need correction, ${badCount} unverified${skipCount ? `, ${skipCount} unchecked (budget)` : ''}.`)
+// Coverage gaps from dead checkers (CLAUDE-01): disclosed, counted, and they keep the run from
+// ending "complete" — a cite nobody checked is not a verified cite.
+const refuteNoVotes = refuteGaps.filter((g) => g.votes === 0)
+const refuteShort = refuteGaps.filter((g) => g.votes > 0)
+if (refuteNoVotes.length) coverageGaps.push(`${refuteNoVotes.length} load-bearing authorit${refuteNoVotes.length === 1 ? 'y' : 'ies'} got NO refutation votes (all 3 voters failed after one retry each) — marked unverified / NOT CHECKED`)
+if (refuteShort.length) coverageGaps.push(`${refuteShort.length} load-bearing authorit${refuteShort.length === 1 ? 'y' : 'ies'} decided on a short refutation panel (1–2 of 3 voters returned) — flagged in the cite-check results`)
+if (noVerdict.length) coverageGaps.push(`${noVerdict.length} cited authorit${noVerdict.length === 1 ? 'y' : 'ies'} got no cite-check verdict at all (agent failure after one retry, or skipped index) — marked unverified / NOT CHECKED`)
+const checkGapReport = [
+  ...refuteNoVotes.map((g) => `- ${g.citation} — no refutation votes returned (0/3 voters)`),
+  ...refuteShort.map((g) => `- ${g.citation} — short refutation panel (${g.votes}/3 voters returned)`),
+  ...noVerdict.map((g) => `- ${g.citation} — no cite-check verdict returned`),
+].join('\n')
+log(`Authorities checked: ${okCount} verified, ${fixCount} need correction, ${badCount} unverified${skipCount ? `, ${skipCount} unchecked (budget)` : ''}${refuteGaps.length || noVerdict.length ? `; ${refuteNoVotes.length + noVerdict.length} NOT CHECKED (dead checkers), ${refuteShort.length} on a short panel` : ''}.`)
 
 // ---- Phase 6: finalize -----------------------------------------------------
 phase('Finalize')
@@ -1157,6 +1259,14 @@ Apply these edits:
 ${skipCount ? `- Authorities marked "unchecked" were NOT cite-checked (the token budget ran out) —
   this is different from unverified. KEEP them as cited, but tag each one's first citation with
   "[not independently cite-checked]" and list them separately in the Limits section.` : ''}
+${checkGapReport ? `- CITE-CHECK COVERAGE GAPS: the checking agents for the authorities below FAILED (not
+  "could not confirm" — nothing was checked). Those marked "no ... returned" carry an
+  "unverified" verdict above because no evidence came back; treat them like unverified in the
+  text, but in the Limits section list them under their own heading, "Not independently
+  checked (checker failure)", distinct from authorities a checker examined and rejected. A
+  "short refutation panel" authority was decided by fewer than 3 adversarial voters — keep it as
+  cited, but name it in the Limits section as single- or two-checker verified.
+${checkGapReport}` : ''}
 ${gapReport ? `- POST-DRAFT ADDITIONS: the authorities below were retrieved after drafting to fill
   gaps the draft itself flagged. Weave each into the memo where the draft noted the gap, with its
   cite — subject to its cite-check verdict above. Remove the corresponding gap notes.` : ''}
@@ -1191,11 +1301,14 @@ Return the final memo in Markdown via the memo field.`,
 // - complete: planned coverage met and every cited authority checked.
 const failedOpens = readFindings.filter((f) => !f.opened).length
 const unrecoveredGaps = Math.max(0, (draft.missingAuthorities || []).length - gapFindings.length)
+if (failedOpens) coverageGaps.push(`${failedOpens} selected sources could not be opened`)
+if (unrecoveredGaps) coverageGaps.push(`${unrecoveredGaps} draft-flagged authorities never retrieved`)
+// Dead-checker gaps (refuteGaps / noVerdict) are already in coverageGaps, so a run in which every
+// voter died can never end "complete".
 const exitState = degradation.length
   ? 'budget_exhausted'
-  : (badCount || failedOpens || unrecoveredGaps) ? 'complete_with_limits' : 'complete'
-if (failedOpens) degradation.push(`${failedOpens} selected sources could not be opened`)
-if (unrecoveredGaps) degradation.push(`${unrecoveredGaps} draft-flagged authorities never retrieved`)
+  : (badCount || coverageGaps.length) ? 'complete_with_limits' : 'complete'
+degradation.push(...coverageGaps)
 
 return {
   question: QUESTION,
@@ -1215,6 +1328,8 @@ return {
     corrected: fixCount,
     unverified: badCount,
     uncheckedForBudget: skipCount,
+    notCheckedAgentFailure: refuteNoVotes.length + noVerdict.length, // counted inside `unverified`
+    shortRefutationPanel: refuteShort.length,
   },
   memo: final.memo,
 }

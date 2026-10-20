@@ -27,6 +27,15 @@ Infer a sensible scope when the request is specific. Ask only when a missing cho
 
 ## Confirm access and destination
 
+Before proposing candidates, the lead reads a complete inventory of the target library. Save it inside the hidden run directory:
+
+```bash
+python3 <skill-dir>/scripts/zotero_api.py inventory --library user:<id> \
+  --output <run-dir>/library-inventory.json
+```
+
+For a large library, inspect the overall inventory and locally filter relevant slices. A narrow search or a worker's statement that a work is absent does not establish absence from the library. The lead owns the inventory and duplicate decision; give any discovery worker the relevant existing-item list. `child_count` includes notes and non-PDF attachments and never proves that full text is present.
+
 Use the connected Zotero MCP tools for semantic library search, metadata reads, and full text when available. Use the bundled Web API helper for exact collection reads and all writes:
 
 ```bash
@@ -58,6 +67,8 @@ For every candidate:
 4. Do not fill plausible metadata from memory. Leave a nonrequired field blank when it cannot be verified.
 5. Use the edition's actual imprint and date. Preserve verified contributor roles; do not force an unsupported role into Zotero.
 6. Put stable identifiers in their native fields. Normalize DOI values without a `doi.org` prefix. Prefer ISBN-13 when the edition supplies it.
+
+For law-review articles, preserve the source title's leading article and question mark; use the specific issue's year. Distinguish a real subtitle from an appended piece-type label using the first page. Preserve verified student-note, comment, essay, or foreword designations separately in `extra` as a `genre:` line without overwriting other provenance. Verify journal abbreviations before populating `journalAbbreviation`; never invent one. These fields require the same provenance as other metadata.
 
 Precheck proposed records before writing:
 
@@ -119,13 +130,13 @@ python3 <skill-dir>/scripts/attach_pdf.py \
   --ledger <run-dir>/attachment-results.jsonl
 ```
 
-The helper rejects HTML masquerading as PDF, re-fetches Zotero attachment metadata, matches Zotero's MD5, computes a local SHA-256, and writes `VERIFIED` only after the parent, content type, and stored hash agree.
+The helper parses PDF structure and page content streams with `pypdf` or `PyPDF2`, rejects malformed or unreadable files, re-fetches Zotero attachment metadata, matches Zotero's MD5, and computes a local SHA-256. It writes `VERIFIED` only after parsing and the parent, content type, and stored hash checks pass. If neither parser is available, the attachment remains unverified; install a parser or disclose the incomplete PDF requirement. This is structural verification, not visual inspection or proof that the PDF contains the intended work.
 
 For each new attachment, the helper fetches the parent item's verified Zotero metadata and stores the PDF as `Creator - Year - Title.pdf`. It uses two creator surnames, switches to `FirstCreator et al.` for three or more, omits unavailable components, removes filesystem-unsafe characters, and limits the UTF-8 filename length. Use `--filename` only when a source needs a distinct descriptive label, such as a supplement; the override is normalized to the same safe PDF rules. Do not preserve opaque download names when parent metadata is available. `--verify-existing` audits an existing filename but does not rename it.
 
 ## Re-fetch and enforce the gate
 
-Verify exactly what Zotero stored, using only the keys returned by the write response:
+Verify exactly what Zotero stored, using the keys returned by the write response and the existing keys of every reused target item:
 
 ```bash
 python3 <skill-dir>/scripts/verify_items.py \
@@ -134,6 +145,8 @@ python3 <skill-dir>/scripts/verify_items.py \
 
 python3 <skill-dir>/scripts/validate_run.py <run-dir> --require-ready
 ```
+
+The verification output records the destination library and fetched item metadata. The gate checks target collection membership and agreement with planned bibliographic fields for every added or reused item. A local-input precheck cannot substitute for this readback. Collection and library list helpers follow every API page; `--limit` controls page size, not total coverage.
 
 For a genuine item without a resolvable ISBN or DOI, add a line to `manual-verifications.jsonl` following the run-format reference. A `MANUAL_PASS` requires an opened authoritative source, the item key, the source URL, access time, checked fields, and a concise note. Search snippets, memory, and secondary mentions do not qualify.
 

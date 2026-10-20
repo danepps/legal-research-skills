@@ -44,6 +44,14 @@ VERIFICATION_BASES = {
     "unavailable",
 }
 QUOTE_CHECK_STATUSES = {"verbatim", "normalized", "altered", "not_found", "unavailable"}
+UNIT_STATUSES = {"verified", "partial", "mismatch", "unverified", "not_applicable"}
+SEVERITIES = {"critical", "high", "medium", "low", "info"}
+METADATA_RECORD_TYPES = {
+    "journal_article_page", "journal_issue_page", "pdf_first_page",
+    "publisher_record", "library_catalog_record", "heinonline_record",
+    "ssrn_record", "official_case_record",
+}
+AUTHOR_ORDER_RECORD_TYPES = {"journal_article_page", "pdf_first_page", "publisher_record", "ssrn_record"}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -93,14 +101,32 @@ def occurs_in_draft(value: object, corpus: str) -> bool:
     return bool(text) and text in corpus
 
 
+def nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def page_delta(value: object) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        return int(value)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("run_dir", type=Path)
     parser.add_argument("--require-ready", action="store_true")
     parser.add_argument("--mark-complete", action="store_true")
+    parser.add_argument(
+        "--require-docx", action="store_true",
+        help="separately check the optional DOCX after Markdown is ready; never required for Markdown publication",
+    )
     args = parser.parse_args()
     if args.mark_complete and not args.require_ready:
         parser.error("--mark-complete requires --require-ready")
+    if args.require_docx and not args.require_ready:
+        parser.error("--require-docx requires --require-ready")
     errors: list[str] = []
     for name in REQUIRED_FILES:
         if not (args.run_dir / name).is_file():
@@ -118,7 +144,7 @@ def main() -> int:
     verdicts = load_jsonl(args.run_dir / "verdicts.jsonl", errors)
     audits = load_jsonl(args.run_dir / "verifier-audit.jsonl", errors)
     schema_version = manifest.get("schema_version")
-    if schema_version not in {2, 3}:
+    if schema_version not in {2, 3, 4}:
         errors.append("run-manifest.json: unsupported schema_version")
         schema_version = 2
     quote_check_path = args.run_dir / "quote-checks.jsonl"
@@ -128,6 +154,9 @@ def main() -> int:
             errors.append("missing quote-checks.jsonl")
         else:
             quote_checks = load_jsonl(quote_check_path, errors)
+    coverage: list[dict] = []
+    if schema_version >= 4:
+        coverage = load_jsonl(args.run_dir / "footnote-coverage.jsonl", errors)
     if extraction.get("schema_version") != 1:
         errors.append("extraction.json: unsupported schema_version")
     if manifest.get("draft_sha256") != extraction.get("input_sha256"):
@@ -161,6 +190,10 @@ def main() -> int:
             "complete_with_limits",
         }:
             errors.append("ready_for_validation manifest lacks valid completion_target")
+        final_status = (
+            completion_target if manifest.get("status") == "ready_for_validation"
+            else manifest.get("status")
+        )
         expected_counts = {
             status: sum(1 for row in verdicts if row.get("status") == status)
             for status in ("verified", "partial", "mismatch", "unverified")
@@ -223,14 +256,40 @@ def main() -> int:
                 )
 
         for index, verdict in enumerate(verdicts, 1):
+            if verdict.get("status") not in UNIT_STATUSES:
+                errors.append(f"verdicts.jsonl row {index}: invalid status")
+            if verdict.get("severity") not in SEVERITIES:
+                errors.append(f"verdicts.jsonl row {index}: invalid severity")
             if verdict.get("verification_basis") not in VERIFICATION_BASES:
                 errors.append(f"verdicts.jsonl row {index}: invalid verification_basis")
             if verdict.get("category") == "fabricated":
                 errors.append(f"verdicts.jsonl row {index}: use not_found_in_sources_checked")
+            if verdict.get("category") == "metadata_error" and verdict.get("status") == "mismatch":
+                if verdict.get("verification_basis") in {"snippet_only", "unavailable"}:
+                    errors.append(f"verdicts.jsonl row {index}: metadata correction cannot rest on snippets or unavailable evidence")
+                record = verdict.get("metadata_record")
+                if not isinstance(record, dict):
+                    errors.append(f"verdicts.jsonl row {index}: metadata_error lacks metadata_record")
+                else:
+                    if record.get("opened") is not True or record.get("exact_work_checked") is not True:
+                        errors.append(f"verdicts.jsonl row {index}: metadata record must be opened and match the exact work/part")
+                    if record.get("record_type") not in METADATA_RECORD_TYPES:
+                        errors.append(f"verdicts.jsonl row {index}: unsupported metadata record type")
+                    if not isinstance(record.get("location"), str) or not record["location"].strip():
+                        errors.append(f"verdicts.jsonl row {index}: metadata record lacks location")
+                    fields = record.get("fields")
+                    if not isinstance(fields, list) or not fields or any(
+                        not isinstance(field, str) or not field.strip() for field in fields
+                    ):
+                        errors.append(f"verdicts.jsonl row {index}: metadata record must identify corrected fields")
+                    elif "author_order" in fields and record.get("record_type") not in AUTHOR_ORDER_RECORD_TYPES:
+                        errors.append(f"verdicts.jsonl row {index}: author-order correction requires a title or landing page")
             adverse = verdict.get("status") in {"mismatch", "unverified", "partial"}
             if adverse and not occurs_in_draft(verdict.get("draft_find_string"), corpus):
                 errors.append(f"verdicts.jsonl row {index}: adverse draft_find_string not found in draft")
             if verdict.get("category") == "pincite_error":
+                if "page_delta" in verdict and page_delta(verdict["page_delta"]) is None:
+                    errors.append(f"verdicts.jsonl row {index}: page_delta must be an integer")
                 convention = verdict.get("pagination_convention")
                 if convention not in PAGINATION_CONVENTIONS or convention == "unknown":
                     errors.append(
@@ -254,6 +313,74 @@ def main() -> int:
         verdict_ids = [row.get("verdict_id") for row in verdicts]
         if len(verdict_ids) != len(set(verdict_ids)):
             errors.append("verdicts.jsonl contains duplicate verdict_id rows")
+        verdict_units = [row.get("unit_id") for row in verdicts]
+        if len(verdict_units) != len(set(verdict_units)):
+            errors.append("verdicts.jsonl must contain exactly one verdict per citation unit")
+
+        if schema_version >= 4:
+            notes = {row.get("number"): row for row in extraction.get("footnotes", [])}
+            selected = manifest.get("selected_footnotes")
+            if selected is not None and (
+                not isinstance(selected, list)
+                or any(not isinstance(n, int) or isinstance(n, bool) or n not in notes for n in selected)
+            ):
+                errors.append("run-manifest.json selected_footnotes must name extracted footnotes")
+                selected = []
+            expected_notes = set(notes) if selected is None else set(selected)
+            covered_notes: set[int] = set()
+            for index, row in enumerate(coverage, 1):
+                number = row.get("footnote_number")
+                if not isinstance(number, int) or isinstance(number, bool) or number not in expected_notes:
+                    errors.append(f"footnote-coverage.jsonl row {index}: unknown or out-of-scope footnote")
+                    continue
+                if number in covered_notes:
+                    errors.append(f"footnote-coverage.jsonl: duplicate footnote {number}")
+                covered_notes.add(number)
+                ids = row.get("unit_ids")
+                if not isinstance(ids, list) or any(not isinstance(value, str) for value in ids):
+                    errors.append(f"footnote-coverage.jsonl row {index}: unit_ids must be a string list")
+                    continue
+                expected_ids = {unit.get("unit_id") for unit in units if unit.get("footnote_number") == number}
+                if len(ids) != len(set(ids)) or set(ids) != expected_ids:
+                    errors.append(f"footnote-coverage.jsonl row {index}: unit_ids do not reconcile with citation units")
+                if row.get("status") == "reviewed":
+                    if not ids:
+                        errors.append(f"footnote-coverage.jsonl row {index}: reviewed footnote lacks citation units")
+                elif row.get("status") == "no_citations":
+                    if ids or not nonempty_string(row.get("reason")):
+                        errors.append(f"footnote-coverage.jsonl row {index}: no_citations requires a reason and no units")
+                else:
+                    errors.append(f"footnote-coverage.jsonl row {index}: footnote has not been reviewed")
+            for number in sorted(expected_notes - covered_notes):
+                errors.append(f"footnote lacks coverage review: {number}")
+            for index, unit in enumerate(units, 1):
+                number = unit.get("footnote_number")
+                if number not in expected_notes:
+                    errors.append(f"citation-units.jsonl row {index}: unknown or out-of-scope footnote")
+                elif unit.get("full_footnote") != notes[number].get("text"):
+                    errors.append(f"citation-units.jsonl row {index}: full_footnote differs from extraction")
+
+        unchecked_units = [
+            row for row in verdicts
+            if row.get("status") in {"unverified", "partial"}
+            or row.get("verification_basis") == "unavailable"
+        ]
+        unavailable_sources = [
+            row for row in sources
+            if row.get("status") == "unavailable" or row.get("verification_basis") == "unavailable"
+        ]
+        if (unchecked_units or unavailable_sources) and final_status != "complete_with_limits":
+            errors.append("unchecked items require completion_target/status complete_with_limits")
+        for row in unchecked_units:
+            if not nonempty_string(row.get("unlock_path")):
+                errors.append(f"unchecked citation unit lacks unlock_path: {row.get('unit_id')}")
+            if row.get("status") == "verified":
+                errors.append(f"verified citation unit has unavailable evidence: {row.get('unit_id')}")
+        for row in unavailable_sources:
+            if not any(nonempty_string(row.get(field)) for field in ("reason", "retrieval_notes")):
+                errors.append(f"unavailable source lacks reason or retrieval_notes: {row.get('source_id')}")
+            if not nonempty_string(row.get("unlock_path")):
+                errors.append(f"unavailable source lacks unlock_path: {row.get('source_id')}")
         if schema_version >= 3:
             prepared_by_id: dict[str, dict] = {}
             for index, row in enumerate(prepared, 1):
@@ -320,11 +447,11 @@ def main() -> int:
                     errors.append(f"quote-checks.jsonl row {index}: invalid status {status!r}")
                     continue
                 if status == "unavailable":
-                    if not str(check.get("reason", "")).strip():
+                    if not nonempty_string(check.get("reason")):
                         errors.append(
                             f"quote-checks.jsonl row {index}: unavailable check lacks reason"
                         )
-                    if not str(check.get("unlock_path", "")).strip():
+                    if not nonempty_string(check.get("unlock_path")):
                         errors.append(
                             f"quote-checks.jsonl row {index}: unavailable check lacks unlock_path"
                         )
@@ -371,10 +498,13 @@ def main() -> int:
                 adequate_matches = [
                     check
                     for check in checks
-                    if check.get("status") in {"verbatim", "normalized"}
-                    or (
-                        check.get("status") == "altered"
-                        and check.get("alteration_reviewed") is True
+                    if check.get("source_id") == unit_by_id.get(unit_id, {}).get("source_id")
+                    and (
+                        check.get("status") in {"verbatim", "normalized"}
+                        or (
+                            check.get("status") == "altered"
+                            and check.get("alteration_reviewed") is True
+                        )
                     )
                 ]
                 if verdict.get("status") == "verified" and not adequate_matches:
@@ -411,13 +541,20 @@ def main() -> int:
             adverse = verdict.get("status") in {"mismatch", "unverified", "partial"}
             exact_one_page = (
                 verdict.get("category") == "pincite_error"
-                and isinstance(verdict.get("page_delta"), int)
-                and abs(verdict["page_delta"]) == 1
+                and page_delta(verdict.get("page_delta")) in {-1, 1}
+            )
+            unknown_page_delta = (
+                verdict.get("category") == "pincite_error"
+                and verdict.get("pagination_convention") in {
+                    "printed_page", "star_or_header_precedes", "footer_follows"
+                }
+                and page_delta(verdict.get("page_delta")) is None
             )
             needs_audit = (
                 (adverse and verdict.get("severity") in HIGH_SEVERITY)
                 or verdict.get("category") == "not_found_in_sources_checked"
                 or exact_one_page
+                or unknown_page_delta
             )
             if needs_audit:
                 audit = audit_by_verdict.get(verdict.get("verdict_id"))
@@ -443,11 +580,23 @@ def main() -> int:
             model_lines = [line for line in report_text.splitlines() if line.startswith("Model:")]
             if model_lines and (not model_lines[0][len("Model:"):].strip() or "<" in model_lines[0]):
                 errors.append("report.md Model field must contain the exact lead model label")
+            # These are mechanical presence checks. The lead still must ensure
+            # the limitation description accurately explains what was unchecked.
+            limit_section = re.split(r"Couldn['’]t check", report_text, maxsplit=1)[-1]
+            for row in unchecked_units + unavailable_sources:
+                item_id = str(row.get("unit_id", row.get("source_id", "")))
+                if item_id and not re.search(r"(?<![\w-])" + re.escape(item_id) + r"(?![\w-])", limit_section):
+                    errors.append(f"report.md Couldn't check section omits unchecked item: {item_id}")
+                unlock = str(row.get("unlock_path", "")).strip()
+                if unlock and unlock not in limit_section:
+                    errors.append(f"report.md Couldn't check section omits unlock_path for: {item_id}")
 
         publication_policy = manifest.get("publication_policy", "markdown_only")
         if publication_policy not in {"matched_pair", "markdown_only", "docx_only"}:
             errors.append("run-manifest.json has invalid publication_policy")
-        if publication_policy in {"matched_pair", "docx_only"}:
+        # Derivative failure must not block the canonical Markdown gate, even
+        # for older manifests that requested a matched pair or DOCX output.
+        if args.require_docx:
             docx = args.run_dir / "report.docx"
             verification_record_path = args.run_dir / "docx-verification.json"
             if not docx.is_file() or docx.stat().st_size == 0:

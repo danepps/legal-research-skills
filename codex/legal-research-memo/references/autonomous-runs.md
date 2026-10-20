@@ -100,6 +100,8 @@ On resume:
 4. Reuse directly verified material unless its currentness or content may have changed.
 5. Continue from `next_action`; do not repeat completed searches merely to rebuild context.
 
+Run `validate_research_run.py RUN_DIR` for checkpoint integrity during research. Pending coverage and final claim-to-prose mapping do not make an otherwise valid pre-draft checkpoint fail. The validator enforces those completion checks with `--require-ready`, when the run is marked `complete`, or when the respective completion gate is marked `pass`; do not mark `draft_claim_map` passed before the final memo exists. Missing or unreadable required logs remain validation errors. A disputed material claim still requires directly verified supporting or adverse evidence.
+
 If state and artifacts conflict, prefer the underlying verified source, repair the manifest, record the repair, and continue.
 
 ## Completion gates

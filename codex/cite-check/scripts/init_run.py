@@ -62,8 +62,16 @@ def main() -> int:
         encoding="utf-8",
     )
     now = datetime.now(timezone.utc).isoformat()
+    coverage = [
+        {"footnote_number": row["number"], "status": "pending", "unit_ids": []}
+        for row in extraction.get("footnotes", [])
+        if selected_footnotes is None or row["number"] in selected_footnotes
+    ]
+    (args.run_dir / "footnote-coverage.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in coverage), encoding="utf-8"
+    )
     manifest = {
-        "schema_version": 3,
+        "schema_version": 4,
         "draft_path": str(snapshot.resolve()),
         "original_draft_path": str(args.draft.resolve()),
         "draft_sha256": extraction["input_sha256"],

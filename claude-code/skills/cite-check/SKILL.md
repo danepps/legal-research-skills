@@ -86,13 +86,13 @@ Two options — cite-check has no `fable` escalation, so the ladder is shorter t
 **Do NOT reuse /proofread's rationale here — the two `deep`s are different mechanisms.**
 Proofread's deep adds a second offset extraction pass (a recall play, backed by the ~75–80%
 same-model overlap finding). Cite-check's deep does **not** add a pass or re-fetch anything: it
-raises verify-agent effort from `low` to `medium` (workflow line 557) and lifts the soft cap. It buys
+raises verify-agent effort from `low` to `medium` and lifts the soft cap. It buys
 care per quote, not more quotes. Quote *coverage* is identical either way — every quote is checked in
 both tiers — so don't imply Standard skips anything.
 
 Timing matters less here than in proofread (deep doesn't change extraction, so a later re-run can
-replay segment/existence from cache via `resumeFromRunId`), but verify is the bulk of the run — 26 of
-33 agents on the National Muffler draft — so a tier change still means re-running the expensive
+replay segment/existence from cache via `resumeFromRunId`), but verify is the bulk of the run — on
+a real draft roughly three agents in four — so a tier change still means re-running the expensive
 stage. Ask first.
 
 ### 2. Pre-flight (do this BEFORE launching — a mid-run permission prompt can kill an agent)
@@ -107,19 +107,19 @@ stage. Ask first.
    `~/.config/courtlistener/` directory proves nothing. If the probe actually fails the run
    still works (case existence falls back to web), but mention it once at deliver time.
    Token page: https://www.courtlistener.com/profile/api-token/
-3. Resolve the project's Zotero library (projects differ — some are co-authored group libraries,
-   some solo personal-library work):
+3. Resolve the project's Zotero library, if the user has one (Zotero is optional; without it
+   scholarship is checked against the open web):
    a. Look for a `Zotero library:` line in the project folder's `CLAUDE.md` (or `AGENTS.md`). If
       present, use the MCP server it names and skip to (c).
-   b. If absent, ASK the user which Zotero library this project uses (personal library, or a named
-      group library), then record the answer as a `Zotero library: <name> → MCP server <server>`
-      line in the project folder's `CLAUDE.md` so future runs don't re-ask.
-   c. Confirm that MCP server actually exists (personal = `zotero`; group libraries get their own
-      server, e.g. `zotero-group` for "5A general law", group ID in `~/.claude.json`). If the
-      project's library has NO server yet, THIS is the moment to offer to add one: duplicate the
-      `zotero` entry in `~/.claude.json` under `zotero-<slug>` with `ZOTERO_LIBRARY_TYPE=group` and
-      the group's `ZOTERO_LIBRARY_ID` (find it via zotero.org group URL or the draft's field codes);
-      note it needs a Claude Code restart, so agents fall back to the web this run.
+   b. If absent and a Zotero MCP server is registered, ASK the user which Zotero library this
+      project uses (personal library, or a named group library), then record the answer as a
+      `Zotero library: <name> → MCP server <server>` line in the project folder's `CLAUDE.md` so
+      future runs don't re-ask. If no Zotero server is registered at all, don't ask — pass
+      `zotero:false` and move on.
+   c. Confirm that MCP server actually exists (`/legal-research:setup` registers a personal
+      library as `zotero` and a group library as `zotero-<name>`). If the project's library has
+      no server yet, offer to add it through `/legal-research:setup`; it takes effect after a
+      Claude Code restart, so agents fall back to the web this run.
    d. Pass the server name as `zoteroServer` (and `zotero:false` if no usable server this run).
 
 ### 2b. Snapshot the draft (always)
@@ -154,7 +154,8 @@ holds the two arrays the workflow takes (`instances`, `secondary`).
 `extract_cites.py` prints a summary (footnote_count, body/footnote quote counts, unique_case_cite_count,
 supra_problem_candidates, plus `form_findings` / `form_short_form` / `form_typeface` /
 `formatting_available` / `case_name_candidates` from the form layer). `prepare_units.py` prints
-unit_count / case_cites / supra_problems. Read `extract.json` to pull the arrays the workflow needs:
+unit_count / case_cites / supra_problems / unit_notes (the id → footnote list the workflow takes as
+`unitNotes`). Read `extract.json` to pull the arrays the workflow needs:
 `unique_case_cites`, `supra_problem_candidates`, and the whole `form_checks` block.
 
 `formatting_available: false` means a markdown/plain-text draft — short forms still run, typeface
@@ -180,6 +181,7 @@ Workflow({
     draftName:   "<draft filename without extension>",
     footnoteCount: <extract.footnote_count>,
     unitCount:     <prepare.unit_count>,
+    unitNotes:     <prepare.unit_notes>,               // [[id, footnote], …] — labels findings by note
     caseCites:     <extract.unique_case_cites>,        // array
     supraProblems: <extract.supra_problem_candidates>, // array
     formChecks:    <extract.form_checks>,              // typeface + short forms (whole block)
@@ -242,8 +244,7 @@ The workflow returns `{ report, counts, exitState, degradation, artifactsCaught,
   `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py --render "<scratch>/ledger_final.json" > "<draft's directory>/<draftName> — Citation Ledger.md"`
   — one row per citation instance (note, kind, disposition, cite text). This is the audit trail
   behind section H; `counts.ledger` has the totals for the TL;DR.
-- **Research memo header & production footer (required, per the author — global rule in
-  ~/.claude/CLAUDE.md):** the report opens directly under the title with the structured
+- **Research memo header & production footer (required):** the report opens directly under the title with the structured
   header block (`Topic:` / `Date:` / `By:`); the `Production details:` block goes at the
   **very end of the file** (after everything else, set off by a `---` rule) — never up
   top. `Date` is local time (`date "+%Y-%m-%d %H:%M %Z"` when writing the file); `By` is
@@ -275,7 +276,10 @@ The workflow returns `{ report, counts, exitState, degradation, artifactsCaught,
   it's a sign the guardrail is working (not something to hide).
 - Surface `exitState`: `complete` → deliver; `complete_with_limits` → deliver, noting the
   unverifiable items and any degradation; if the budget guard degraded coverage, say which sources
-  were batched/skipped and offer a targeted re-run.
+  were batched/skipped and offer a targeted re-run. If `counts.quotesNotChecked` is non-zero, an
+  agent failed mid-run and those quotes were never verified — say so and offer a targeted re-run
+  of their footnotes; if `counts.highSeveritySingleChecker` is non-zero, say those findings rest on
+  one checker.
 - Offer a **.docx** copy via the bundled converter:
   `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/md2docx.py "<report>.md" "<report>.docx" "<Title>"`.
 - Note once, in the deliver message: free/open-web sources only, so a Westlaw/Lexis pass and a

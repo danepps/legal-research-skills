@@ -73,6 +73,8 @@ Use small, explicit quotas per lane:
 
 Prefer one well-formed query that tests a gap over many lightly varied searches. When a query family stops producing new sources, close it.
 
+Apply a per-source access cap as well as the lane budget: normally three retrieval attempts across preferred sources, alternate copies, and transient retries. Carry the same cap into rescue/fill and verification lanes. Stop on a repeated paywall or authorization failure; use only separately authorized connectors or bounded access procedures. Do not escalate an ordinary source fetch into browser/proxy/SSO loops or modify global permissions. For raw downloads, enforce byte and extraction-size limits, retain source/text hashes and truncation metadata, and give concurrent workers unique output paths. A capped or unknown-length extraction is partial evidence even if it contains the requested quotation.
+
 ## Context controls
 
 - Set a maximum context size for every worker call.

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -113,6 +114,38 @@ def load_json(path: Path) -> Any:
         raise RuntimeError(f"cannot read JSON from {path}: {exc}") from exc
 
 
+def request_paginated(path: str, key: str) -> list[dict[str, Any]]:
+    """Read every API page, rejecting foreign or looping continuation links."""
+    items: list[dict[str, Any]] = []
+    visited: set[str] = set()
+    while path:
+        if path in visited:
+            raise RuntimeError("Zotero pagination repeated a page")
+        visited.add(path)
+        _, page, headers = request(path, key)
+        if not isinstance(page, list) or any(not isinstance(item, dict) for item in page):
+            raise RuntimeError("Zotero list response must be an array of objects")
+        items.extend(page)
+        headers = {name.lower(): value for name, value in headers.items()}
+        next_url = ""
+        for link in headers.get("link", "").split(","):
+            match = re.search(r'<([^>]+)>;\s*rel="?next"?', link)
+            if match:
+                next_url = match.group(1)
+                break
+        if next_url:
+            parsed = urllib.parse.urlsplit(urllib.parse.urljoin(API + path, next_url))
+            if f"{parsed.scheme}://{parsed.netloc}" != API:
+                raise RuntimeError("Zotero pagination returned a foreign destination")
+            path = parsed.path + ("?" + parsed.query if parsed.query else "")
+        else:
+            total = headers.get("total-results", "")
+            if total.isdigit() and len(items) < int(total):
+                raise RuntimeError("Zotero list response is incomplete and has no next page")
+            path = ""
+    return items
+
+
 def write_output(value: Any, path: Path | None) -> None:
     rendered = json.dumps(value, indent=2, ensure_ascii=False) + "\n"
     if path:
@@ -167,6 +200,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = subs.add_parser("collections", help="list collections")
     add_common_library(p)
     p.add_argument("--limit", type=int, default=100)
+
+    p = subs.add_parser("inventory", help="read a complete compact top-level library inventory")
+    add_common_library(p)
+    p.add_argument("--output", type=Path)
 
     p = subs.add_parser("collection-items", help="list top-level items in a collection")
     add_common_library(p)
@@ -229,15 +266,34 @@ def main() -> int:
         kind, library_id = parse_library(args.library, default_type, default_id)
         base = prefix(kind, library_id)
 
+        if args.command == "inventory":
+            values = request_paginated(f"{base}/items/top?limit=100&format=json", api_key)
+            inventory = []
+            for value in values:
+                item = value.get("data", value)
+                if not isinstance(item, dict):
+                    raise RuntimeError("Zotero inventory item has malformed metadata")
+                if item.get("itemType") in {"attachment", "note"}:
+                    continue
+                row = {field: item.get(field) for field in (
+                    "key", "itemType", "title", "creators", "date", "publicationTitle", "publisher",
+                    "ISBN", "DOI", "collections",
+                )}
+                meta = value.get("meta")
+                row["child_count"] = meta.get("numChildren") if isinstance(meta, dict) else None
+                inventory.append(row)
+            write_output(inventory, args.output)
+            return 0
+
         if args.command == "collections":
             query = urllib.parse.urlencode({"limit": max(1, min(args.limit, 100)), "format": "json"})
-            _, value, _ = request(f"{base}/collections?{query}", api_key)
+            value = request_paginated(f"{base}/collections?{query}", api_key)
             write_output(value, None)
             return 0
         if args.command == "collection-items":
             collection = urllib.parse.quote(args.collection, safe="")
             query = urllib.parse.urlencode({"limit": max(1, min(args.limit, 100)), "format": "json"})
-            _, value, _ = request(f"{base}/collections/{collection}/items/top?{query}", api_key)
+            value = request_paginated(f"{base}/collections/{collection}/items/top?{query}", api_key)
             write_output(value, None)
             return 0
         if args.command == "search-items":
@@ -247,7 +303,7 @@ def main() -> int:
                 "limit": max(1, min(args.limit, 100)),
                 "format": "json",
             })
-            _, value, _ = request(f"{base}/items/top?{query}", api_key)
+            value = request_paginated(f"{base}/items/top?{query}", api_key)
             write_output(value, None)
             return 0
         if args.command == "get-items":

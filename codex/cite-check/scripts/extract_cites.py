@@ -108,7 +108,10 @@ def quote_rows(
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for paragraph_number, raw_paragraph in enumerate(paragraphs, 1):
-        paragraph = rendered_marker(raw_paragraph, id_to_number)
+        # Both parsers have already converted OOXML/Markdown IDs to rendered
+        # footnote numbers. Applying the original ID map twice corrupts notes
+        # after deletions leave nonconsecutive OOXML IDs (for example 2, 3).
+        paragraph = raw_paragraph
         for match in QUOTE_PATTERN.finditer(paragraph):
             quote = normalize(FN_MARKER.sub("", match.group(1)))
             if len(quote.split()) < min_words:

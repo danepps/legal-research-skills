@@ -20,7 +20,9 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/library_inventory.py --group 
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/library_inventory.py --group <ID> --grep <terms>
 ```
 
-One line per top-level item: year, PDF-or-not, authors, title, publication, item key.
+One line per top-level item: year, PDF-or-not, authors, title, publication, item key. The PDF
+column is true only when a child attachment with content type `application/pdf` exists (a
+child note or an HTML snapshot does not count); `child_count` is Zotero's raw child total.
 A 100-item library is well under 3k tokens. There is no budget reason to skip this and no
 substitute for it. For a large library (thousands of items), save the full dump to a file and
 read the relevant `--grep` slices plus the overall shape — but the coordinator still owns the
@@ -193,11 +195,21 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/check_source.py --keys K1,K2,
 
 It resolves each item's ISBN through five independent catalogs (Open Library edition +
 search index, Google Books, Harvard Library, Library of Congress) or its DOI through
-Crossref, and does normalized string comparison of title/authors/year. Verdicts: `PASS`,
-`FAIL` (resolved but mismatched), `UNRESOLVED` (identifier not found in any catalog
-checked — a prompt to re-verify, not proof of fabrication: catalogs are incomplete and
-sometimes down), `BAD_ISBN` (checksum), `NO_IDENTIFIER`. `--stdin` accepts
-a JSON array of Zotero-shaped items to pre-check candidates *before* adding.
+Crossref, and does normalized whole-token comparison of title/authors/year (a claimed
+surname must match a whole name token, so Smith is not Smithson; the PASS detail names which
+fields the catalog actually supplied). Verdicts: `PASS`, `FAIL` (resolved but mismatched),
+`UNRESOLVED` (every catalog completed a search and none has the identifier — a prompt to
+re-verify, not proof of fabrication: catalogs are incomplete), `UNAVAILABLE` (at least one
+catalog could not be searched — HTTP error, timeout, bad JSON — and nothing resolved; the
+detail lists what failed and what was searched; lack of access is not evidence of
+nonexistence, so retry later or verify by hand), `BAD_ISBN` (checksum), `NO_IDENTIFIER`.
+`--stdin` accepts a JSON array of Zotero-shaped items to pre-check candidates *before*
+adding. The Zotero fetch itself is reconciled: a `--collection` run follows pagination and
+checks the declared total, and a `--keys` run requires every requested key back exactly
+once; any shortfall exits 2 with nothing verified rather than passing vacuously.
+`--library user:<ID>|group:<ID>` and `--server <mcp-server-name>` pick the library when
+the environment does not say (the default reads the `zotero` entry setup wrote in
+`~/.claude.json`).
 
 **Every item you added must end PASS.** Playbook for non-PASS:
 - `FAIL` on one source only → usually catalog corruption; the checker already tries the
@@ -228,7 +240,12 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/build-library/attach_pdf.py --item <KEY> --
 ```
 
 It refuses non-PDF bytes (a bot-wall/login page starts with HTML, not `%PDF-`), so a
-failed fetch fails loudly instead of attaching garbage. Three tiers, because getting the
+failed fetch fails loudly instead of attaching garbage. It resolves the library (type, id,
+key) only when it runs — from `--library user:<ID>|group:<ID>`, else the `ZOTERO_*`
+environment variables, else the Zotero MCP server entry in `~/.claude.json` (`--server`
+or the default `zotero`) — uses `/groups/<id>` for a group library, and after registering
+reads the attachment back to confirm its parent, library, content type and md5 before
+printing PASS; anything else is FAIL with exit 1. Three tiers, because getting the
 bytes is the hard part (verified 2026-07-16):
 
 - **Tier 1 — open-access / curl-reachable** (most law-review repositories, SSRN, digital

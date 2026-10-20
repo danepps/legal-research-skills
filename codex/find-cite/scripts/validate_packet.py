@@ -195,8 +195,19 @@ def validate(packet: dict[str, Any], require_ready: bool) -> list[str]:
                 errors.append(
                     f"{prefix}.limitations: explain reliance on a nonmajority or uncertain opinion part"
                 )
-            if not true(context.get("current_validity_checked")):
-                errors.append(f"{prefix}.case_context.current_validity_checked: must be true")
+            validity_checked = context.get("current_validity_checked")
+            validity_required = context.get("current_validity_required", True)
+            if not isinstance(validity_required, bool):
+                errors.append(f"{prefix}.case_context.current_validity_required: must be a boolean")
+            if not isinstance(validity_checked, bool):
+                errors.append(f"{prefix}.case_context.current_validity_checked: must be a boolean")
+            elif not validity_checked:
+                if not authority_limitations:
+                    errors.append(f"{prefix}.limitations: disclose the omitted current-validity check")
+                if status == "ready" and validity_required is not False:
+                    errors.append(
+                        f"{prefix}.case_context.current_validity_checked: must be true for a ready current-law authority"
+                    )
             if not nonempty_string(context.get("validity_basis")):
                 errors.append(f"{prefix}.case_context.validity_basis: must describe the check")
 

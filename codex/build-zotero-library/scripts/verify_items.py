@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from zotero_api import credentials, parse_library, prefix, request as zotero_request
+from zotero_api import credentials, parse_library, prefix, request as zotero_request, request_paginated
 
 UA = "codex-build-zotero-library-verifier/1.0"
 TIMEOUT = 25
@@ -48,7 +48,7 @@ def fetch_json(url: str) -> Fetch:
 def normalize(value: Any) -> str:
     text = unicodedata.normalize("NFKD", str(value or ""))
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    text = re.sub(r"[^a-z0-9 ]+", " ", text.lower())
+    text = "".join(ch if ch.isalnum() else " " for ch in text.lower())
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -281,7 +281,8 @@ def compare(item: dict[str, Any], source: dict[str, Any]) -> tuple[bool, list[st
     claimed_creators = creator_names(item)
     source_creators = normalize(" ".join(str(value) for value in source.get("authors") or []))
     if claimed_creators and source_creators:
-        missing = [name for name in claimed_creators if normalize(name) not in source_creators]
+        missing = [name for name in claimed_creators
+                   if not normalize(name) or f" {normalize(name)} " not in f" {source_creators} "]
         if missing:
             problems.append("creator mismatch: " + ", ".join(missing))
         else:
@@ -299,7 +300,15 @@ def verify_identifier(
     found_any = False
     available_any = False
     for resolver in resolvers:
-        fetched = resolver(identifier)
+        try:
+            fetched = resolver(identifier)
+            if fetched.status == "ok" and (
+                not isinstance(fetched.value, list)
+                or any(not isinstance(source, dict) for source in fetched.value)
+            ):
+                fetched = Fetch("error", detail="malformed resolver records")
+        except (AttributeError, TypeError, ValueError, KeyError) as exc:
+            fetched = Fetch("error", detail=f"malformed resolver response ({type(exc).__name__})")
         time.sleep(PAUSE)
         attempt: dict[str, Any] = {"resolver": resolver.__name__, "status": fetched.status}
         if fetched.detail:
@@ -420,17 +429,22 @@ def fetch_zotero_items(library: str | None, keys: str | None, collection: str | 
     elif collection:
         collection_key = urllib.parse.quote(collection, safe="")
         query = urllib.parse.urlencode({"limit": 100, "format": "json"})
-        _, payload, _ = zotero_request(
-            f"{base}/collections/{collection_key}/items/top?{query}", api_key
-        )
+        payload = request_paginated(f"{base}/collections/{collection_key}/items/top?{query}", api_key)
     else:
         raise RuntimeError("provide --keys or --collection")
-    return [
+    if not isinstance(payload, list) or any(not isinstance(entry, dict) for entry in payload):
+        raise RuntimeError("Zotero item response must be an array of objects")
+    items = [
         entry.get("data", entry) for entry in payload
         if isinstance(entry, dict)
         and isinstance(entry.get("data", entry), dict)
         and entry.get("data", entry).get("itemType") not in {"attachment", "note"}
     ]
+    if keys:
+        returned = [str(item.get("key", "")) for item in items]
+        if len(returned) != len(set(returned)) or set(returned) != set(key_list):
+            raise RuntimeError("Zotero response did not return every requested item key exactly once")
+    return items
 
 
 def main() -> int:
@@ -450,11 +464,20 @@ def main() -> int:
         else:
             items = fetch_zotero_items(args.library, args.keys, args.collection)
         results = [verify_item(item) for item in items]
+        library = None
+        if args.keys or args.collection:
+            _, default_type, default_id = credentials()
+            kind, library_id = parse_library(args.library, default_type, default_id)
+            library = f"{kind}:{library_id}"
+            for item, result in zip(items, results):
+                result["stored_item"] = item
         summary: dict[str, int] = {}
         for result in results:
             summary[result["verdict"]] = summary.get(result["verdict"], 0) + 1
         output = {
             "schema_version": 1,
+            "library": library,
+            "source": "zotero" if library else "input",
             "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
             "results": results,
             "summary": summary,

@@ -127,8 +127,55 @@ run(tool_pair("Bash", "x"), BAD, retry=True, session=sid)
 out, err = run(tool_pair("Bash", "x"), BAD, retry=True, session=sid)
 check("loop guard releases after repeated blocks", out == {} and "allowing" in err)
 
-out, _ = run(tool_pair("Agent", "The court held: " + STATUTE), f'The agent reported "{STATUTE}".')
-check("Agent tool result counts as a source", out == {})
+# ---- another model's report is not a source (CLAUDE-04) --------------------------------
+INVENTED = ("The purple tribunal of Zanzibar ratified the lunar fishing covenant in the year "
+            "of the comet")
+REPLY = f'The court said "{INVENTED}".'
+
+out, _ = run(tool_pair("Agent", "Summary: " + INVENTED), REPLY)
+check("sentence only in an Agent tool result is blocked", out.get("decision") == "block")
+
+out, _ = run(tool_pair("Task", "Summary: " + INVENTED), REPLY)
+check("sentence only in a Task (old Agent) result is blocked", out.get("decision") == "block")
+
+out, _ = run(tool_pair("Workflow", json.dumps({"report": INVENTED})), REPLY)
+check("sentence only in a Workflow result is blocked", out.get("decision") == "block")
+
+out, _ = run(tool_pair("SendMessage", "Reply from agent: " + INVENTED), REPLY)
+check("sentence only in a SendMessage reply is blocked", out.get("decision") == "block")
+
+NOTICE = (f"<task-notification>\n<task-id>x</task-id>\n<status>completed</status>\n"
+          f"<result>{INVENTED}</result>\n</task-notification>")
+note = [{"type": "user", "promptSource": "system", "origin": {"kind": "task-notification"},
+         "message": {"content": NOTICE}}]
+out, _ = run(note, REPLY)
+check("sentence only in a <task-notification> record is blocked", out.get("decision") == "block")
+
+out, _ = run([{"type": "user", "message": {"content": NOTICE}}], REPLY)
+check("<task-notification> text blocked even without origin metadata", out.get("decision") == "block")
+
+peer = [{"type": "user", "isMeta": True, "promptSource": "system", "origin": {"kind": "peer"},
+         "message": {"content": "Another Claude session sent a message:\n<agent-message from=\"a1\">\n"
+                                f"[Subagent hand-back] The report follows:\n  {INVENTED}\n</agent-message>"}}]
+out, _ = run(peer, REPLY)
+check("sentence only in a relayed subagent hand-back is blocked", out.get("decision") == "block")
+
+sub_prompt = [{"type": "user", "isSidechain": True, "agentId": "a1",
+               "message": {"content": "Find the case that says: " + INVENTED}}]
+out, _ = run([], REPLY, subagents={"agent-a1.jsonl": sub_prompt})
+check("parent's prompt inside a subagent transcript is not a source", out.get("decision") == "block")
+
+sub_bash = tool_pair("Bash", "grep hit: " + INVENTED, tid="b1")
+out, _ = run(tool_pair("Agent", "Summary: " + INVENTED), REPLY, subagents={"agent-a1.jsonl": sub_bash})
+check("same sentence in a Bash output inside the subagent transcript passes", out == {})
+
+out, _ = run(note + tool_pair("Bash", INVENTED), REPLY)
+check("human-free session with raw Bash output still passes", out == {})
+
+memo_i = f'# Memo\n\n"{INVENTED}"\n'
+out, _ = run(prompt("write it") + write_call("/tmp/memo.md", memo_i) + note, "Memo written.")
+check("a <task-notification> does not start a new turn (memo before it still checked)",
+      out.get("decision") == "block" and "[memo.md]" in out.get("reason", ""))
 
 # ---- the skill gate -------------------------------------------------------------------
 out, _ = run(tool_pair("Bash", "x"), BAD, skill=False)

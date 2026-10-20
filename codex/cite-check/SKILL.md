@@ -54,6 +54,8 @@ Read [references/verification-protocol.md](references/verification-protocol.md) 
 
 Use `prepared-units.jsonl` as context scaffolding. Convert every citation instance—not only every quotation—into `citation-units.jsonl`.
 
+For new schema-v4 runs, reconcile every in-scope footnote in `footnote-coverage.jsonl`. Set its `status` to `reviewed` and list every corresponding `unit_id` in `unit_ids`. If the footnote contains no citations, use `no_citations`, an empty `unit_ids` list, and a concrete `reason`. The initializer leaves these rows `pending`; the readiness gate will reject an omitted footnote. This is a lead-reviewed inventory, not a claim that the extractor can parse every citation or find every short quotation automatically.
+
 For each unit:
 
 - copy `draft_citation_text` verbatim from the footnote;
@@ -90,7 +92,9 @@ python3 <skill-dir>/scripts/verify_quotes.py RUN_DIR/cached-sources/SOURCE.txt \
 
 Use `verbatim` and `normalized` as deterministic match evidence. An `altered` result requires a human/model review of whether the marked brackets or ellipses are honest; set `alteration_reviewed: true` only after that review. `not_found` means only that the quote did not match this retrieved file. If no source text could be obtained, add an `unavailable` quote-check row with the reason and concrete unlock path. Never convert a fuzzy hint into source text without opening the indicated passage.
 
-For pincites, identify the pagination convention before proposing a correction: printed page, star/header marker preceding text, or footer marker following text. Treat an exact-one-page difference as presumptively ambiguous until independently checked against the visual page.
+Keep exactly one final verdict per citation unit. A quote found only in a sibling source cannot verify the source assigned to the unit; resolve the attribution or report the discrepancy. For each `partial` or `unverified` verdict, record a concrete `unlock_path`. An unavailable source also needs `reason` (or `retrieval_notes`) and `unlock_path`. List those unit/source IDs and their exact unlock paths in **Couldn't check**, and use `complete_with_limits`.
+
+For pincites, identify the pagination convention before proposing a correction: printed page, star/header marker preceding text, or footer marker following text. Record `page_delta` as an integer when proposing a page correction. Treat an exact-one-page difference as presumptively ambiguous until independently checked against the visual page; page corrections with no recoverable delta also require an audit.
 
 ### 5. Verify the verifier
 
@@ -122,6 +126,8 @@ Tokens: <aggregate exact runtime usage or unavailable (runtime did not expose ex
 Append the required `Topic:`, local `Date:`, `By: Codex-<exact lead model label>`, and `Production details:` block after all substantive content. Include elapsed time through audit, actual subagent roles (or `subagents: none`), and aggregate runtime usage or `tokens unavailable (runtime did not expose exact usage)`. Preserve the provenance header for the validator. Follow any user-specified publication location or naming policy.
 
 For a requested DOCX, use one direct Pandoc conversion from the canonical Markdown with minimal styling. Then run `scripts/verify_docx_ooxml.py DOCX --markdown MARKDOWN --output <run-dir>/docx-verification.json`, inspect the extracted OOXML text for substantive synchronization, and disclose that pagination and visual layout were not rendered. Never invoke `soffice`, `libreoffice`, `render_docx.py`, the documents skill, or any command/helper/runtime that launches LibreOffice; do not run DOCX-to-PDF-to-image conversion inside or outside the sandbox. A DOCX failure must not block publication of the audited Markdown.
+
+The ordinary readiness gate checks the canonical Markdown even when a legacy manifest says `matched_pair` or `docx_only`. To check the optional derivative record afterward, run `validate_run.py <run-dir> --require-ready --require-docx` separately. Do not add `--require-docx` to the Markdown publication gate.
 
 ### 7. Validate readiness
 

@@ -14,9 +14,22 @@ PLUGIN_SKILLS = {
     "legal-research", "cite-check", "find-cite", "proofread", "build-library", "case-prep",
 }
 
-# Tool results that never count as a source: model-written summaries, and the
+# Tool results that never count as a source: model-written summaries (a WebFetch
+# digest, or the report an Agent/Task/Workflow run or a SendMessage reply hands
+# back, which is another model's prose, not the text it fetched), and the
 # acknowledgements of Claude's own writes (an Edit result echoes the edited text).
-EXCLUDED_RESULT_TOOLS = {"WebFetch", "WebSearch", "Write", "Edit", "MultiEdit", "NotebookEdit"}
+# What a subagent actually fetched is read from its own transcript instead.
+EXCLUDED_RESULT_TOOLS = {
+    "WebFetch", "WebSearch", "Write", "Edit", "MultiEdit", "NotebookEdit",
+    "Agent", "Task", "Workflow", "SendMessage", "ReadNotifications", "SubagentHandback",
+}
+
+# A background agent's completion notice (a Workflow's result rides inside it) and a
+# subagent's hand-back relayed as a peer message both arrive as user-typed records.
+_AGENT_BLOCK_RE = re.compile(
+    r"<task-notification>.*?</task-notification>|<agent-message\b[^>]*>.*?</agent-message>",
+    re.S | re.I,
+)
 
 ENV_SWITCH = "LEGAL_RESEARCH_QUOTE_CHECK"
 
@@ -65,6 +78,25 @@ def subagent_transcripts(transcript_path):
     base = transcript_path[: -len(".jsonl")]
     pattern = os.path.join(base, "subagents", "**", "*.jsonl")
     return sorted(p for p in glob.glob(pattern, recursive=True) if os.path.isfile(p))
+
+
+def harness_record(o):
+    """True for a user-typed record that the harness or another model wrote rather than
+    the person: a subagent's hand-back or completion notice, hook feedback, a skill's
+    injected context. The person's own prompts carry promptSource typed/queued and
+    origin.kind human (or, in older transcripts, no such fields at all)."""
+    if o.get("isMeta"):
+        return True
+    if o.get("promptSource") == "system":
+        return True
+    origin = o.get("origin")
+    return isinstance(origin, dict) and origin.get("kind") in {"task-notification", "peer"}
+
+
+def strip_agent_blocks(text):
+    """Remove agent notices from a user record's text, for transcripts whose records
+    carry no origin metadata."""
+    return _AGENT_BLOCK_RE.sub(" ", text or "")
 
 
 def block_text(content):

@@ -76,7 +76,10 @@ if [ -n "$WANT_CODEX" ] && command -v codex >/dev/null 2>&1 && codex plugin --he
   echo "Codex: the $CODEX_PLUGIN plugin"
   if codex plugin marketplace list 2>/dev/null | grep -q "$CODEX_MARKET"; then
     echo "  marketplace $CODEX_MARKET already registered; refreshing"
-    codex plugin marketplace upgrade "$CODEX_MARKET" >/dev/null 2>&1 || true
+    if ! codex plugin marketplace upgrade "$CODEX_MARKET"; then
+      echo "Codex marketplace refresh failed; the current release was not installed. Retry the installer after resolving the error above." >&2
+      exit 1
+    fi
   else
     codex plugin marketplace add "$REPO"
   fi
@@ -92,7 +95,10 @@ if [ -n "$WANT_CODEX" ]; then
   fi
   if [ -d "$DEST/.git" ]; then
     echo "Codex: updating $DEST"
-    git -C "$DEST" pull -q --ff-only || echo "  (could not fast-forward; keeping the existing copy)"
+    if ! git -C "$DEST" pull -q --ff-only; then
+      echo "Codex checkout could not be updated; existing files were preserved. Resolve the checkout update and retry." >&2
+      exit 1
+    fi
   elif [ -e "$DEST" ]; then
     echo "$DEST exists but is not a git checkout; move it aside and run again." >&2
     exit 1

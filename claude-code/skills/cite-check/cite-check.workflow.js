@@ -36,10 +36,16 @@ const LEDGER = Array.isArray(A.ledger) ? A.ledger : []
 const SECONDARY_CITES = Array.isArray(A.secondaryCites) ? A.secondaryCites : []
 const DEEP = !!A.deep
 const ZOTERO_OK = A.zotero !== false // assume available unless SKILL.md says otherwise
-const ZOTERO_SERVER = A.zoteroServer || 'zotero-group' // per-project; SKILL.md pre-flight resolves it
+const ZOTERO_SERVER = A.zoteroServer || 'zotero' // per-project; SKILL.md pre-flight resolves it (setup registers "zotero" for a personal library, "zotero-<name>" for a group)
 // Partial pass (DESIGN.md: `--footnotes 45-80`): SKILL.md resolves a footnote
 // range/list to explicit unit ids and passes them here. Empty => full draft.
 const UNIT_IDS = Array.isArray(A.unitIds) && A.unitIds.length ? A.unitIds.slice() : null
+// id -> footnote number for every quote unit (prepare_units.py prints `unit_notes`; SKILL.md
+// passes it as unitNotes). Deterministic, so a report line never depends on an agent echoing
+// the footnote. Accepts [[id, note], ...] or {id: note}.
+const UNIT_NOTES = new Map()
+if (Array.isArray(A.unitNotes)) for (const [i, n] of A.unitNotes) UNIT_NOTES.set(Number(i), n)
+else if (A.unitNotes && typeof A.unitNotes === 'object') for (const [i, n] of Object.entries(A.unitNotes)) UNIT_NOTES.set(Number(i), n)
 // Bluebook FORM checks (the author lifted the format-linter scope lock 2026-08-10 "insofar
 // as it's stopping you from checking obvious stuff"). Deterministic findings come
 // straight from the extractor via the shared `citeform` module — the SAME module
@@ -132,16 +138,21 @@ const DETERMINISTIC_CHECK = `DETERMINISTIC QUOTE CHECK (MANDATORY before judging
 save each fetched source's FULL text to a scratch file with --out (this bypasses the stdout
 truncation caps — a plain "> file" redirect does NOT) and run the deterministic verifier over every
 quote you were given, e.g.:
-  python3 "${FETCH_PAGE}" "<url>" --out /tmp/src-<key>.txt
-  python3 "${VERIFY_QUOTES}" /tmp/src-<key>.txt "<quote 1>" "<quote 2>" ...
+  python3 "${FETCH_PAGE}" "<url>" --out /tmp/src-<slug>.txt
+  python3 "${VERIFY_QUOTES}" /tmp/src-<slug>.txt --json /tmp/q-<slug>.json
+where <slug> is a short filename-safe tag for the source (letters, digits, dashes — no spaces) and
+the JSON file holds [{"id":..,"quote":"..","pincite":".."}] with every quote copied EXACTLY. Always
+use the --json route: passing quotes as shell arguments breaks on any quote that contains a double
+quote, a dollar sign, a backtick or an apostrophe, and a quote mangled by the shell is reported
+not_found through no fault of the draft.
 (--out prints a one-line summary; NEVER cat the file into your context — it can be an entire
 book-length source. Read at most targeted excerpts around the verifier's reported matches.)
 The same check applies to source text you obtained ANY other way — Zotero fulltext (write the
 tool's returned text to a scratch file VERBATIM, unedited), a saved page, a pasted excerpt: put
 it in a file and run the verifier against it. Once source text is in hand, no quote gets a
 verbatim/mismatch verdict by eye.
-For pincite checking, write a quotes JSON ([{"id":..,"quote":"..","pincite":".."}]) and run:
-  python3 "${VERIFY_QUOTES}" /tmp/src-<key>.txt --json /tmp/q-<key>.json --first-page <printed page no. of the PDF's first page>
+For pincite checking, add --first-page to the same command:
+  python3 "${VERIFY_QUOTES}" /tmp/src-<slug>.txt --json /tmp/q-<slug>.json --first-page <printed page no. of the PDF's first page>
 Per quote it reports a status — verbatim | normalized (typographic-only differences: curly vs
 straight quotes, dashes, hyphenation, ligatures — identical as printed) | altered (matches with the
 draft's MARKED ellipses/brackets honored) | not_found — plus the printed PAGE of the match when the
@@ -210,6 +221,7 @@ const SEGMENT_SCHEMA = {
         required: ['id', 'source', 'kind'],
         properties: {
           id: { type: 'integer', description: 'the unit id, echoed exactly' },
+          footnote: { type: 'integer', description: 'the unit\'s footnote number, echoed exactly (for a body quote, the footnote that carries its citation)' },
           quote: { type: 'string', description: 'the quoted text, echoed (short)' },
           source: { type: 'string', description: 'the SPECIFIC citation this quote hangs on, fully resolved (Id. walked to its antecedent, supra redirects followed). Copy the citation as printed.' },
           kind: { type: 'string', enum: ['case', 'statute', 'article', 'book', 'internet', 'unknown'] },
@@ -364,7 +376,12 @@ needed):
 This prints a JSON array of quote-units. Each has: id, loc (body/footnote), quote, sentence (the
 draft's surrounding body sentence), footnote number, home_note (the FULL footnote text), leading_id,
 antecedents (the preceding footnotes' full text, for Id. chains), supra_targets (the full text of
-any "supra note N" the note redirects through), and syllabus_hint.
+any "supra note N" the note redirects through), syllabus_hint, and footnote_basis — how the
+extractor paired a body quote with its footnote. "sentence-after" / "sentence-before" are solid;
+"paragraph-after" / "paragraph-before" mean NO marker sat in the quote's own sentence, so the
+pairing is a paragraph-level GUESS: check whether home_note actually cites a source for this
+quote, look at the neighbouring notes in antecedents, and say in resolutionNote which note you
+settled on and why. A null footnote means no marker anywhere in the paragraph.
 
 STEP 2 — for EACH unit, determine the SPECIFIC source the quote is attributed to:
 - If the home_note gives an explicit citation and the quote sits in a parenthetical of ONE cite in a
@@ -396,25 +413,37 @@ producing a false "fix your draft" finding):
   DRAFT contained a placeholder footnote. If you cannot resolve, the source field is still the
   verbatim unresolved draft text, kind "unknown", and resolutionNote says what's missing.
 
-Echo each unit's id EXACTLY and the quote (short). Do NOT verify anything yet, do NOT fetch sources,
+Echo each unit's id and footnote number EXACTLY and the quote (short). Do NOT verify anything yet, do NOT fetch sources,
 do NOT judge accuracy — only resolve WHICH source and WHERE. Never invent a citation; if a unit's
 source is genuinely unresolvable from the context given, set source to the verbatim draft text
 and kind "unknown".`
 
-const segResults = await parallel(segChunks.map((ch) => () =>
-  agent(segPrompt(ch), {
-    label: `segment:${ch.label}`,
-    phase: 'Segment',
-    schema: SEGMENT_SCHEMA,
-    model: RESOLVE_MODEL,
-    effort: 'medium',
-  })
-))
+const segAgent = (ch) => agent(segPrompt(ch), {
+  label: `segment:${ch.label}`,
+  phase: 'Segment',
+  schema: SEGMENT_SCHEMA,
+  model: RESOLVE_MODEL,
+  effort: 'medium',
+})
+// A dead segment agent would silently drop a whole chunk of quotes: retry once, then account.
+const segResults = await parallel(segChunks.map((ch) => async () => {
+  let r = await segAgent(ch)
+  if (!r) { log(`segment:${ch.label} died — retrying once`); r = await segAgent(ch) }
+  return r
+}))
 const resolutions = []
-for (const r of segResults.filter(Boolean)) for (const u of (r.resolutions || [])) resolutions.push(u)
+for (const r of segResults.filter(Boolean)) for (const u of (r.resolutions || [])) {
+  if (u.footnote == null && UNIT_NOTES.has(u.id)) u.footnote = UNIT_NOTES.get(u.id)
+  resolutions.push(u)
+}
 const resById = new Map(resolutions.map((r) => [r.id, r]))
 const segTarget = UNIT_IDS ? UNIT_IDS.length : UNIT_COUNT
-log(`Resolved ${resolutions.length}/${segTarget} quotes to their specific source.`)
+// Units no resolution came back for (dead chunk, or an agent that skipped ids) — these can
+// never be verified, so they are disclosed as unchecked rather than vanishing.
+const allUnitIds = UNIT_IDS ? UNIT_IDS.slice() : Array.from({ length: UNIT_COUNT }, (_, i) => i)
+const unresolvedIds = allUnitIds.filter((i) => !resById.has(i))
+if (unresolvedIds.length) degradation.push(`${unresolvedIds.length} quote unit(s) got no resolution from the segment pass (agent failure or skipped ids) — listed as NOT CHECKED`)
+log(`Resolved ${resolutions.length}/${segTarget} quotes to their specific source${unresolvedIds.length ? ` (${unresolvedIds.length} unresolved)` : ''}.`)
 
 // ===========================================================================
 // Phase 2 — CASE EXISTENCE (deterministic CourtListener + web escalation)
@@ -674,15 +703,19 @@ ${DETERMINISTIC_CHECK}
 ${CALIBRATION}
 ${SOURCES}`
 
-const verifyJobs = verifyBundles.map((b) => () =>
-  agent(verifyPrompt(b), {
-    label: `verify:${(b.source || b.key).slice(0, 44)}`,
-    phase: 'Verify',
-    schema: VERIFY_SCHEMA,
-    model: VERIFY_MODEL,
-    effort: DEEP ? 'medium' : 'low',
-  })
-)
+const verifyAgent = (b) => agent(verifyPrompt(b), {
+  label: `verify:${(b.source || b.key).slice(0, 44)}`,
+  phase: 'Verify',
+  schema: VERIFY_SCHEMA,
+  model: VERIFY_MODEL,
+  effort: DEEP ? 'medium' : 'low',
+})
+// A dead verify agent would silently leave every quote on that source unchecked: retry once.
+const verifyJobs = verifyBundles.map((b) => async () => {
+  let r = await verifyAgent(b)
+  if (!r) { log(`verify:${b.key} died — retrying once`); r = await verifyAgent(b) }
+  return r
+})
 // Degraded long-tail: chunk single-quote sources VERIFY_CHUNK at a time.
 const light = verifyBundles._light || []
 for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
@@ -718,7 +751,7 @@ for (const v of verifyResults) {
       source: (res && res.source) || (v.sourceIdentified) || (b && b.source) || '',
       sourceIdentified: v.sourceIdentified || '',
       verdict: q.verdict,
-      severity: q.severity || (['mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source'].includes(q.verdict) ? 'high' : 'low'),
+      severity: q.severity || (['mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source'].includes(q.verdict) ? 'high' : q.verdict === 'pincite_off' ? 'medium' : 'low'),
       sourceText: q.sourceText || '',
       pinciteFinding: q.pinciteFinding || '',
       basis: q.basis || v.fetchBasis || '',
@@ -732,7 +765,12 @@ for (const v of verifyResults) {
 // Attach footnote numbers via the resolution units (segment echoed ids).
 // (footnote already set above where res was found.)
 const highSev = findings.filter((f) => f.severity === 'high')
-log(`Verified ${findings.length} quotes across ${verifyResults.length} sources; ${highSev.length} high-severity findings to re-verify.`)
+// Resolved quotes that no verify agent returned a verdict for (dead agent after retry, or a
+// verdict list that skipped ids). Disclosed in the report as NOT CHECKED, never dropped.
+const verdictIds = new Set(findings.map((f) => f.id))
+const unverifiedUnits = resolutions.filter((r) => !verdictIds.has(r.id))
+if (unverifiedUnits.length) degradation.push(`${unverifiedUnits.length} resolved quote(s) got no verdict from the verify pass (agent failure or skipped ids) — listed as NOT CHECKED`)
+log(`Verified ${findings.length} quotes across ${verifyResults.length} sources; ${highSev.length} high-severity findings to re-verify${unverifiedUnits.length ? `; ${unverifiedUnits.length} quotes got no verdict` : ''}.`)
 
 // ===========================================================================
 // Phase 4 — VERIFY-THE-VERIFIER (mandatory; the anti-artifact gate)
@@ -784,7 +822,9 @@ if (highSev.length && !tight(highSev.length * 6000)) {
   ))
   for (const o of outs.filter(Boolean)) reverified.set(o.id, o)
   const flipped = [...reverified.values()].filter((r) => r.upheld === false).length
-  log(`Re-verify complete: ${reverified.size} high-severity findings re-derived, ${flipped} were checker artifacts (corrected).`)
+  const lost = highSev.filter((f) => !reverified.has(f.id)).length
+  if (lost) degradation.push(`${lost} high-severity finding(s) got no re-verify verdict (agent failure) — flagged as single-checker`)
+  log(`Re-verify complete: ${reverified.size} high-severity findings re-derived, ${flipped} were checker artifacts (corrected)${lost ? `; ${lost} not re-verified` : ''}.`)
 } else if (highSev.length) {
   degradation.push(`verify-the-verifier skipped for ${highSev.length} findings (budget) — flagged as single-checker`)
   log(`Budget tight — verify-the-verifier skipped; high-severity findings flagged single-checker.`)
@@ -982,6 +1022,8 @@ const counts = {
   pinciteOff: findings.filter((f) => f.verdict === 'pincite_off').length,
   unverifiable: findings.filter((f) => f.verdict === 'unverifiable').length,
   artifactsCaught: findings.filter((f) => f.artifact).length,
+  quotesNotChecked: unresolvedIds.length + unverifiedUnits.length,
+  highSeveritySingleChecker: findings.filter((f) => f.severity === 'high' && !f.artifact && !f.reverified).length,
   casesChecked: existence.length,
   casesUnconfirmed: existBad.length,
   reporterTypos: existFixed.length,
@@ -996,7 +1038,7 @@ const counts = {
 
 const fmtFinding = (f) => {
   const q = resById.get(f.id)
-  return `- n.${f.footnote ?? '?'} [${f.verdict}${f.severity === 'high' ? ', HIGH' : ''}] ` +
+  return `- n.${f.footnote ?? '?'} [${f.verdict}${f.severity === 'high' ? ', HIGH' : ''}${f.severity === 'high' && !f.reverified ? ', SINGLE-CHECKER — not re-verified' : ''}] ` +
     `source: ${f.sourceIdentified || f.source}` +
     (q ? `\n    draft quote: "${(q.quote || '').slice(0, 240)}"` : '') +
     (f.sourceText ? `\n    source text: "${f.sourceText.slice(0, 280)}"` : '') +
@@ -1068,6 +1110,12 @@ REPORT DISCIPLINE (each rule below is standing feedback from the professor on a 
 - For unconfirmed case cites that are merely too recent for free indexes (see their notes), say
   "likely correct — reporter page too recent for free sources; spot-check on Westlaw", not language
   implying the cite is suspect.
+- A high-severity finding marked SINGLE-CHECKER was not re-derived by the second check (budget or
+  agent failure). Keep it in section A but say in its line that it rests on one checker and should
+  be confirmed against the source before acting.
+- QUOTES NOT CHECKED (listed below, if any) are quotes the run never verified because an agent
+  failed. They are not findings; list them in section G as "not checked this run — re-run", by
+  footnote, so the author knows the gap.
 
 COUNTS: ${JSON.stringify(counts)}
 
@@ -1094,6 +1142,9 @@ ${urlFindings.map((u) => `- ${u}`).join('\n') || '(none)'}
 
 === UNVERIFIABLE (section G) ===
 ${findings.filter((f) => f.verdict === 'unverifiable').map(fmtFinding).join('\n') || '(none)'}
+
+=== QUOTES NOT CHECKED — agent failure, not a finding (section G; list by footnote) ===
+${[...unresolvedIds.map((i) => `- n.${UNIT_NOTES.get(i) ?? '?'} unit ${i} — no source resolution`), ...unverifiedUnits.map((r) => `- n.${r.footnote ?? '?'} unit ${r.id} — no verdict: "${(r.quote || '').slice(0, 120)}"`)].join('\n') || '(none)'}
 
 === SECONDARY-SOURCE EXISTENCE (sections E/G) ===
 ${secondaryExistence.length}/${SECONDARY_CITES.length} unique unquoted secondary sources existence-checked${secondaryPassRan ? '' : ' — PASS SKIPPED (budget); list them as UNCHECKED in section H'}.

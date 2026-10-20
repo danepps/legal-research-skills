@@ -69,7 +69,7 @@ For every candidate:
 4. Record the supporting language as either a verbatim quote or a clearly labeled paraphrase.
 5. Confirm the pinpoint against the source's pagination or paragraph numbering.
 6. For cases, identify the opinion part and precedential posture. Never silently rely on a concurrence, dissent, plurality rationale, vacated opinion, or nonprecedential disposition.
-7. For load-bearing current-law cases, perform a modest negative-treatment/current-validity check using available open sources. Describe it accurately; do not imply KeyCite or Shepard's coverage.
+7. For load-bearing current-law cases, perform a modest negative-treatment/current-validity check using available open sources. Describe it accurately; do not imply KeyCite or Shepard's coverage. If current validity is immaterial to a historical proposition, record `current_validity_required: false` and explain the scope in `validity_basis` and the authority's `limitations`. An incomplete required check instead needs a `limited` packet and an explicit caveat.
 8. For scholarship, verify author, title, venue, volume, year, first page, and the pinpoint used.
 
 Drop a candidate that fails support verification. If the best available authority supports only a weaker proposition, narrow the parenthetical and explain the gap.

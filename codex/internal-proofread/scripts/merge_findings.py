@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-from common import normalize_space, read_json, read_jsonl, stable_id, write_jsonl
+from common import normalize_space, read_json, read_jsonl, stable_id, validate_finding_location, write_jsonl
 
 
 VALID_CATEGORIES = {
@@ -75,12 +75,10 @@ def substantially_overlaps(left: dict, right: dict) -> bool:
     shorter = min(max(1, left_end - left_start), max(1, right_end - right_start))
     if overlap / shorter >= 0.5:
         return True
-    left_excerpt = normalize_space(str(left.get("excerpt", ""))).casefold().strip("…")
-    right_excerpt = normalize_space(str(right.get("excerpt", ""))).casefold().strip("…")
-    return bool(left_excerpt and right_excerpt and (left_excerpt == right_excerpt or (
-        min(len(left_excerpt), len(right_excerpt)) >= 8
-        and (left_excerpt in right_excerpt or right_excerpt in left_excerpt)
-    )))
+    # Excerpts include surrounding context and may be identical for distinct
+    # errors in one paragraph. Coordinates, not excerpt containment, identify
+    # an occurrence. Exact zero-width coordinates represent the same insertion.
+    return left_start == left_end == right_start == right_end
 
 
 def main() -> int:
@@ -110,9 +108,15 @@ def main() -> int:
         findings = result.get("findings", [])
         if not isinstance(findings, list):
             raise ValueError(f"{path}: findings must be an array")
-        rows.extend(normalize_agent_finding(item, source_hash, origin, source_id) for item in findings if isinstance(item, dict))
+        for index, item in enumerate(findings):
+            if not isinstance(item, dict):
+                raise ValueError(f"{path}: finding {index + 1} must be an object")
+            rows.append(normalize_agent_finding(item, source_hash, origin, source_id))
 
     document = read_json(run_dir / "document.json")
+    blocks = {block.get("block_id"): block for block in document.get("blocks", []) + document.get("notes", [])}
+    for row in rows:
+        validate_finding_location(row, blocks)
     order = {block.get("block_id"): index for index, block in enumerate(document.get("blocks", []) + document.get("notes", []), 1)}
     rows.sort(key=lambda row: (
         order.get(row.get("location", {}).get("block_id"), 10**9),

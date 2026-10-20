@@ -33,17 +33,23 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from extract_cites import (MIN_QUOTE_WORDS, QUOTE_PAT, REPORTER, SUPRA,  # noqa: E402
-                           _clean, find_case_cites)
+from extract_cites import (MIN_QUOTE_WORDS, QUOTE_PAT, REPORTER_ANY, SIGNAL_PREFIX,  # noqa: E402
+                           SUPRA, _clean, find_case_cites)
 
 # ---- clause splitting -------------------------------------------------------
 # A footnote is split into citation clauses on ";" (outside parentheses/quotes) and
 # on a sentence break followed by a Bluebook signal ("... . See ...", "... . Id. ...").
+# The period must not be the one inside "cf." / "e.g." that precedes the next
+# signal word ("But cf. Id." is one clause), and the signal may be followed by
+# a comma ("See, e.g., X") as well as whitespace.
 _SIGNAL_AFTER_PERIOD = re.compile(
-    r"\.\s+(?=(?:See\b|Cf\.|But\s+(?:see|cf\.)|Compare\b|Accord\b|Contra\b|E\.g\.,|Id\.|"
-    r"See,?\s+e\.g\.|See\s+also|See\s+generally)\s)")
+    r"(?<!\bcf)(?<!\be\.g)\.\s+(?=(?:See|Cf\.|But\s+(?:see|cf\.)|Compare|Accord|Contra|"
+    r"E\.g\.,|Id\.)[\s,])")
 
-ID_RE = re.compile(r"^(?:(?:see|cf\.|but\s+see|see\s+also|accord)\s+)?id\.", re.IGNORECASE)
+# SIGNAL_PREFIX (a Bluebook signal that may sit in front of "id.") is shared
+# with extract_cites.py's leading_id so the two never disagree.
+
+ID_RE = re.compile("^" + SIGNAL_PREFIX + r"id\.", re.IGNORECASE)
 # Internal cross-references ("See infra Section I.D.1", "supra Part II", "infra notes 40–45
 # and accompanying text") and unfilled placeholders ("infra _") are not citations to a
 # source; they are inventoried so nothing is dropped, but never verified.
@@ -52,7 +58,7 @@ INTERNAL = re.compile(
     r"(?:infra|supra)\s+(?:_+|\(|(?:section|sections|part|parts|§|notes?\s+\d|nn?\.\s?\d|text|introduction|conclusion|appendix))",
     re.IGNORECASE)
 PLACEHOLDER = re.compile(r"(?:^|\s)_{1,3}(?:\s|\.|,|$)")
-SHORT_CASE = re.compile(r"\b(\d{1,4})\s+(%s)\s+at\s+\d{1,4}\b" % REPORTER)
+SHORT_CASE = re.compile(r"\b(\d{1,4})\s+(%s)\s+at\s+\d{1,4}\b" % REPORTER_ANY)
 STATUTE = re.compile(r"U\.\s?S\.\s?C\.|C\.\s?F\.\s?R\.|\bStat\.\s+\d|§|U\.S\.\s+Const\.|Fed\.\s+R\.")
 URL = re.compile(r"https?://|www\.")
 # "110 Harv. L. Rev. 815" — volume, abbreviated journal (must contain a period), page.
@@ -119,6 +125,32 @@ def _surname(s):
     return re.sub(r"[^a-z]", "", (s or "").lower())
 
 
+# Signals and connectors that can precede an author name in "Author, supra".
+_NAME_SIGNALS = {"see", "cf", "but", "accord", "compare", "contra", "eg", "also",
+                 "and", "id", "in", "of", "generally", "with", "quoting", "citing"}
+
+
+def supra_name_keys(outer):
+    """Surname keys a 'supra note N' claims, from the comma-separated chunks
+    before "supra" (up to three, so "Merrill, Landscape, supra" yields both
+    "merrill" and "landscape"; "Bradley & Goldsmith, supra" yields "bradley").
+    A target note matches if ANY key appears in it."""
+    sm = SUPRA.search(outer)
+    if not sm:
+        return []
+    chunks = [c.strip() for c in outer[:sm.start()].split(",") if c.strip()][-3:]
+    keys = []
+    for c in chunks:
+        toks = [t for t in re.split(r"\s+", c.split("&")[0]) if t]
+        while toks and _surname(toks[0]) in _NAME_SIGNALS:
+            toks.pop(0)
+        if toks and toks[0][:1].isupper():
+            k = _surname(toks[-1])
+            if k:
+                keys.append(k)
+    return keys
+
+
 # ---- classification ----------------------------------------------------------
 def classify(clause):
     """-> (kind, primary_case_cite_or_None, nested_case_cites, supra_note_or_None,
@@ -135,7 +167,7 @@ def classify(clause):
     sm = SUPRA.search(outer)
     if sm and not cases_outer:
         name = None
-        nm = re.search(r"([A-Z][A-Za-z'\-]{2,}(?:\s+&\s+[A-Z][A-Za-z'\-]{2,})?),?\s+supra", outer)
+        nm = re.search(r"([A-Z][A-Za-z'\-]{1,}(?:\s+&\s+[A-Z][A-Za-z'\-]{1,})?),?\s+supra", outer)
         if nm:
             name = nm.group(1)
         return "supra", None, nested, int(sm.group(1)), name
@@ -175,7 +207,7 @@ _KEY_RE = re.compile(
 def source_key(citation):
     s = (citation or "").lower()
     s = re.sub(r"\([^)]*\)", " ", s)
-    s = re.sub(r",?\s*at\s+[\d,\s–-]+", " ", s)
+    s = re.sub(r",?\s*\bat\s+[\d,\s–-]+", " ", s)
     s = re.sub(r"\bslip op[^,;]*", " ", s)
     m = _KEY_RE.search(s)
     if m:
@@ -199,7 +231,7 @@ def build_ledger(data):
             kind, case, nested, sn, sname = classify(clause)
             inst = {
                 "i": len(instances), "note": num, "order": order, "kind": kind,
-                "text": clause[:400], "key": source_key(clause),
+                "text": clause, "key": source_key(clause),
                 "case_cite": case, "nested_cases": nested,
                 "quoted": _has_quote(clause),
                 "xref_note": sn, "xref_name": sname,
@@ -230,13 +262,14 @@ def build_ledger(data):
     for x in instances:
         if x["kind"] in ("article", "book", "statute", "internet", "other"):
             secondary.setdefault(x["key"], {"key": x["key"], "kind": x["kind"],
-                                            "cite": x["text"][:300], "notes": []})
+                                            "cite": x["text"], "notes": []})
             secondary[x["key"]]["notes"].append(x["note"])
     return {
         "draft": data.get("source"),
         "instance_count": len(instances),
         "by_kind": by_kind,
-        "unresolved_xrefs": [x["i"] for x in instances if x["xref_status"] == "unresolved"],
+        "unresolved_xrefs": [x["i"] for x in instances
+                             if x["xref_status"] in ("unresolved", "name-mismatch")],
         "secondary_cites": list(secondary.values()),
         "instances": instances,
     }
@@ -251,9 +284,12 @@ def _resolve_xrefs(instances):
         return follow(t, hops + 1) if t is not None else None
 
     for x in instances:
+        status = None
         if x["kind"] == "id":
-            prev = [y for y in instances if y["i"] < x["i"] and y["kind"] != "text"
-                    and not y.get("nested")]
+            # "Id." = the immediately preceding AUTHORITY; an internal "see infra
+            # Part II" is not one and must be skipped, like prose.
+            prev = [y for y in instances if y["i"] < x["i"]
+                    and y["kind"] not in ("text", "internal") and not y.get("nested")]
             x["xref_target"] = prev[-1]["i"] if prev else None
         elif x["kind"] == "supra":
             cands = [y for y in instances if y["note"] == x["xref_note"]
@@ -262,13 +298,21 @@ def _resolve_xrefs(instances):
             # "supra note N" must point at the note with the full citation, and on the real
             # test draft every such case was a renumbering break, not a chain to follow.
             pick = None
+            keys = supra_name_keys(_strip_parens(x["text"]))
             if x["xref_name"]:
-                key = _surname(x["xref_name"].split("&")[0])
+                keys.append(_surname(x["xref_name"].split("&")[0]))
+            keys = [k for k in keys if k]
+            if keys:
                 for y in cands:
-                    if key and key in _surname(y["text"]):
+                    if any(k in _surname(y["text"]) for k in keys):
                         pick = y
                         break
-            if pick is None and cands:
+                if pick is None and cands:
+                    # The note exists and holds a full cite, but not of the author
+                    # this supra names: the classic post-edit renumbering break.
+                    # Never silently fall back to "whatever is in note N".
+                    status = "name-mismatch"
+            elif cands:
                 pick = cands[0]
             x["xref_target"] = pick["i"] if pick else None
         elif x["kind"] == "case-short":
@@ -280,7 +324,7 @@ def _resolve_xrefs(instances):
             x["xref_target"] = earlier[-1]["i"] if earlier else None
         else:
             continue
-        x["xref_status"] = "resolved" if x["xref_target"] is not None else "unresolved"
+        x["xref_status"] = status or ("resolved" if x["xref_target"] is not None else "unresolved")
     for x in instances:
         if x["kind"] in XREF_KINDS and x["xref_target"] is not None:
             end = follow(x["i"])
@@ -318,7 +362,11 @@ def assign_dispositions(ledger, case_existence=None, secondary_existence=None,
             x["reason"] = "cross-reference within the draft (or an unfilled placeholder), not a source"
             continue
         if k in XREF_KINDS:
-            if x["xref_status"] != "resolved":
+            if x["xref_status"] == "name-mismatch":
+                x["disposition"] = "unresolved-xref"
+                x["reason"] = ("supra names an author who is not cited in note %s — "
+                               "likely a renumbered footnote" % x["xref_note"])
+            elif x["xref_status"] != "resolved":
                 x["disposition"] = "unresolved-xref"
                 x["reason"] = "cross-reference target could not be resolved from the draft"
             else:
@@ -370,7 +418,7 @@ def assign_dispositions(ledger, case_existence=None, secondary_existence=None,
 
 def compact(ledger):
     """Small form for Workflow args: one short object per instance."""
-    return [{"i": x["i"], "n": x["note"], "k": x["kind"], "c": x["text"][:160],
+    return [{"i": x["i"], "n": x["note"], "k": x["kind"], "c": x["text"],
              "key": x["key"], "case": x["case_cite"], "x": x.get("xref_final"),
              "xs": x["xref_status"], "q": x["quoted"]} for x in ledger["instances"]]
 

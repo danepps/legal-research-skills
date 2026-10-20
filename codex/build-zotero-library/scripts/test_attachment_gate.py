@@ -58,6 +58,7 @@ class AttachmentGateTests(unittest.TestCase):
             write_json(run_dir / "planned-items.json", [{"candidate_id": "c001", "item": item}])
             write_json(run_dir / "write-result.json", {
                 "operation": "create-items",
+                "library": "user:123",
                 "request_count": 1,
                 "candidate_ids": ["c001"],
                 "request_sha256": hashlib.sha256(
@@ -68,7 +69,8 @@ class AttachmentGateTests(unittest.TestCase):
                 "failed": {},
             })
             write_json(run_dir / "verification.json", {
-                "results": [{"key": "ABCD2345", "verdict": "PASS"}]
+                "library": "user:123", "source": "zotero",
+                "results": [{"key": "ABCD2345", "verdict": "PASS", "stored_item": {**item, "key": "ABCD2345"}}]
             })
             for name in ("manual-verifications.jsonl", "reuse-results.jsonl", "attachment-results.jsonl"):
                 (run_dir / name).write_text("", encoding="utf-8")
@@ -82,12 +84,14 @@ class AttachmentGateTests(unittest.TestCase):
 
             attachment = {
                 "schema_version": 1,
+                "library": "user:123",
                 "status": "VERIFIED",
                 "parent_item_key": "ABCD2345",
                 "attachment_item_key": "WXYZ6789",
                 "filename": "example.pdf",
                 "content_type": "application/pdf",
                 "size": 100,
+                "pdf_validation": {"status": "parsed", "parser": "pypdf", "page_count": 1},
                 "md5": "a" * 32,
                 "sha256": "b" * 64,
                 "source_url": "https://heinonline.org/HOL/Page?handle=example",

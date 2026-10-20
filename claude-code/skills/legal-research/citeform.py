@@ -30,7 +30,7 @@ import re
 import zipfile
 from xml.etree import ElementTree as ET
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-FN_PLACEHOLDER = re.compile(r"\[\[FN:(-?\d+)\]\]")
+FN_PLACEHOLDER = re.compile(r"\[\[FN:(-?\d+|\*)\]\]")
 
 def _clean(s):
     return re.sub(r"\s+", " ", s or "").strip()
@@ -114,14 +114,41 @@ def parse_styles(root):
     return out
 
 
+_SKIP_SUBTREES = (W + "del", W + "moveFrom")
+
+
+def iter_nodes(el, include_deleted=False):
+    """Depth-first descendants in document order, skipping tracked-deletion
+    (w:del) and move-source (w:moveFrom) subtrees. MUST stay identical to
+    cite-check/extract_cites.py's iter_nodes: the form layer accepts a passage
+    only when both walkers produce the same text."""
+    for child in el:
+        if child.tag in _SKIP_SUBTREES and not include_deleted:
+            continue
+        yield child
+        for node in iter_nodes(child, include_deleted):
+            yield node
+
+
+def _is_custom_mark(ref):
+    return (ref.get(W + "customMarkFollows") or "").lower() in ("1", "true", "on")
+
+
 def runs_spans(el, styles, para_style):
     """[(text, frozenset(active props))] in document order — same text stream as
-    runs_text() (tracked deletions skipped, footnote refs as [[FN:id]])."""
+    extract_cites.runs_text() (tracked deletions and move sources skipped,
+    footnote refs as [[FN:id]] / [[FN:*]] for custom marks, line breaks and
+    tabs as a space, non-breaking hyphens as "-")."""
     base = styles.get(para_style or "", {}) if styles else {}
     cur = frozenset(p for p in FMT_PROPS if base.get(p))
     spans = []
-    for node in el.iter():
+    consumed = set()
+    for node in iter_nodes(el):
         if node.tag == W + "r":
+            ref = node.find(W + "footnoteReference")
+            if ref is not None and _is_custom_mark(ref):
+                for t in node.findall(W + "t"):      # the mark glyph
+                    consumed.add(id(t))
             props = {p: base.get(p) for p in FMT_PROPS}
             rpr = node.find(W + "rPr")
             if rpr is not None:
@@ -139,11 +166,15 @@ def runs_spans(el, styles, para_style):
         elif node.tag == W + "delText":
             continue
         elif node.tag == W + "t":
-            spans.append((node.text or "", cur))
+            if id(node) not in consumed:
+                spans.append((node.text or "", cur))
         elif node.tag == W + "footnoteReference":
-            spans.append(("[[FN:%s]]" % node.get(W + "id"), frozenset()))
-        elif node.tag == W + "tab":
+            spans.append(("[[FN:*]]" if _is_custom_mark(node)
+                          else "[[FN:%s]]" % node.get(W + "id"), frozenset()))
+        elif node.tag in (W + "tab", W + "br", W + "cr"):
             spans.append((" ", frozenset()))
+        elif node.tag == W + "noBreakHyphen":
+            spans.append(("-", frozenset()))
     return spans
 
 
@@ -308,10 +339,14 @@ def _secondary_key(author, title):
     return a + "|" + t
 
 
-def short_form_lint(notes, cap=30):
+def short_form_lint(notes, cap=30, stats=None):
     """Repeated full citations that should be short forms, and short forms
-    stranded past the five-footnote window."""
+    stranded past the five-footnote window. The walk stops once `cap`
+    findings exist; when that happens `stats["truncated"]` is set to True so a
+    caller can say the later footnotes were not checked."""
     out = []
+    if stats is not None:
+        stats["truncated"] = False
     # Pre-pass: the FIRST footnote in which each case appears in full, keyed by
     # first-party token. A short form is only an orphan if the document has no
     # full cite of that case at all, or has one only LATER (moved-footnote
@@ -395,6 +430,8 @@ def short_form_lint(notes, cap=30):
             else:
                 last_full_sec[key] = num
         if len(out) >= cap:
+            if stats is not None and num != max(notes):
+                stats["truncated"] = True
             break
     return out[:cap]
 

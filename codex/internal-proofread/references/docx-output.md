@@ -2,7 +2,7 @@
 
 The extractor reads visible inserted text and excludes deleted text. Disclose that tracked-change view at the start of every DOCX run. Do not accept or reject existing changes in the source draft.
 
-The deterministic extractor reads body paragraphs, tables, headers, footers, footnotes, bookmarks, and field instructions directly from OOXML. It cannot establish final pagination, read image-only text, or fully reproduce Microsoft Word's field updating and numbering behavior.
+The deterministic extractor reads body paragraphs, tables, headers, footers, footnotes, bookmarks, and field instructions directly from OOXML. It cannot establish final pagination, read image-only text, or fully reproduce Microsoft Word's field updating and numbering behavior. It does not resolve effective run italics, small caps, or capitalization inherited through Word styles. Do not infer displayed capitalization or make typeface findings from plain extracted text; Word may apply all caps to a heading through its style. Disclose this formatting limitation in DOCX reports.
 
 Treat `PAGEREF` fields and prose page-number references as unresolved until the user opens the document in Microsoft Word and updates the fields. Never launch an office application to update them automatically. Treat text boxes, equations, embedded objects, pagination, and visual layout as limitations if extraction counts cannot be reconciled.
 

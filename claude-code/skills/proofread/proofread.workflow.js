@@ -60,6 +60,17 @@ const SPENT0 = budget.spent()
 const remaining = () => budget.total ? budget.remaining() : Math.max(0, SOFT_CAP - (budget.spent() - SPENT0))
 const tight = (need) => remaining() < need
 const degradation = []
+// Coverage accounting (CLAUDE-02): every expected worker — proof chunk, consistency lane,
+// verify batch, report — is reconciled against a structurally valid result. A dead worker is
+// retried once; a gap that survives the retry is recorded in `degradation`, disclosed in the
+// report, counted in the return value, and turns exitState into complete_with_limits. A run in
+// which every worker fails can no longer end "complete" with an empty report.
+const hasFindings = (r) => !!r && Array.isArray(r.findings)
+async function lane(label, mk, valid = hasFindings) {
+  let r = await mk()
+  if (!valid(r)) { log(`${label} died or returned no usable result — retrying once`); r = await mk() }
+  return valid(r) ? r : null
+}
 
 // ---- schemas -------------------------------------------------------------------
 const SEVERITIES = ['error', 'likely', 'style', 'query']
@@ -110,7 +121,24 @@ const VERIFY_SCHEMA = {
           note: { type: 'string', description: 'one sentence: why, quoting the actual draft text you re-read' },
           revised_problem: { type: 'string' },
           revised_fix: { type: 'string' },
+          revised_severity: { enum: SEVERITIES, description: 'only with verdict "revised": the corrected severity — e.g. a prose "error" that turns out to sit inside a quotation becomes a "query"' },
+          revised_category: { type: 'string', description: 'only with verdict "revised": the corrected category — e.g. "quote-integrity" for a revised-into-query finding' },
+          revised_find: { type: 'string', description: 'only with verdict "revised", and only when the original find string is wrong (absent from the passage, contains markup tags, or anchors the wrong spot): the replacement, copied VERBATIM and tag-free from the snapshot line you re-read. It is checked against the snapshot afterwards and dropped if it is not there.' },
         },
+      },
+    },
+  },
+}
+// One agent greps the snapshot for each verifier-revised find string (CLAUDE-10): a revised
+// anchor is validated the same way an original one is — by presence in the snapshot text.
+const REVISED_FIND_SCHEMA = {
+  type: 'object', required: ['results'],
+  properties: {
+    results: {
+      type: 'array',
+      items: {
+        type: 'object', required: ['id', 'present'],
+        properties: { id: { type: 'number' }, present: { type: 'boolean' }, note: { type: 'string' } },
       },
     },
   },
@@ -160,7 +188,7 @@ ${STYLE ? '- Style mode is ON: you MAY additionally flag genuine style problems 
 // ---- Phase: Consistency (launched first — independent of the proof fan-out) -----
 phase('Consistency')
 log('launching whole-document consistency agents')
-const consUsageP = agent(
+const consUsageP = lane('consistency:usage', () => agent(
   `You are checking a law review article draft for INTERNAL CONSISTENCY of usage. Draft:
 "${DRAFT_NAME}" (~${COUNTS.words || '?'} words, ${COUNTS.footnotes || '?'} footnotes).
 
@@ -189,9 +217,9 @@ Your job — adjudicate, with the whole document in view:
 Findings = specific fixable deviations (severity "likely" for judgment calls, "error" only
 when objectively wrong). Conventions = the global calls with your recommendation. Locations
 in findings use the ¶n / n.n labels.`,
-  { label: 'consistency:usage', phase: 'Consistency', schema: CONS_SCHEMA, ...RO })
+  { label: 'consistency:usage', phase: 'Consistency', schema: CONS_SCHEMA, ...RO }))
 
-const consStructP = agent(
+const consStructP = lane('consistency:structure', () => agent(
   `You are checking the STRUCTURE and CROSS-REFERENCES of a law review article draft:
 "${DRAFT_NAME}". Read ${PROOF_JSON} first — use "headings" (computed labels I / I.A / I.B.1…),
 "toc_entries", and "part_refs" (every "supra/infra Part/Section X" with context). Then Read
@@ -217,13 +245,13 @@ Your job:
 Do NOT re-litigate note-number arithmetic bounds — a deterministic pass already checked
 supra/infra note directions. Findings use severity "error" only for objectively broken
 references; "likely" for judgment calls. Conventions may be empty.`,
-  { label: 'consistency:structure', phase: 'Consistency', schema: CONS_SCHEMA, ...RO })
+  { label: 'consistency:structure', phase: 'Consistency', schema: CONS_SCHEMA, ...RO }))
 
 // Typeface: only runs when the extractor produced a real formatting layer.
 // Deliberately a separate agent from consistency:usage — it is the ONE stage
 // allowed to reason about italics, and giving it its own prompt keeps the
 // "you cannot see formatting" rule intact everywhere else.
-const consTypeP = FMT_OK ? agent(
+const consTypeP = FMT_OK ? lane('consistency:typeface', () => agent(
   `You are checking TYPEFACE conventions — italics and small caps — in the law review draft
 "${DRAFT_NAME}". You are the only stage that can see formatting, so nothing here is guesswork.
 
@@ -280,13 +308,13 @@ CRITICAL — find strings: the markup tags are NOT in the author's document. Eve
 string you report must be the text with all <i>/<sc>/<caps> tags REMOVED, so it can be
 found with Cmd+F in Word. Say which words should change typeface in the "problem"/"fix"
 instead. Location labels are the ¶n / n.n prefixes. Category: "typeface".`,
-  { label: 'consistency:typeface', phase: 'Consistency', schema: CONS_SCHEMA, ...RO }) : null
+  { label: 'consistency:typeface', phase: 'Consistency', schema: CONS_SCHEMA, ...RO })) : null
 
 // ---- Phase: Proof (chunk fan-out) ------------------------------------------------
 phase('Proof')
 log(`proofreading ${CHUNK_FILES.length} chunks`)
 const proofResults = await parallel(CHUNK_FILES.map((cf, i) => () =>
-  agent(
+  lane(`proof:chunk-${i}`, () => agent(
     `You are proofreading chunk ${i + 1}/${CHUNK_FILES.length} of a law review article draft
 ("${DRAFT_NAME}"). Read ${cf} — JSON with "paragraphs" (body text, [FN#n] marks footnote
 calls; "heading" non-null means the line is a section heading) and "footnotes" (the notes
@@ -331,21 +359,50 @@ prose. You are hunting:
 - body-text capitalization errors.
 Location = the paragraph's "¶<id>" (use the "id" field) or "n.<number>" for footnote prose.
 Report location + verbatim find + problem + minimal fix + severity + category.`,
-    { label: `proof:chunk-${i}`, phase: 'Proof', schema: PROOF_SCHEMA, model: PROOF_MODEL, ...RO })
+    { label: `proof:chunk-${i}`, phase: 'Proof', schema: PROOF_SCHEMA, model: PROOF_MODEL, ...RO }))
 ))
+// Reconcile expected chunk ids against usable results: a chunk with no findings array after the
+// retry was never proofread, and the report must say so rather than imply a clean stretch.
+const unproofedChunks = CHUNK_FILES.map((cf, i) => i).filter((i) => !hasFindings(proofResults[i]))
+if (unproofedChunks.length) degradation.push(`${unproofedChunks.length} of ${CHUNK_FILES.length} proof chunks returned no result after one retry (agent failure) — chunk${unproofedChunks.length === 1 ? '' : 's'} ${unproofedChunks.map((i) => i + 1).join(', ')} NOT proofread`)
 
 // ---- collect + dedup candidates ---------------------------------------------------
 // Fuzzy dedup: two agents flagging the same error phrase their find-strings
 // differently, so exact keys leak duplicates into the report (first-run
-// lesson: the ¶90 stray-"a" shipped twice). Same location + token overlap
-// of the find-strings = same finding.
-const toks = (s) => new Set((s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean))
+// lesson: the ¶90 stray-"a" shipped twice). But bag-of-words overlap at the
+// same location also merged DISTINCT defects in one paragraph (CLAUDE-11: a
+// doubled word and an agreement slip two clauses apart share most of their
+// tokens). The key is now location + defect identity + occurrence span:
+//   - same defect: same category, or the same proposed fix (two agents may
+//     label one slip "typo" and "wrong-word" but propose the same correction);
+//     fixes that share no token at all are different defects even in one category;
+//   - overlapping span: one find string contains the other, or they share a
+//     run of >=3 consecutive tokens — a shared stretch of the paragraph, not
+//     shared vocabulary scattered through it.
+const toks = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean)
+const normText = (s) => toks(s).join(' ')
+const normCat = (c) => (c || '').toLowerCase().replace(/[^a-z]+/g, '')
+function longestCommonRun(a, b) {
+  let best = 0
+  for (let i = 0; i < a.length; i++) for (let j = 0; j < b.length; j++) {
+    let k = 0
+    while (i + k < a.length && j + k < b.length && a[i + k] === b[j + k]) k++
+    if (k > best) best = k
+  }
+  return best
+}
 function sameFinding(a, b) {
   if (a.location !== b.location) return false
+  const fa = toks(a.fix), fb = toks(b.fix)
+  const sameFix = fa.length > 0 && fa.join(' ') === fb.join(' ')
+  const sharedFixToken = !fa.length || !fb.length || fa.some((t) => fb.includes(t))
+  const sameDefect = sameFix || (normCat(a.category) === normCat(b.category) && sharedFixToken)
+  if (!sameDefect) return false
+  const na = normText(a.find), nb = normText(b.find)
+  if (!na || !nb) return false
+  if (na.includes(nb) || nb.includes(na)) return true
   const ta = toks(a.find), tb = toks(b.find)
-  let inter = 0
-  for (const x of ta) if (tb.has(x)) inter++
-  return inter / Math.max(1, ta.size + tb.size - inter) >= 0.4
+  return longestCommonRun(ta, tb) >= Math.min(3, ta.length, tb.length)
 }
 const pool = []
 function addCandidate(f, source) {
@@ -368,6 +425,10 @@ for (const r of proofResults.filter(Boolean)) r.findings.forEach(f => addCandida
 const consUsage = await consUsageP
 const consStruct = await consStructP
 const consType = consTypeP ? await consTypeP : null
+// Reconcile expected consistency lanes against usable results (each lane already retried once).
+const expectedLanes = [['usage', consUsage], ['structure', consStruct], ...(FMT_OK ? [['typeface', consType]] : [])]
+const missingLanes = expectedLanes.filter(([, r]) => !hasFindings(r)).map(([n]) => n)
+if (missingLanes.length) degradation.push(`consistency lane${missingLanes.length === 1 ? '' : 's'} ${missingLanes.join(', ')} returned no result after one retry (agent failure) — that whole-document check did NOT run`)
 const conventions = [
   ...(consUsage?.conventions || []),
   ...(consStruct?.conventions || []),
@@ -397,7 +458,7 @@ log(`verifying ${toVerify.length} findings in ${batches.length} batches`)
 
 const verdictById = new Map()
 const verifyResults = await parallel(batches.map((batch, bi) => () =>
-  agent(
+  lane(`verify:batch-${bi}`, () => agent(
     `You are the SKEPTICAL second reader on a proofread of the law review draft
 "${DRAFT_NAME}". Earlier agents flagged the findings below. Your job is to RE-DERIVE each
 one from the actual draft text and kill the false positives. Findings you confirm go
@@ -414,7 +475,14 @@ Reject when: the flagged text is actually correct as written (grammatical "had h
 subjunctive, legal term of art, intentional usage); the finding depends on formatting that
 is not visible to the stage that raised it; the find string does not appear in the passage;
 or the "fix" would change meaning the authors plainly intended.
-Revise when the problem is real but the diagnosis or fix is wrong. Confirm only what a
+Revise when the problem is real but the diagnosis or fix is wrong. A revision may change
+any field: revised_problem / revised_fix for the diagnosis, revised_severity and
+revised_category when the finding was mis-classed (a prose "error" inside a quotation is a
+"query" with category "quote-integrity"; an "error" that is really a judgment call is
+"likely"), and revised_find ONLY when the original find string is itself wrong — absent
+from the passage, carrying markup tags, or anchored to the wrong spot. A revised_find must
+be copied verbatim and tag-free from the snapshot line you just re-read; it is grepped
+against the snapshot afterwards and discarded if it is not found there. Confirm only what a
 careful law-review editor would actually mark — but do not reject a genuine error merely
 because it is small.
 CATEGORY-SPECIFIC RULES:
@@ -448,24 +516,74 @@ ${JSON.stringify(batch.map(({ id, location, find, problem, fix, severity, catego
       ({ id, location, find, problem, fix, severity, category })), null, 1)}
 
 Return a verdict for EVERY id.`,
-    { label: `verify:batch-${bi}`, phase: 'Verify', schema: VERIFY_SCHEMA, ...RO })
+    { label: `verify:batch-${bi}`, phase: 'Verify', schema: VERIFY_SCHEMA, ...RO }), (r) => !!r && Array.isArray(r.verdicts))
 ))
 for (const r of verifyResults.filter(Boolean)) {
   for (const v of (r.verdicts || [])) verdictById.set(v.id, v)
 }
+// Reconcile: every finding sent to verify should have a verdict. Those without one (a batch
+// that died twice, or a verifier that skipped ids) ship as UNVETTED and are disclosed.
+const deadBatches = batches.map((b, bi) => bi).filter((bi) => !verifyResults[bi])
+const noVerdict = toVerify.filter((f) => !verdictById.has(f.id))
+if (noVerdict.length) degradation.push(`${noVerdict.length} of ${toVerify.length} candidate findings got no verify verdict (${deadBatches.length} of ${batches.length} verify batches failed after one retry${deadBatches.length ? '' : '; the verifier skipped ids'}) — shipped UNVETTED, not confirmed`)
 
 const confirmed = []
 const rejected = []
+const pendingFind = [] // confirmed findings whose verifier supplied a replacement find string
 for (const f of toVerify) {
   const v = verdictById.get(f.id)
   if (!v) { unvetted.push(f); continue } // verify agent died — ship labeled, never silently drop
   if (v.verdict === 'rejected') { rejected.push({ ...f, why: v.note }); continue }
-  confirmed.push({
+  // A revision may replace any field (CLAUDE-10). Severity/category are applied here; a
+  // revised find string is applied only after the snapshot check below.
+  const rev = v.verdict === 'revised'
+  const out = {
     ...f,
-    problem: v.verdict === 'revised' && v.revised_problem ? v.revised_problem : f.problem,
-    fix: v.verdict === 'revised' && v.revised_fix ? v.revised_fix : f.fix,
+    problem: rev && v.revised_problem ? v.revised_problem : f.problem,
+    fix: rev && v.revised_fix ? v.revised_fix : f.fix,
+    severity: rev && SEVERITIES.includes(v.revised_severity) ? v.revised_severity : f.severity,
+    category: rev && typeof v.revised_category === 'string' && v.revised_category.trim() ? v.revised_category.trim() : f.category,
     verifierNote: v.note,
-  })
+  }
+  if (out.severity === 'style' && !STYLE) { rejected.push({ ...f, why: `revised to style severity; style mode is off (${v.note})` }); continue }
+  if (rev && typeof v.revised_find === 'string') {
+    const nf = v.revised_find.replace(/<\/?(i|sc|caps)>/g, '').trim()
+    if (nf && nf !== f.find) pendingFind.push({ f: out, nf })
+  }
+  confirmed.push(out)
+}
+// A revised find string replaces the original ONLY after it is validated against the snapshot
+// the same way original find strings are — by presence in the plain text. The verifier already
+// had to locate it in the passage; here one agent greps fulltext.txt for each candidate
+// verbatim, because this script cannot read files itself.
+let findsRevised = 0
+let findsRevisedRejected = 0
+if (pendingFind.length) {
+  const checkAgent = () => agent(
+    `You are validating replacement Cmd+F anchors for a proofread report. For EACH item below,
+check whether its "find" string occurs VERBATIM (character for character, case-sensitive) in
+the plain snapshot ${FULLTEXT}. Use the Bash tool with a fixed-string grep —
+  grep -F -c -- '<find>' "${FULLTEXT}"
+(escape a single quote inside the string as '\\'' ) — and report present=true only when the
+count is 1 or more. Do not trim, re-punctuate, or "fix" the string; test it exactly as given.
+This is a read-only check: create or modify nothing.
+
+ITEMS:
+${JSON.stringify(pendingFind.map(({ f, nf }) => ({ id: f.id, find: nf })), null, 1)}
+
+Return one result per id.`,
+    { label: 'revised-find-check', phase: 'Verify', schema: REVISED_FIND_SCHEMA, ...RO })
+  const res = await lane('revised-find-check', checkAgent, (r) => !!r && Array.isArray(r.results))
+  const present = new Map((res?.results || []).map((r) => [r.id, r.present === true]))
+  for (const { f, nf } of pendingFind) {
+    if (present.get(f.id)) { f.originalFind = f.find; f.find = nf; findsRevised++ }
+    else {
+      findsRevisedRejected++
+      f.verifierNote = `${f.verifierNote || ''} [verifier proposed a replacement find string that was ${res ? 'not found verbatim in the snapshot' : 'not checked — validation agent failed'}; original find string kept]`.trim()
+    }
+  }
+  if (!res) degradation.push(`revised find-string check failed after one retry — ${pendingFind.length} verifier-revised find string(s) left unapplied; original find strings kept`)
+  log(`revised find strings: ${findsRevised} applied, ${findsRevisedRejected} kept original`)
 }
 log(`verify: ${confirmed.length} confirmed, ${rejected.length} rejected, ${unvetted.length} unvetted`)
 
@@ -508,7 +626,20 @@ const CITE_MECH = (f) => !TYPEFACE(f) && /^(cite-|pincite|case-cite|supra-)/.tes
 
 // ---- Phase: Report ------------------------------------------------------------------
 phase('Report')
-const report = await agent(
+// Worker failures that left part of the draft or a whole check uncovered — surfaced to the
+// report prompt as their own section, never folded into "no findings".
+const chunkPos = (i) => CHUNK_FILES.length > 1 ? `≈${Math.round(100 * i / CHUNK_FILES.length)}–${Math.round(100 * (i + 1) / CHUNK_FILES.length)}% through the draft` : ''
+const LANE_SCOPE = {
+  usage: 'hyphenation, spelling, capitalization and terminology consistency were NOT checked',
+  structure: 'Part/Section cross-references, TOC staleness and the roadmap were NOT checked',
+  typeface: 'italics and small caps were NOT checked',
+}
+const coverageGapText = [
+  ...unproofedChunks.map((i) => `- proof chunk ${i + 1} of ${CHUNK_FILES.length}${chunkPos(i) ? ` (${chunkPos(i)})` : ''}: NOT proofread — the chunk agent failed twice, so typos, grammar and editing residue in that stretch were not checked`),
+  ...missingLanes.map((n) => `- consistency lane "${n}" did NOT run — ${LANE_SCOPE[n] || 'that whole-document check was not performed'}`),
+  ...(noVerdict.length ? [`- ${noVerdict.length} candidate finding(s) received no verify verdict — shipped in the Unvetted list, not confirmed`] : []),
+].join('\n')
+const reportAgent = () => agent(
   `Write the final PROOFREAD REPORT for the law review draft "${DRAFT_NAME}"
 (~${COUNTS.words || '?'} words, ${COUNTS.paragraphs || '?'} body paragraphs,
 ${COUNTS.footnotes || '?'} footnotes). Audience: the authors (law professors) — direct,
@@ -546,6 +677,10 @@ ${unvetted.length ? `UNVETTED FINDINGS (flagged but NOT independently re-verifie
 ${JSON.stringify(unvetted.map(({ locationPath, location, find, problem, fix, severity }) =>
       ({ location: locationPath || location, find, problem, fix, severity })), null, 1)}` : ''}
 
+${coverageGapText ? `COVERAGE GAPS (worker failures — stretches of the draft or whole checks that did NOT run
+this pass; an empty findings list for those parts means "not examined", not "clean"):
+${coverageGapText}` : ''}
+
 DOCUMENT-WIDE CONVENTIONS (from the consistency pass):
 ${JSON.stringify(conventions, null, 1)}
 
@@ -553,7 +688,11 @@ STRUCTURE:
 # Proofread — ${DRAFT_NAME}
 the provenance blockquote
 _A one-line TL;DR: counts by severity, and the single most important catch._
-## Errors (fix these)
+${coverageGapText ? `## Coverage gaps
+FIRST, before the findings: list every COVERAGE GAP above, one line each, stating plainly which
+stretch of the draft or which check this pass does not vouch for. The TL;DR must also say the
+pass is incomplete.
+` : ''}## Errors (fix these)
 prose severity "error", in draft order. For each: **location** — \`verbatim find string\` —
 the problem — the fix. Keep the find string EXACTLY verbatim — it is the authors' Cmd+F
 handle and their ONLY way to find the passage (the draft shows no paragraph numbers). Use
@@ -595,6 +734,24 @@ ${degradation.length ? `- degradation this run: ${degradation.join('; ')}` : ''}
 Do not invent findings, merge findings, or drop any confirmed finding. Plain sentences, not
 arrow-chains.`,
   { label: 'report', phase: 'Report', ...RO })
+let report = await lane('report', reportAgent, (r) => typeof r === 'string' && r.trim().length > 0)
+if (!report) {
+  // The narrated report is a luxury; the findings are not. Ship a mechanical listing rather
+  // than a null report.
+  degradation.push('report agent failed after one retry — mechanical fallback listing shipped instead of the narrated report')
+  const line = (f) => `- **${f.locationPath || f.location}** — \`${f.find}\` — ${f.problem}${f.fix ? ` — ${f.fix}` : ''}${f.verifierNote ? ` _(${f.verifierNote})_` : ''}`
+  report = [
+    `# Proofread — ${DRAFT_NAME}`,
+    `> snapshot ${SNAPTIME || 'time unknown'}${SHA256 ? `, SHA-256 ${SHA256}` : ''}; plain-text pass. REPORT AGENT FAILED — this is a mechanical listing of the verified findings, not the narrated report.`,
+    coverageGapText ? `\n## Coverage gaps\n${coverageGapText}` : '',
+    `\n## Confirmed findings (${confirmed.length})`,
+    ...confirmed.map(line),
+    unvetted.length ? `\n## Unvetted (${unvetted.length})` : '',
+    ...unvetted.map(line),
+    conventions.length ? `\n## Document-wide conventions\n${conventions.map((c) => `- ${c.issue}: ${c.recommendation}`).join('\n')}` : '',
+    `\n## Degradation\n${degradation.map((d) => `- ${d}`).join('\n')}`,
+  ].filter(Boolean).join('\n')
+}
 
 return {
   report,
@@ -603,6 +760,13 @@ return {
     confirmed: confirmed.length,
     rejected: rejected.length,
     unvetted: unvetted.length,
+    chunks: CHUNK_FILES.length,
+    chunksUnproofed: unproofedChunks.length,
+    consistencyLanesExpected: expectedLanes.length,
+    consistencyLanesMissing: missingLanes.length,
+    verifyNoVerdict: noVerdict.length,
+    findsRevised,
+    findsRevisedRejected,
     errors: confirmed.filter(f => f.severity === 'error' && !CITE_MECH(f) && !TYPEFACE(f)).length,
     likely: confirmed.filter(f => f.severity === 'likely' && !CITE_MECH(f) && !TYPEFACE(f)).length,
     citeMechanics: confirmed.filter(CITE_MECH).length,
@@ -611,7 +775,9 @@ return {
     queries: confirmed.filter(f => f.severity === 'query').length,
     conventions: conventions.length,
   },
-  exitState: degradation.length ? 'complete_with_limits' : 'complete',
+  // Any surviving gap — budget cut, unproofed chunk, missing lane, unvetted verdicts, failed
+  // find-string check or report — means the pass is not complete.
+  exitState: (degradation.length || unproofedChunks.length || missingLanes.length || noVerdict.length) ? 'complete_with_limits' : 'complete',
   degradation,
   rejectedFindings: rejected.map(({ location, find, why }) => ({ location, find, why })),
 }

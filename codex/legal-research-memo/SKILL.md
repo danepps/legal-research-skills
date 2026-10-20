@@ -90,6 +90,8 @@ In multi-agent mode, give each researcher a disjoint coverage lane and the same 
 
 Use the source protocol in [references/source-protocol.md](references/source-protocol.md) for source ledgers, currentness, quotations, negative research, and conflicts among authorities.
 
+Apply its bounded source-access procedure to research, verification, and rescue workers alike. Use the capped `scripts/fetch_source.py` for raw public-source extraction when useful; preserve its provenance and partial-coverage flags, and assign unique output paths to parallel workers.
+
 When a CourtListener token is available, use `scripts/check_cite.py` to check case-citation existence before final audit. Record an API match only as `citation-only`; it does not verify a pinpoint, quotation, holding, characterization, or negative treatment. When the current force of a controlling or load-bearing case matters, `scripts/courtlistener_treatment.py "CITATION" --output RUN_DIR/currentness/CASE.json` may generate a bounded citing-opinion treatment-triage packet. Open and read every material hit. The packet is not a citator; no hits do not establish good law, and citation recency does not establish doctrinal force or dormancy.
 
 ### 3. Extract before synthesizing

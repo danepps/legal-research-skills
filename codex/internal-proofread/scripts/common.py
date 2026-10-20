@@ -63,6 +63,24 @@ def normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def validate_finding_location(row: dict, blocks: dict[str, dict]) -> None:
+    """Reject unlocatable findings instead of publishing invented anchors."""
+    location = row.get("location")
+    if not isinstance(location, dict):
+        raise ValueError("finding requires a location object")
+    block = blocks.get(location.get("block_id"))
+    if block is None:
+        raise ValueError(f"finding references unknown block {location.get('block_id')!r}")
+    text = str(block.get("text", ""))
+    start, end = location.get("char_start"), location.get("char_end")
+    if (type(start) is not int or type(end) is not int
+            or not 0 <= start <= end <= len(text)):
+        raise ValueError("finding character range is missing or outside its source block")
+    excerpt = normalize_space(str(row.get("excerpt") or "")).strip("…")
+    if not excerpt or excerpt not in normalize_space(text):
+        raise ValueError("finding excerpt is missing or absent from its source block")
+
+
 def word_count(text: str) -> int:
     return len(re.findall(r"\b[\w’'-]+\b", text, flags=re.UNICODE))
 

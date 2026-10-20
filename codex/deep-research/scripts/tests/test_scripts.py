@@ -117,7 +117,7 @@ class ResearchRunTests(unittest.TestCase):
                     "depth": depth,
                     "cutoff": "2026-08-04",
                     "budgets": budgets or {},
-                    **({"plan_accepted": True} if depth == "deep" else {}),
+                    **({"plan_accepted": True, "plan_authorization_basis": "Explicit fixture authorization."} if depth == "deep" else {}),
                 }
             ),
             encoding="utf-8",

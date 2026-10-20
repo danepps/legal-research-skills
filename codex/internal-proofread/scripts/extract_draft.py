@@ -139,6 +139,7 @@ def extract_docx(path: Path) -> tuple[list[dict], list[dict], list[dict], list[d
         "Visible inserted text is included and deleted text is excluded.",
         "Final pagination and page-number references require the user to update fields in Microsoft Word; automated office rendering is not used.",
         "Text contained only in images is not extracted.",
+        "Effective italics, small caps, and capitalization inherited through Word styles are not resolved; no typeface review is claimed.",
     ]
     with zipfile.ZipFile(path) as archive:
         styles = load_styles(archive)

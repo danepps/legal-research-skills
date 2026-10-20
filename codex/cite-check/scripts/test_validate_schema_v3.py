@@ -77,6 +77,9 @@ def main() -> int:
             "suggested_action": "none",
         }
         write_jsonl(run / "citation-units.jsonl", [unit])
+        write_jsonl(run / "footnote-coverage.jsonl", [
+            {"footnote_number": 1, "status": "reviewed", "unit_ids": ["U1"]}
+        ])
         write_jsonl(run / "source-ledger.jsonl", [source])
         write_jsonl(run / "verdicts.jsonl", [verdict])
 
@@ -153,6 +156,21 @@ def main() -> int:
             check=False,
         )
         assert valid.returncode == 0, valid.stdout + valid.stderr
+
+        # A sibling source's match is evidence of possible misattribution, not
+        # a match in the authority that the citation unit actually names.
+        check = json.loads((run / "quote-checks.jsonl").read_text(encoding="utf-8"))
+        sibling = dict(source, source_id="S2", canonical_citation="Different Authority")
+        write_jsonl(run / "source-ledger.jsonl", [source, sibling])
+        write_jsonl(run / "quote-checks.jsonl", [dict(check, source_id="S2")])
+        wrong_source = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(run), "--require-ready"],
+            capture_output=True, text=True, check=False,
+        )
+        assert wrong_source.returncode == 1
+        assert "lacks a deterministic match" in wrong_source.stderr
+        write_jsonl(run / "source-ledger.jsonl", [source])
+        write_jsonl(run / "quote-checks.jsonl", [check])
 
         (run / "quote-checks.jsonl").write_text("", encoding="utf-8")
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

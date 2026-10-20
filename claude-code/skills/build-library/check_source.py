@@ -31,18 +31,30 @@ Usage:
     echo '[{"title":"...","creators":[...],"date":"2013","ISBN":"9780..."}]' | \
         python3 check_source.py --stdin
 
-Zotero credentials: ZOTERO_API_KEY / ZOTERO_LIBRARY_ID env vars, falling back to
-the zotero MCP server entry in ~/.claude.json.
+Zotero credentials: ZOTERO_API_KEY / ZOTERO_LIBRARY_ID / ZOTERO_LIBRARY_TYPE env
+vars, falling back to the Zotero MCP server entry setup.py wrote in ~/.claude.json
+(server name from --server or ZOTERO_MCP_SERVER, default "zotero").
 
 Verdicts per item:
     PASS          identifier resolved and metadata matched in >=1 source
     FAIL          identifier resolved somewhere but NO source's metadata matched
-    UNRESOLVED    identifier not found in any source (highly suspicious)
+    UNRESOLVED    every source was searched and none knows the identifier
+                  (suspicious -- but catalogs are incomplete; see SKILL.md)
+    UNAVAILABLE   nothing resolved AND at least one source could not be searched
+                  (network/quota/JSON error). Lack of access is not evidence of
+                  nonexistence: rerun later or verify by hand. The detail lists
+                  which sources were searched and which failed, with the error.
     BAD_ISBN      ISBN checksum invalid (fabricated or mistyped)
     NO_IDENTIFIER item has no ISBN/DOI to check deterministically -- needs manual
                   verification against a catalog/publisher page
 
-Exit codes: 0 = all PASS; 1 = at least one non-PASS; 2 = usage/config error.
+Each result also records `fields_compared` for the matching source: which of
+title / year / authors the source actually supplied and were compared. A source
+that lists no authors cannot confirm the authors, and the PASS line says so.
+
+Exit codes: 0 = all PASS; 1 = at least one non-PASS; 2 = usage/config error, or
+the Zotero fetch was incomplete (a requested key missing, a page missing, or a
+malformed response) -- nothing is verified in that case.
 Stdlib only. Part of the build-library skill.
 """
 import argparse
@@ -64,14 +76,42 @@ SLEEP = 0.6  # politeness delay between external requests
 
 # ---------------------------------------------------------------- utilities
 
-def fetch_json(url, headers=None):
+class Unavailable:
+    """A source that could not be searched (transport, quota, or JSON error).
+    Resolvers return this instead of a record list so the caller can tell
+    'lookup unavailable' from 'searched, no match'."""
+
+    def __init__(self, reason):
+        self.reason = reason
+
+    def __repr__(self):
+        return f"Unavailable({self.reason!r})"
+
+
+NOT_FOUND = "not-found"
+
+
+def fetch_json_result(url, headers=None):
+    """Return (data, None) on success, (None, NOT_FOUND) on HTTP 404, or
+    (None, "<error>") when the request failed or the body was not JSON."""
     req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            return json.load(r)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
-            json.JSONDecodeError, OSError):
-        return None
+            return json.load(r), None
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None, NOT_FOUND
+        return None, f"HTTP {e.code}"
+    except json.JSONDecodeError as e:
+        return None, f"invalid JSON: {e}"
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def fetch_json(url, headers=None):
+    """Parsed JSON, or None on any failure (callers that don't need to know why)."""
+    data, _err = fetch_json_result(url, headers)
+    return data
 
 
 def normalize(s):
@@ -121,8 +161,9 @@ def clean_isbn(isbn):
 
 # ------------------------------------------------------- source record model
 # Each resolver returns a LIST of candidate records (possibly empty = the
-# source doesn't know the identifier), or the string "ERROR" when the source
-# itself was unreachable / over quota (reported as unavailable, not absence).
+# source was searched and doesn't know the identifier), or an Unavailable
+# carrying the error when the source itself could not be searched (reported
+# as unavailable, never as absence).
 # Record shape: {source, title, authors: [names...], year}
 
 
@@ -142,9 +183,11 @@ def flatten_mods_names(name):
 
 
 def ol_resolve(isbn):
-    d = fetch_json(f"https://openlibrary.org/isbn/{isbn}.json")
-    if not d:
+    d, err = fetch_json_result(f"https://openlibrary.org/isbn/{isbn}.json")
+    if err == NOT_FOUND:
         return []
+    if err or not isinstance(d, dict):
+        return Unavailable(err or "unexpected response shape")
     authors = []
     for a in d.get("authors", []):
         key = a.get("key") if isinstance(a, dict) else None
@@ -162,11 +205,11 @@ def ol_resolve(isbn):
 
 
 def ol_search_resolve(isbn):
-    d = fetch_json(
+    d, err = fetch_json_result(
         f"https://openlibrary.org/search.json?q=isbn:{isbn}"
         "&fields=title,subtitle,author_name,first_publish_year,publish_year&limit=5")
-    if d is None:
-        return "ERROR"
+    if err or not isinstance(d, dict):
+        return Unavailable(err or "unexpected response shape")
     recs = []
     for doc in d.get("docs", []):
         title = doc.get("title", "")
@@ -182,10 +225,12 @@ def ol_search_resolve(isbn):
 
 
 def gb_resolve(isbn):
-    d = fetch_json(
+    d, err = fetch_json_result(
         f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}&country=US")
-    if not d or d.get("error"):
-        return "ERROR"
+    if err or not isinstance(d, dict):
+        return Unavailable(err or "unexpected response shape")
+    if d.get("error"):
+        return Unavailable(f"API error: {d['error']}"[:200])
     recs = []
     for it in d.get("items", []):
         v = it.get("volumeInfo", {})
@@ -202,9 +247,10 @@ def gb_resolve(isbn):
 
 
 def harvard_resolve(isbn):
-    d = fetch_json(f"https://api.lib.harvard.edu/v2/items.json?identifier={isbn}&limit=5")
-    if d is None:
-        return "ERROR"
+    d, err = fetch_json_result(
+        f"https://api.lib.harvard.edu/v2/items.json?identifier={isbn}&limit=5")
+    if err or not isinstance(d, dict):
+        return Unavailable(err or "unexpected response shape")
     mods = (d.get("items") or {}).get("mods") if isinstance(d.get("items"), dict) else None
     if not mods:
         return []
@@ -235,9 +281,9 @@ def harvard_resolve(isbn):
 
 
 def loc_resolve(isbn):
-    d = fetch_json(f"https://www.loc.gov/search/?q={isbn}&fo=json&c=5")
-    if d is None:
-        return "ERROR"
+    d, err = fetch_json_result(f"https://www.loc.gov/search/?q={isbn}&fo=json&c=5")
+    if err or not isinstance(d, dict):
+        return Unavailable(err or "unexpected response shape")
     recs = []
     for r in d.get("results", []):
         title = r.get("title") or ""
@@ -286,7 +332,7 @@ def url_check(item, isbn):
         for c in item.get("creators", []):
             if c.get("creatorType") == "author":
                 ln = normalize(c.get("lastName") or c.get("name") or "")
-                if ln and ln not in blob:
+                if ln and not re.search(r"(?<![a-z0-9])" + re.escape(ln) + r"(?![a-z0-9])", blob):
                     problems.append(f"author {ln!r} not on page")
         if not problems:
             return {"ok": True,
@@ -296,10 +342,12 @@ def url_check(item, isbn):
 
 
 def crossref_resolve(doi):
-    d = fetch_json(
+    d, err = fetch_json_result(
         f"https://api.crossref.org/works/{urllib.parse.quote(doi, safe='')}")
-    if not d or "message" not in d:
+    if err == NOT_FOUND:
         return []
+    if err or not isinstance(d, dict) or not isinstance(d.get("message"), dict):
+        return Unavailable(err or "unexpected response shape")
     m = d["message"]
     title = " ".join(m.get("title") or [])
     if m.get("subtitle"):
@@ -318,29 +366,54 @@ def crossref_resolve(doi):
 # -------------------------------------------------------------- comparison
 
 
+def author_in(claimed, src_names):
+    """True when every token of the normalized claimed name appears as a whole
+    token in one source name. Token matching, so 'Smith' does not match
+    'Smithson' and 'van der Berg' needs all three tokens in the same name."""
+    tokens = normalize(claimed).split()
+    if not tokens:
+        return False
+    for name in src_names:
+        have = set(normalize(name).split())
+        if all(t in have for t in tokens):
+            return True
+    return False
+
+
 def compare(item, rec):
-    """Return (ok, detail) comparing a claimed item against a source record."""
+    """Compare a claimed item against a source record.
+
+    Returns (ok, problems, compared) where `compared` lists the fields the
+    source actually supplied and that were therefore checked: a subset of
+    ("title", "year", "authors"). A field the source left blank is not
+    compared and is not evidence either way."""
     problems = []
-    if not title_match(item.get("title", ""), rec["title"]):
-        problems.append(f"title mismatch (source: {rec['title']!r})")
+    compared = []
+    if rec.get("title"):
+        compared.append("title")
+    if not title_match(item.get("title", ""), rec.get("title", "")):
+        problems.append(f"title mismatch (source: {rec.get('title')!r})")
 
     iy, ry = year_of(item.get("date")), rec.get("year")
-    if iy and ry:
-        ry_list = ry if isinstance(ry, list) else [ry]
-        if ry_list and not any(abs(iy - y) <= 1 for y in ry_list if y):
+    ry_list = [y for y in (ry if isinstance(ry, list) else [ry]) if y]
+    if iy and ry_list:
+        compared.append("year")
+        if not any(abs(iy - y) <= 1 for y in ry_list):
             problems.append(f"year mismatch (claimed {iy}, source {ry_list})")
 
     claimed_authors = [c.get("lastName") or c.get("name") or ""
                        for c in item.get("creators", [])
                        if c.get("creatorType") == "author"]
-    src_blob = normalize(" ".join(rec.get("authors") or []))
-    if claimed_authors and src_blob:
-        missing = [a for a in claimed_authors if normalize(a) not in src_blob]
+    claimed_authors = [a for a in claimed_authors if normalize(a)]
+    src_names = [n for n in (rec.get("authors") or []) if normalize(n)]
+    if claimed_authors and src_names:
+        compared.append("authors")
+        missing = [a for a in claimed_authors if not author_in(a, src_names)]
         if missing:
             problems.append(
                 f"author(s) not in source record: {', '.join(missing)} "
-                f"(source: {src_blob!r})")
-    return (not problems, problems)
+                f"(source: {'; '.join(src_names)!r})")
+    return (not problems, problems, compared)
 
 
 def verify_item(item):
@@ -350,7 +423,8 @@ def verify_item(item):
     doi = (item.get("DOI") or "").strip()
 
     result = {"key": item.get("key", ""), "title": title, "identifier": "",
-              "verdict": "", "matched_source": "", "detail": []}
+              "verdict": "", "matched_source": "", "fields_compared": [],
+              "sources_searched": [], "sources_unavailable": [], "detail": []}
 
     if isbn:
         result["identifier"] = f"ISBN {isbn}"
@@ -372,22 +446,34 @@ def verify_item(item):
 
     resolved_any = False
     for resolver in resolvers:
+        name = resolver.__name__
         recs = resolver(arg)
         time.sleep(SLEEP)
-        if recs == "ERROR":
-            result["detail"].append(f"{resolver.__name__}: unavailable (error/quota)")
+        if isinstance(recs, Unavailable) or recs == "ERROR":
+            reason = recs.reason if isinstance(recs, Unavailable) else "error/quota"
+            result["sources_unavailable"].append(name)
+            result["detail"].append(f"{name}: lookup unavailable ({reason})")
             continue
+        if not isinstance(recs, list):
+            result["sources_unavailable"].append(name)
+            result["detail"].append(f"{name}: lookup unavailable (malformed resolver result)")
+            continue
+        result["sources_searched"].append(name)
         if not recs:
-            result["detail"].append(f"{resolver.__name__}: not found")
+            result["detail"].append(f"{name}: searched, no match")
             continue
         resolved_any = True
         for rec in recs:
-            ok, problems = compare(item, rec)
+            ok, problems, compared = compare(item, rec)
             if ok:
                 result["verdict"] = "PASS"
                 result["matched_source"] = rec["source"]
+                result["fields_compared"] = compared
+                unchecked = [f for f in ("title", "year", "authors") if f not in compared]
+                note = (f"; source supplied no {'/'.join(unchecked)} -- not checked"
+                        if unchecked else "")
                 result["detail"].append(
-                    f"{rec['source']}: matched (title/authors/year) -- "
+                    f"{rec['source']}: matched ({'/'.join(compared)}){note} -- "
                     f"source title: {rec['title']!r}, year {rec.get('year')}")
                 return result
             result["detail"].append(f"{rec['source']}: {'; '.join(problems)}")
@@ -403,30 +489,153 @@ def verify_item(item):
                 result["matched_source"] = "url_check"
                 return result
 
-    result["verdict"] = "FAIL" if resolved_any else "UNRESOLVED"
+    if resolved_any:
+        result["verdict"] = "FAIL"
+    elif result["sources_unavailable"]:
+        result["verdict"] = "UNAVAILABLE"
+        result["detail"].append(
+            f"could not complete the lookup: {len(result['sources_unavailable'])} of "
+            f"{len(resolvers)} source(s) unavailable "
+            f"({', '.join(result['sources_unavailable'])}); searched with no match: "
+            f"{', '.join(result['sources_searched']) or 'none'}. "
+            "Not evidence of nonexistence -- rerun later or verify by hand.")
+    else:
+        result["verdict"] = "UNRESOLVED"
+        result["detail"].append(
+            f"searched {len(result['sources_searched'])} source(s) with no match: "
+            f"{', '.join(result['sources_searched'])}")
     return result
 
 # ------------------------------------------------------------- Zotero I/O
 
 
-def zotero_creds():
+def zotero_creds(server=None, claude_json=None):
+    """(api_key, library_type, library_id): env vars first, then the MCP server
+    entry setup.py wrote in ~/.claude.json (by name; default "zotero")."""
     key = os.environ.get("ZOTERO_API_KEY")
     lib = os.environ.get("ZOTERO_LIBRARY_ID")
     typ = os.environ.get("ZOTERO_LIBRARY_TYPE", "user")
     if key and lib:
         return key, typ, lib
+    server = server or os.environ.get("ZOTERO_MCP_SERVER") or "zotero"
     try:
-        cfg = json.load(open(os.path.expanduser("~/.claude.json")))
-        env = cfg["mcpServers"]["zotero"]["env"]
+        cfg = json.load(open(claude_json or os.path.expanduser("~/.claude.json")))
+        env = cfg["mcpServers"][server]["env"]
         return (env["ZOTERO_API_KEY"], env.get("ZOTERO_LIBRARY_TYPE", "user"),
                 env["ZOTERO_LIBRARY_ID"])
     except Exception:
         return None, None, None
 
 
-def zotero_fetch(path, key):
-    url = f"https://api.zotero.org{path}"
-    return fetch_json(url, headers={"Zotero-API-Key": key})
+class ZoteroFetchError(Exception):
+    pass
+
+
+ZOTERO_PAGE = 100
+
+
+def zotero_get(path, key):
+    """One Zotero API GET: (parsed JSON, headers). Raises ZoteroFetchError."""
+    url = path if path.startswith("https://") else f"https://api.zotero.org{path}"
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Zotero-API-Key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return json.load(r), r.headers
+    except urllib.error.HTTPError as e:
+        raise ZoteroFetchError(f"HTTP {e.code} for {url}")
+    except json.JSONDecodeError as e:
+        raise ZoteroFetchError(f"invalid JSON from {url}: {e}")
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise ZoteroFetchError(f"{type(e).__name__} for {url}: {e}")
+
+
+def _next_link(headers):
+    link = headers.get("Link") if headers else None
+    if not link:
+        return None
+    for part in link.split(","):
+        m = re.match(r'\s*<([^>]+)>\s*;\s*rel="?next"?', part)
+        if m:
+            return m.group(1)
+    return None
+
+
+def zotero_fetch_all(path, key):
+    """Every record behind a Zotero listing, following pagination (Link
+    rel="next", else start/limit) and reconciling Total-Results where the
+    server sends it. Raises ZoteroFetchError if a page is malformed, a key
+    appears twice, or the collected count disagrees with the declared total."""
+    sep = "&" if "?" in path else "?"
+    url = f"{path}{sep}start=0&limit={ZOTERO_PAGE}"
+    records, seen, total = [], set(), None
+    start = 0
+    while url:
+        batch, headers = zotero_get(url, key)
+        if not isinstance(batch, list):
+            raise ZoteroFetchError(f"expected a JSON array from {url}, got {type(batch).__name__}")
+        for rec in batch:
+            if not isinstance(rec, dict) or not isinstance(rec.get("data"), dict) \
+                    or not rec["data"].get("key"):
+                raise ZoteroFetchError(f"malformed record in response from {url}")
+            if rec["data"]["key"] in seen:
+                raise ZoteroFetchError(
+                    f"item {rec['data']['key']} returned more than once by {path}")
+            seen.add(rec["data"]["key"])
+            records.append(rec)
+        tr = headers.get("Total-Results") if headers else None
+        if tr is not None and str(tr).strip().isdigit():
+            total = int(tr)
+        nxt = _next_link(headers)
+        if nxt and nxt != url:
+            url = nxt
+        elif not batch:
+            url = None
+        elif total is not None and len(records) < total:
+            start += len(batch)
+            url = f"{path}{sep}start={start}&limit={ZOTERO_PAGE}"
+        elif total is None and len(batch) >= ZOTERO_PAGE:
+            start += len(batch)
+            url = f"{path}{sep}start={start}&limit={ZOTERO_PAGE}"
+        else:
+            url = None
+        if total is not None and len(records) >= total:
+            url = None
+    if total is not None and len(records) != total:
+        raise ZoteroFetchError(
+            f"incomplete listing: server declared {total} result(s) but {len(records)} "
+            f"were returned for {path}")
+    return records
+
+
+def zotero_fetch_keys(base, keys, key):
+    """Records for exactly the requested item keys, each exactly once. Raises
+    ZoteroFetchError naming any key the server omitted, duplicated, or added."""
+    want = []
+    for k in keys:
+        k = k.strip()
+        if k and k not in want:
+            want.append(k)
+    if not want:
+        raise ZoteroFetchError("no item keys given")
+    got, counts = {}, {}
+    for i in range(0, len(want), 50):  # Zotero caps itemKey at 50 per request
+        chunk = want[i:i + 50]
+        for rec in zotero_fetch_all(f"{base}/items?itemKey={','.join(chunk)}", key):
+            k = rec["data"]["key"]
+            if k not in chunk:
+                raise ZoteroFetchError(f"server returned unrequested item {k}")
+            counts[k] = counts.get(k, 0) + 1
+            got[k] = rec
+    missing = [k for k in want if k not in got]
+    dupes = [k for k, n in counts.items() if n > 1]
+    if missing or dupes:
+        bits = []
+        if missing:
+            bits.append(f"requested key(s) not returned by Zotero: {', '.join(missing)}")
+        if dupes:
+            bits.append(f"returned more than once: {', '.join(dupes)}")
+        raise ZoteroFetchError("; ".join(bits))
+    return [got[k] for k in want]
 
 # ------------------------------------------------------------------- main
 
@@ -436,6 +645,8 @@ def main():
     ap.add_argument("--collection", help="Zotero collection key to verify")
     ap.add_argument("--keys", help="comma-separated Zotero item keys")
     ap.add_argument("--library", help="override library, e.g. user:<ID> or group:<ID>")
+    ap.add_argument("--server", help="name of the Zotero MCP server entry in ~/.claude.json "
+                                     "to read credentials from (default: zotero)")
     ap.add_argument("--stdin", action="store_true",
                     help="read a JSON array of Zotero-shaped items from stdin")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of text")
@@ -444,27 +655,41 @@ def main():
     if args.stdin:
         items = json.load(sys.stdin)
     else:
-        key, typ, lib = zotero_creds()
+        if not (args.collection or args.keys):
+            ap.print_help()
+            return 2
+        key, typ, lib = zotero_creds(args.server)
         if args.library:
-            typ, lib = args.library.split(":")
+            if ":" not in args.library:
+                print("--library must be user:<ID> or group:<ID>", file=sys.stderr)
+                return 2
+            typ, lib = args.library.split(":", 1)
         if not (key and lib):
             print("no Zotero credentials (env or ~/.claude.json)", file=sys.stderr)
             return 2
+        if typ not in ("user", "group"):
+            print(f"library type must be user or group, not {typ!r}", file=sys.stderr)
+            return 2
         base = f"/{typ}s/{lib}"
-        if args.collection:
-            raw = zotero_fetch(
-                f"{base}/collections/{args.collection}/items/top?limit=100", key)
-        elif args.keys:
-            raw = zotero_fetch(
-                f"{base}/items?itemKey={args.keys}&limit=100", key)
-        else:
-            ap.print_help()
+        try:
+            if args.collection:
+                raw = zotero_fetch_all(
+                    f"{base}/collections/{args.collection}/items/top", key)
+            else:
+                raw = zotero_fetch_keys(base, args.keys.split(","), key)
+        except ZoteroFetchError as e:
+            print(f"Zotero fetch incomplete -- nothing verified: {e}", file=sys.stderr)
             return 2
-        if raw is None:
-            print("Zotero API fetch failed", file=sys.stderr)
-            return 2
+        skipped = [r["data"]["key"] for r in raw
+                   if r["data"].get("itemType") in ("attachment", "note")]
+        if skipped:
+            print(f"note: skipping {len(skipped)} child item(s) (attachment/note): "
+                  f"{', '.join(skipped)}", file=sys.stderr)
         items = [r["data"] for r in raw
                  if r["data"].get("itemType") not in ("attachment", "note")]
+        if args.collection:
+            print(f"fetched {len(raw)} top-level record(s) from collection "
+                  f"{args.collection}", file=sys.stderr)
 
     results = [verify_item(it) for it in items]
 

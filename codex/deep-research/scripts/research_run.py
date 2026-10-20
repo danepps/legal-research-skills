@@ -6,11 +6,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -147,6 +148,38 @@ RESOLUTION_DISPOSITIONS = {
     "disputed",
     "removed",
 }
+
+
+def nonnegative_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and (not isinstance(value, float) or math.isfinite(value))
+        and value >= 0
+    )
+
+
+def verification_results(packet: dict[str, Any]) -> dict[str, str]:
+    """Return actual, unambiguous claim verdicts, never manifest assignments."""
+    results: dict[str, str] = {}
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    claims = packet.get("claims", [])
+    if not isinstance(claims, list):
+        return results
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        claim_id = claim.get("claim_id")
+        if not isinstance(claim_id, str) or not claim_id.strip():
+            continue
+        if claim_id in seen:
+            duplicates.add(claim_id)
+        seen.add(claim_id)
+        verdict = claim.get("verdict")
+        if isinstance(verdict, str) and verdict in VOTE_VERDICTS:
+            results[claim_id] = verdict
+    return {key: value for key, value in results.items() if key not in duplicates}
 
 
 def now() -> str:
@@ -297,8 +330,8 @@ def manifest_validation(
             errors.append(f"lane {label} budget must be an object")
         else:
             for key, value in budget.items():
-                if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-                    errors.append(f"lane {label} budget {key} must be nonnegative")
+                if not nonnegative_number(value):
+                    errors.append(f"lane {label} budget {key} must be finite and nonnegative")
         vote_group = lane.get("vote_group")
         if vote_group is not None:
             if not isinstance(vote_group, str) or not vote_group:
@@ -373,6 +406,15 @@ def manifest_validation(
                             errors.append(f"packet {output_path} {field} must be an array")
                     if packet.get("confidence") not in CONFIDENCE:
                         errors.append(f"packet {output_path} has invalid confidence")
+                    if stage == "verification" and lane.get("status") == "completed":
+                        assigned = lane.get("claim_ids", [])
+                        if isinstance(assigned, list) and all(isinstance(item, str) for item in assigned):
+                            missing_results = set(assigned) - verification_results(packet).keys()
+                            if missing_results:
+                                errors.append(
+                                    f"verification packet {output_path} lacks one valid verdict "
+                                    f"per assigned claim: {sorted(missing_results)}"
+                                )
                     if isinstance(vote_group, str):
                         vote_claims = [
                             claim
@@ -480,18 +522,28 @@ def validate_request(request: dict[str, Any]) -> list[str]:
     depth = request.get("depth")
     if depth == "deep" and request.get("plan_accepted") is not True:
         errors.append("deep runs require plan_accepted=true")
+    if depth == "deep" and (
+        not isinstance(request.get("plan_authorization_basis"), str)
+        or not request["plan_authorization_basis"].strip()
+    ):
+        errors.append("deep runs require a nonempty plan_authorization_basis")
     if request.get("verification_quorum", "adaptive") not in {"adaptive", "triple"}:
         errors.append("verification_quorum must be adaptive or triple")
     cutoff = request.get("cutoff")
-    if cutoff and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(cutoff)):
-        errors.append("request.json cutoff must use YYYY-MM-DD")
+    if cutoff:
+        try:
+            if not isinstance(cutoff, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cutoff):
+                raise ValueError
+            date.fromisoformat(cutoff)
+        except ValueError:
+            errors.append("request.json cutoff must be a valid YYYY-MM-DD date")
     budgets = request.get("budgets", {})
     if not isinstance(budgets, dict):
         errors.append("request.json budgets must be an object")
     else:
         for key, value in budgets.items():
-            if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-                errors.append(f"budget {key} must be a nonnegative number")
+            if not nonnegative_number(value):
+                errors.append(f"budget {key} must be a finite nonnegative number")
         guarded = {
             "worker_lanes": DEFAULT_LANE_ALLOCATIONS.get(depth, 0),
             "worker_interactions": DEFAULT_INTERACTION_CAPS.get(depth, 0),
@@ -562,8 +614,8 @@ def command_checkpoint(args: argparse.Namespace) -> int:
             + ", ".join(manually_recorded)
         )
     for key, value in usage_delta.items():
-        if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-            fail(f"usage value {key} must be a nonnegative number")
+        if not nonnegative_number(value):
+            fail(f"usage value {key} must be a finite nonnegative number")
     usage = state.setdefault("usage", {})
     if not isinstance(usage, dict):
         fail("run-state.json usage must be an object")
@@ -1013,9 +1065,16 @@ def validate_run(run_dir: Path) -> dict[str, Any]:
         else:
             for key, limit in budgets.items():
                 used = usage.get(key, 0)
-                if isinstance(limit, (int, float)) and isinstance(used, (int, float)):
+                if not nonnegative_number(limit):
+                    errors.append(f"state budget {key} must be finite and nonnegative")
+                if not nonnegative_number(used):
+                    errors.append(f"state usage {key} must be finite and nonnegative")
+                if nonnegative_number(limit) and nonnegative_number(used):
                     if used > limit and state.get("status") != "budget_exhausted":
                         errors.append(f"budget {key} exceeded without budget_exhausted status")
+            for key, used in usage.items():
+                if key not in budgets and not nonnegative_number(used):
+                    errors.append(f"state usage {key} must be finite and nonnegative")
 
     manifest_path = lane_manifest_path(run_dir)
     manifest: dict[str, Any] | None = None
@@ -1068,9 +1127,11 @@ def validate_run(run_dir: Path) -> dict[str, Any]:
         if missing:
             errors.append(f"claim-ledger record {index} missing {sorted(missing)}")
         claim_id = claim.get("claim_id")
-        if claim_id in claim_ids:
+        if not isinstance(claim_id, str) or not claim_id.strip():
+            errors.append(f"claim-ledger record {index} requires a nonempty claim_id")
+        elif claim_id in claim_ids:
             errors.append(f"duplicate claim_id {claim_id}")
-        if isinstance(claim_id, str):
+        else:
             claim_ids.add(claim_id)
         if claim.get("status") not in CLAIM_STATUSES:
             errors.append(f"claim {claim_id or index} has invalid status")
@@ -1091,10 +1152,18 @@ def validate_run(run_dir: Path) -> dict[str, Any]:
         if missing:
             errors.append(f"source-ledger record {index} missing {sorted(missing)}")
         source_id = source.get("source_id")
-        if source_id in source_ids:
+        if not isinstance(source_id, str) or not source_id.strip():
+            errors.append(f"source-ledger record {index} requires a nonempty source_id")
+        elif source_id in source_ids:
             errors.append(f"duplicate source_id {source_id}")
-        if isinstance(source_id, str):
+        else:
             source_ids.add(source_id)
+        text_fields = ["canonical_location", "title_or_citation"]
+        if source.get("verification_status") in {"direct", "verified"}:
+            text_fields.append("relevant_passage_or_data")
+        for field in text_fields:
+            if not isinstance(source.get(field), str) or not source[field].strip():
+                errors.append(f"source {source_id or index} requires nonempty {field}")
         if source.get("source_role") not in SOURCE_ROLES:
             errors.append(f"source {source_id or index} has invalid source_role")
         if source.get("verification_status") not in VERIFICATION_STATUSES:
@@ -1109,32 +1178,53 @@ def validate_run(run_dir: Path) -> dict[str, Any]:
             f"source {source_id or index} supported_claim_ids",
             errors,
         )
-    if claim_records and source_records:
-        for claim in claim_records:
-            referenced = string_list(
-                claim.get("supporting_source_ids"),
-                f"claim {claim.get('claim_id')} supporting_source_ids",
-                errors,
-            ) + string_list(
-                claim.get("contrary_source_ids"),
-                f"claim {claim.get('claim_id')} contrary_source_ids",
-                errors,
-            )
-            for source_id in referenced:
-                if source_id not in source_ids:
-                    errors.append(f"claim {claim.get('claim_id')} references unknown source {source_id}")
-        for source in source_records:
-            for claim_id in string_list(
-                source.get("supported_claim_ids"),
-                f"source {source.get('source_id')} supported_claim_ids",
-                errors,
-            ):
-                if claim_id not in claim_ids:
-                    errors.append(f"source {source.get('source_id')} references unknown claim {claim_id}")
+    for claim in claim_records:
+        referenced = string_list(
+            claim.get("supporting_source_ids"),
+            f"claim {claim.get('claim_id')} supporting_source_ids",
+            errors,
+        ) + string_list(
+            claim.get("contrary_source_ids"),
+            f"claim {claim.get('claim_id')} contrary_source_ids",
+            errors,
+        )
+        for source_id in referenced:
+            if source_id not in source_ids:
+                errors.append(f"claim {claim.get('claim_id')} references unknown source {source_id}")
+    for source in source_records:
+        for claim_id in string_list(
+            source.get("supported_claim_ids"),
+            f"source {source.get('source_id')} supported_claim_ids",
+            errors,
+        ):
+            if claim_id not in claim_ids:
+                errors.append(f"source {source.get('source_id')} references unknown claim {claim_id}")
 
     status = state.get("status")
     depth = request.get("depth") or state.get("depth")
     if status in {"complete", "complete_with_limits"}:
+        completion_issues = errors if status == "complete" else warnings
+        if not source_records:
+            completion_issues.append("completed run has no source records")
+        by_source_id = {
+            source["source_id"]: source for source in source_records
+            if isinstance(source.get("source_id"), str)
+        }
+        for claim in claim_records:
+            if any(marker in str(claim.get("importance", "")).casefold() for marker in ("low", "contextual")):
+                continue
+            claim_id = claim.get("claim_id")
+            if claim.get("status") in {"unverified", "stale"}:
+                completion_issues.append(f"material claim {claim_id} remains {claim.get('status')}")
+            supporting = string_list(claim.get("supporting_source_ids"), f"claim {claim_id} supporting_source_ids", errors)
+            if claim.get("status") == "disputed":
+                supporting += string_list(claim.get("contrary_source_ids"), f"claim {claim_id} contrary_source_ids", errors)
+            if not any(
+                source_id in by_source_id
+                and by_source_id[source_id].get("verification_status") in {"direct", "verified"}
+                for source_id in supporting
+            ):
+                completion_issues.append(f"material claim {claim_id} lacks directly verified source support")
         required = {"report.md", "source-ledger.jsonl"}
         if depth in {"standard", "deep"}:
             required |= {
@@ -1199,12 +1289,20 @@ def validate_run(run_dir: Path) -> dict[str, Any]:
                         for marker in ("low", "contextual")
                     )
                 }
-                verified_claim_ids = {
-                    claim_id
-                    for lane in verification_lanes
-                    if lane.get("status") in LANE_SUCCESS
-                    for claim_id in lane.get("claim_ids", [])
-                }
+                verified_claim_ids: set[str] = set()
+                for lane in verification_lanes:
+                    if lane.get("status") not in LANE_SUCCESS:
+                        continue
+                    try:
+                        packet = json.loads((run_dir / lane["output_path"]).read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                        continue
+                    if isinstance(packet, dict):
+                        verified_claim_ids.update(
+                            set(verification_results(packet)) & set(string_list(
+                                lane.get("claim_ids"), f"lane {lane.get('lane_id')} claim_ids", errors
+                            ))
+                        )
                 missing_verification = sorted(material_claim_ids - verified_claim_ids)
                 if missing_verification:
                     message = (

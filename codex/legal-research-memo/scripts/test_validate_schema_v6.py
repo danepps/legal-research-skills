@@ -45,6 +45,27 @@ def main() -> int:
             check=False,
         )
         assert process.returncode == 0, process.stderr
+        initial = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(run)],
+            capture_output=True, text=True, check=False,
+        )
+        assert initial.returncode == 0, initial.stdout + initial.stderr
+        premature = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(run), "--require-ready"],
+            capture_output=True, text=True, check=False,
+        )
+        assert premature.returncode == 1
+        events = run / "events.jsonl"
+        saved_events = events.read_text(encoding="utf-8")
+        events.unlink()
+        missing_events = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(run)],
+            capture_output=True, text=True, check=False,
+        )
+        assert missing_events.returncode == 1
+        assert "events.jsonl" in missing_events.stdout
+        assert "Traceback" not in missing_events.stderr
+        events.write_text(saved_events, encoding="utf-8")
         memo.write_text(
             "# Test Memo\n\n## Analysis\n\nThe governing rule supports the answer.\n",
             encoding="utf-8",
@@ -121,6 +142,24 @@ def main() -> int:
             check=False,
         )
         assert valid.returncode == 0, valid.stdout + valid.stderr
+
+        claim["status"] = "disputed"
+        claim["supporting_source_ids"] = []
+        (run / "claim-ledger.jsonl").write_text(json.dumps(claim) + "\n", encoding="utf-8")
+        unsupported = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(run), "--require-ready"],
+            capture_output=True, text=True, check=False,
+        )
+        assert unsupported.returncode == 1
+        assert "lacks directly verified support" in unsupported.stdout
+        claim["adverse_source_ids"] = ["S1"]
+        (run / "claim-ledger.jsonl").write_text(json.dumps(claim) + "\n", encoding="utf-8")
+        grounded_dispute = subprocess.run(
+            [sys.executable, str(VALIDATOR), str(run), "--require-ready"],
+            capture_output=True, text=True, check=False,
+        )
+        assert grounded_dispute.returncode == 0, grounded_dispute.stdout
+        claim.update(status="supported", supporting_source_ids=["S1"], adverse_source_ids=[])
 
         claim["draft_anchor"] = "This text is absent."
         (run / "claim-ledger.jsonl").write_text(json.dumps(claim) + "\n", encoding="utf-8")

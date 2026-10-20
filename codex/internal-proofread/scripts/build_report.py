@@ -110,9 +110,15 @@ def item_text(
 ) -> str:
     location = row.get("location", {})
     block_id = location.get("block_id") or "global"
-    location_label = block_id
+    block = block_by_id.get(block_id, {})
+    body_ids = [key for key, value in block_by_id.items()
+                if value.get("story") not in {"footnote", "endnote"}]
+    location_label = str(block.get("story") or "Draft").replace("_", " ").title()
     if block_id in raw_to_display:
-        location_label = f"Displayed note {raw_to_display[block_id]} (raw {block_id})"
+        location_label = f"Note {raw_to_display[block_id]}"
+    elif block_id in body_ids:
+        progress = round(100 * body_ids.index(block_id) / max(1, len(body_ids) - 1))
+        location_label += f", about {progress}% through draft"
     heading = " > ".join(location.get("heading_path", []))
     where = f"{location_label}" + (f" ({heading})" if heading else "")
     suggestion = disposition.get("suggestion") or row.get("suggestion") or "Review manually."

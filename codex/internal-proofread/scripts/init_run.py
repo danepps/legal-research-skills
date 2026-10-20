@@ -67,6 +67,7 @@ def main() -> int:
     snapshot_suffix = draft.suffix.lower() or ".txt"
     snapshot_path = run_dir / f"source-snapshot{snapshot_suffix}"
     shutil.copy2(draft, snapshot_path)
+    snapshot_path.chmod(snapshot_path.stat().st_mode & ~0o222)
     scripts = Path(__file__).resolve().parent
     document_path = run_dir / "document.json"
     static_path = run_dir / "static-findings.jsonl"

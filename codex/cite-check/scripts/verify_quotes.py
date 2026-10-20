@@ -92,6 +92,7 @@ def normalize(
     *,
     fold: bool,
     spans: list[tuple[int, int, int | None]] | None = None,
+    dehyphenate_line_breaks: bool = False,
 ) -> tuple[str, list[int], list[tuple[int, int | None]]]:
     """Return normalized text, normalized-to-raw offsets, and page boundaries."""
     output: list[str] = []
@@ -162,6 +163,11 @@ def normalize(
                     and dash_count == 1
                     and (not had_whitespace or crossed_line)
                 ):
+                    # An inline hyphen can change meaning (re-signed/resigned).
+                    # Preserve it. Only a separate line-break view may remove
+                    # a hyphen whose following whitespace crosses a line.
+                    if not (crossed_line and dehyphenate_line_breaks):
+                        emit("-", index)
                     index = cursor if had_whitespace else index + 1
                     continue
                 pending_space = True
@@ -267,6 +273,29 @@ def occurrence_count(source: str, needle: str) -> int:
     return count
 
 
+def matching_offset(
+    source: str,
+    needle: str,
+    boundaries: list[tuple[int, int | None]],
+    marker: str,
+    first_page: int | None,
+    pincite: object,
+) -> int:
+    """Prefer an actual occurrence on the cited page when text is repeated."""
+    first = source.find(needle)
+    pin = parse_pincite(pincite)
+    if first < 0 or pin is None:
+        return first
+    position = first
+    while position >= 0:
+        page = printed_page(boundaries, marker, first_page, position)
+        end_page = printed_page(boundaries, marker, first_page, position + len(needle) - 1)
+        if page is not None and end_page is not None and page <= pin[1] and end_page >= pin[0]:
+            return position
+        position = source.find(needle, position + max(1, len(needle)))
+    return first
+
+
 def closest_passage(
     source: str, offsets: list[int], raw: str, probe: str
 ) -> tuple[float, str, str]:
@@ -341,7 +370,7 @@ def word_diff(quote: str, source_window: str) -> dict[str, Any]:
 
 def check_quote(
     raw: str,
-    views: dict[bool, tuple[str, list[int], list[tuple[int, int | None]]]],
+    views: dict[bool | str, tuple[str, list[int], list[tuple[int, int | None]]]],
     marker: str,
     first_page: int | None,
     item: dict[str, Any],
@@ -352,10 +381,13 @@ def check_quote(
     folded_quote = normalize(quote, fold=True)[0]
     status: str | None = None
     span: tuple[int, int] | None = None
+    selected_view: bool | str = False
 
     plain_source = views[False][0]
     if plain_quote:
-        found = plain_source.find(plain_quote)
+        found = matching_offset(
+            plain_source, plain_quote, views[False][2], marker, first_page, item.get("pincite")
+        )
         if found >= 0:
             status = "verbatim"
             span = (found, found + len(plain_quote))
@@ -363,12 +395,28 @@ def check_quote(
 
     folded_source, folded_offsets, _ = views[True]
     if status is None and folded_quote:
-        found = folded_source.find(folded_quote)
+        found = matching_offset(
+            folded_source, folded_quote, views[True][2], marker, first_page, item.get("pincite")
+        )
         if found >= 0:
             status = "normalized"
             span = (found, found + len(folded_quote))
             result["occurrences"] = occurrence_count(folded_source, folded_quote)
             result["note"] = "matched after typographic folding"
+            selected_view = True
+
+    if status is None and folded_quote and "dehyphenated" in views:
+        dehyphenated_source = views["dehyphenated"][0]
+        found = matching_offset(
+            dehyphenated_source, folded_quote, views["dehyphenated"][2],
+            marker, first_page, item.get("pincite"),
+        )
+        if found >= 0:
+            status = "normalized"
+            span = (found, found + len(folded_quote))
+            result["occurrences"] = occurrence_count(dehyphenated_source, folded_quote)
+            result["note"] = "matched after line-break dehyphenation"
+            selected_view = "dehyphenated"
 
     if status is None:
         segments = marked_segments(folded_quote)
@@ -380,6 +428,7 @@ def check_quote(
             if marked_match:
                 start, end, gaps = marked_match
                 status = "altered"
+                selected_view = True
                 span = (start, end)
                 result["alteration_reviewed"] = False
                 result["requires_judgment"] = True
@@ -402,7 +451,7 @@ def check_quote(
         return result
 
     result["status"] = status
-    view = views[status != "verbatim"]
+    view = views[selected_view]
     _, offsets, boundaries = view
     assert span is not None
     start, end = span
@@ -547,6 +596,9 @@ def main() -> int:
             fold: normalize(raw, fold=fold, spans=spans)
             for fold in (False, True)
         }
+        views["dehyphenated"] = normalize(
+            raw, fold=True, spans=spans, dehyphenate_line_breaks=True
+        )
         results = [
             check_quote(raw, views, marker, args.first_page, item)
             for item in items

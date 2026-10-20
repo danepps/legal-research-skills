@@ -12,7 +12,10 @@ The model runs this so the user never edits a configuration file by hand.
     python3 setup.py courtlistener <token>
         Save a CourtListener API token to ~/.config/courtlistener/token (mode
         600), which every runtime's scripts read, then confirm it works with a
-        live lookup. Prints JSON. Exit 0 only if the lookup succeeded.
+        live lookup. Prints JSON. Exit 0 only if the lookup succeeded. If a
+        COURTLISTENER_API_TOKEN or COURTLISTENER_TOKEN environment variable
+        holds a different token, the scripts will keep using that one; the JSON
+        then carries "effective": false and a "warning" naming the variable.
 
     python3 setup.py allow-web
         Add "WebFetch" and "WebSearch" to permissions.allow in
@@ -30,7 +33,10 @@ The model runs this so the user never edits a configuration file by hand.
         next session. Prints JSON.
 
 Every writer makes a timestamped backup (<file>.bak-YYYYmmdd-HHMMSS) before it
-rewrites a JSON file, and never removes keys it did not add.
+rewrites a JSON file, and never removes keys it did not add. Files are replaced
+atomically through a 0600 temp file; a rewritten file keeps its mode, and the
+two that hold credentials (the token file, and ~/.claude.json once it carries a
+Zotero key) are kept at 0600.
 """
 import json
 import os
@@ -63,17 +69,44 @@ def read_json(path):
         return None, f"{path}: {e}"
 
 
-def write_json(path, data):
+def atomic_write(path, text, private=False):
+    """Write text through a same-directory temp file, then rename it over path.
+
+    The temp file is created 0600 (never world-readable, even for an instant), and
+    the result keeps the destination's existing mode. A new file gets 0600 when
+    private, else the umask default. A private file (a credential file) never keeps
+    group or other bits, so a 0600 file stays 0600 and a looser one is tightened.
+    """
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except FileNotFoundError:
+        mode = None
+    tmp = f"{path}.tmp-{os.getpid()}"
+    create_mode = 0o666 if (mode is None and not private) else 0o600   # umask applies
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, create_mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        if mode is not None:
+            os.chmod(tmp, mode & ~0o077 if private else mode)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def write_json(path, data, private=False):
     backup = None
     if os.path.exists(path):
         backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
-        shutil.copy2(path, backup)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-    os.replace(tmp, path)
+        shutil.copy2(path, backup)                     # copy2 keeps the file's mode
+        if private:
+            os.chmod(backup, stat.S_IMODE(os.stat(backup).st_mode) & ~0o077)
+    atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False) + "\n", private=private)
     return backup
 
 
@@ -86,10 +119,22 @@ def python_version():
     return {"version": f"{v.major}.{v.minor}.{v.micro}", "ok": (v.major, v.minor) >= (3, 11)}
 
 
+TOKEN_ENV_VARS = ("COURTLISTENER_API_TOKEN", "COURTLISTENER_TOKEN")
+
+
+def token_env_var():
+    """The environment variable that currently supplies a token, or None. Same order
+    as check_cite.py, which also prefers the environment over the token file."""
+    for var in TOKEN_ENV_VARS:
+        if os.environ.get(var, "").strip():
+            return var
+    return None
+
+
 def courtlistener_token():
-    for var in ("COURTLISTENER_API_TOKEN", "COURTLISTENER_TOKEN"):
-        if os.environ.get(var):
-            return os.environ[var].strip(), f"environment variable {var}"
+    var = token_env_var()
+    if var:
+        return os.environ[var].strip(), f"environment variable {var}"
     try:
         with open(TOKEN_FILE, encoding="utf-8") as f:
             tok = f.read().strip()
@@ -98,6 +143,26 @@ def courtlistener_token():
     except OSError:
         pass
     return None, None
+
+
+def env_override_warning(var, saved_token):
+    """Explain that an environment variable, not the file just written, supplies the
+    token the scripts will use, and where that variable most likely comes from.
+    Nothing is rewritten; the user decides."""
+    settings, _ = read_json(SETTINGS)
+    env_block = (settings or {}).get("env") if isinstance(settings, dict) else None
+    if isinstance(env_block, dict) and var in env_block:
+        where = f"the \"env\" block of {SETTINGS}"
+    else:
+        where = (f"your shell profile (~/.zshrc, ~/.zprofile, ~/.bash_profile or ~/.bashrc, "
+                 f"wherever {var} is exported) or the \"env\" block of {SETTINGS}")
+    same = os.environ.get(var, "").strip() == saved_token
+    if same:
+        return None
+    return (f"the environment variable {var} is set and takes precedence over "
+            f"{TOKEN_FILE}, so the scripts will keep using the older token it holds, not "
+            f"the one just saved. It most likely comes from {where}. Remove it or set it "
+            f"to the new token there; this script does not change that configuration.")
 
 
 def probe_courtlistener(token):
@@ -153,9 +218,17 @@ def cmd_status(_args):
     settings, s_err = read_json(SETTINGS)
     cfg, c_err = read_json(CLAUDE_JSON)
     token, source = courtlistener_token()
-    cl = {"configured": token is not None, "source": source, "works": None, "detail": None}
+    cl = {"configured": token is not None, "source": source, "works": None, "detail": None,
+          "token_file_present": os.path.isfile(TOKEN_FILE)}
     if token:
         cl["works"], cl["detail"] = probe_courtlistener(token)
+    var = token_env_var()
+    if var and cl["token_file_present"]:
+        try:
+            with open(TOKEN_FILE, encoding="utf-8") as f:
+                cl["env_overrides_file"] = f.read().strip() != token
+        except OSError:
+            pass
     report = {
         "python": python_version(),
         "courtlistener": cl,
@@ -180,11 +253,17 @@ def cmd_courtlistener(args):
     if not ok:
         print(json.dumps({"saved": False, "works": False, "detail": detail}))
         return 1
-    os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
-    with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-        f.write(token + "\n")
-    os.chmod(TOKEN_FILE, stat.S_IRUSR | stat.S_IWUSR)
-    print(json.dumps({"saved": True, "works": True, "path": TOKEN_FILE, "detail": detail}))
+    atomic_write(TOKEN_FILE, token + "\n", private=True)
+    # Re-resolve the way check_cite.py will: an environment variable beats the file.
+    effective, source = courtlistener_token()
+    report = {"saved": True, "works": True, "path": TOKEN_FILE, "detail": detail,
+              "effective": effective == token, "effective_source": source}
+    var = token_env_var()
+    warning = env_override_warning(var, token) if var else None
+    if warning:
+        report["warning"] = warning
+        print(f"warning: {warning}", file=sys.stderr)
+    print(json.dumps(report))
     return 0
 
 
@@ -262,7 +341,7 @@ def cmd_zotero(args):
             "ZOTERO_LIBRARY_TYPE": opts["--type"],
         },
     }
-    backup = write_json(CLAUDE_JSON, cfg)
+    backup = write_json(CLAUDE_JSON, cfg, private=True)   # it now carries the API key
     print(json.dumps({
         "ok": True, "server": name, "path": CLAUDE_JSON, "backup": backup,
         "uvx_installed": on_path("uvx"),

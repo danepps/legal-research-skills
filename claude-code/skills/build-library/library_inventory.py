@@ -14,7 +14,11 @@ Usage:
 
 Output is one line per top-level item:
   YEAR | PDF | AuthorLastNames | Title | Publication | ITEMKEY
-"PDF" means the item has at least one child attachment; blank means metadata only.
+"PDF" means the item has a child attachment whose contentType is application/pdf
+(checked by listing the library's attachments, one extra paginated request, not
+one per item); blank means no PDF attached. A child note or a non-PDF attachment
+does not count. The JSON output carries both `child_count` (Zotero's numChildren,
+notes included) and `has_pdf` (true only after that attachment check).
 """
 import argparse, json, os, re, sys, urllib.request
 
@@ -45,10 +49,10 @@ def api_key():
     return k
 
 
-def fetch_all(base, key):
+def fetch_all(base, key, path="items/top", query=""):
     items, start = [], 0
     while True:
-        url = f"{base}/items/top?limit=100&start={start}&format=json"
+        url = f"{base}/{path}?limit=100&start={start}&format=json{query}"
         req = urllib.request.Request(url, headers={"Zotero-API-Key": key})
         with urllib.request.urlopen(req, timeout=120) as resp:
             batch = json.loads(resp.read())
@@ -59,6 +63,17 @@ def fetch_all(base, key):
         if len(batch) < 100:
             break
     return items
+
+
+def pdf_parents(base, key):
+    """Keys of top-level items that have a child attachment with contentType
+    application/pdf. One paginated listing of the library's attachments."""
+    parents = set()
+    for it in fetch_all(base, key, "items", "&itemType=attachment"):
+        d = it.get("data", {})
+        if (d.get("contentType") or "").lower() == "application/pdf" and d.get("parentItem"):
+            parents.add(d["parentItem"])
+    return parents
 
 
 def year(d):
@@ -95,6 +110,7 @@ def main():
     base = (f"https://api.zotero.org/users/{USER_ID}" if a.user
             else f"https://api.zotero.org/groups/{a.group}")
     items = fetch_all(base, key)
+    with_pdf = pdf_parents(base, key)
 
     rows = []
     for it in items:
@@ -106,7 +122,8 @@ def main():
             "title": clean(d.get("title", "")),
             "publication": clean(d.get("publicationTitle") or d.get("publisher") or ""),
             "itemType": d.get("itemType", ""),
-            "has_pdf": bool(it.get("meta", {}).get("numChildren", 0)),
+            "child_count": int(it.get("meta", {}).get("numChildren", 0) or 0),
+            "has_pdf": d["key"] in with_pdf,
             "DOI": d.get("DOI", ""),
             "ISBN": d.get("ISBN", ""),
         })
@@ -127,7 +144,7 @@ def main():
         print(f"{r['year']} | {pdf} | {r['authors'][:40]:<40} | "
               f"{r['title'][:70]:<70} | {r['publication'][:26]:<26} | {r['key']}")
     missing = sum(1 for r in rows if not r["has_pdf"])
-    print(f"\nTOTAL {len(rows)} top-level items ({missing} without an attachment)")
+    print(f"\nTOTAL {len(rows)} top-level items ({missing} without a PDF attachment)")
 
 
 if __name__ == "__main__":

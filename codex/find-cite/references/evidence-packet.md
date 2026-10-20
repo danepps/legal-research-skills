@@ -78,5 +78,6 @@ Use one temporary JSON object per proposition. The validator is deliberately str
 - `limitations`: record source-specific shortcomings, including nonmajority posture, an incomplete validity check, uncertain pagination, or only partial support.
 - `case_context.opinion_part`: use `majority`, `unanimous`, `per-curiam`, `plurality`, `concurrence`, `dissent`, or `other`.
 - `case_context.current_validity_checked`: means only that a reasonable open-source check was performed. It does not imply citator coverage.
+- `case_context.current_validity_required`: optional boolean, default `true`. Set it to `false` only when current validity is immaterial to the precise proposition, such as a historical claim about what a court held. If the check was not performed, set `current_validity_checked` to `false`, explain why in `validity_basis`, and disclose it in the authority's `limitations`. A required but incomplete check permits only `limited`, not `ready`, status. Historical authority can be `ready` with this explicit scope and disclosure.
 
 The validator checks structural and declared verification completeness. It cannot determine whether a quotation is accurate, a source really supports the proposition, or the legal analysis is correct; those remain source-reading tasks.

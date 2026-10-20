@@ -106,5 +106,47 @@ d3 = {x["i"]: x["disposition"] for x in L3["instances"]}
 check(d3[by_note[3][0]["i"]] == "unchecked", "secondary pass skipped -> article is UNCHECKED, not passed")
 check(d3[by_note[5][0]["i"]] == "verified", "quoted book still verified by its quote")
 
+print("regressions 2026-10-19 (hand-built footnotes)")
+LONG = "For the proposition that " + "the taxing power is plenary and broad, " * 12 + "see McCulloch, 17 U.S. at 400."
+R = cl.build_ledger({"footnotes": {
+    "1": {"number": 1, "text": "McCulloch v. Maryland, 17 U.S. 316 (1819)."},
+    "2": {"number": 2, "text": LONG},
+    "3": {"number": 3, "text": "Jane Doe, The Taxing Power Reconsidered, 110 Harv. L. Rev. 815 (1997)."},
+    "4": {"number": 4, "text": "Roe, supra note 3, at 50."},
+    "5": {"number": 5, "text": "See, e.g., id. at 5."},
+    "6": {"number": 6, "text": "42 U.S.C. § 1983; see infra Part II."},
+    "7": {"number": 7, "text": "Id."},
+    "8": {"number": 8, "text": "Smith v. Jones, 5 U.S. 1 (1800). See, e.g., Marbury v. Madison, 5 U.S. 137 (1803). But cf. id. at 140."},
+    "9": {"number": 9, "text": "See Merrill, Landscape, supra note 3, at 914; Wu, supra note 3."},
+    "10": {"number": 10, "text": "Doe, supra note 3, at 2."},
+}, "body_quotes": []})
+rn = {}
+for x in R["instances"]:
+    rn.setdefault(x["note"], []).append(x)
+check(rn[2][0]["kind"] == "case-short" and len(rn[2][0]["text"]) > 400 and rn[2][0]["xref_status"] == "resolved",
+      "short cite past 400 chars: clause stored in full, no crash, resolved")
+check(rn[4][0]["kind"] == "supra" and rn[4][0]["xref_status"] == "name-mismatch" and rn[4][0]["xref_target"] is None,
+      "'Roe, supra note 3' where n.3 is Doe -> name-mismatch, never silently resolved")
+check(rn[4][0]["i"] in R["unresolved_xrefs"], "name-mismatch supra is counted as unresolved")
+check([x["kind"] for x in rn[5]] == ["id"], "'See, e.g., id.' is an Id. instance, not a phantom secondary (%s)" % [x["kind"] for x in rn[5]])
+check(all(s["key"] != "see e g id" for s in R["secondary_cites"]), "no 'see e g id' secondary cite")
+check(rn[7][0]["xref_target"] == rn[6][0]["i"] and rn[6][0]["kind"] == "statute",
+      "Id. after '§ 1983; see infra Part II' resolves to the statute, not the internal ref")
+check([x["kind"] for x in rn[8]] == ["case", "case", "id"],
+      "'. See, e.g., X' and '. But cf. id.' split into three clauses (%s)" % [x["kind"] for x in rn[8]])
+check(rn[9][0]["kind"] == "supra" and rn[9][0]["xref_status"] == "name-mismatch",
+      "'Merrill, Landscape, supra note 3' (n.3 is Doe) -> name-mismatch")
+check(rn[9][1]["kind"] == "supra" and rn[9][1]["xref_name"] == "Wu" and rn[9][1]["xref_status"] == "name-mismatch",
+      "two-letter surname 'Wu, supra note 3' is named and checked")
+check(rn[10][0]["xref_status"] == "resolved" and rn[10][0]["xref_target"] == rn[3][0]["i"],
+      "'Doe, supra note 3' still resolves to the Doe article")
+check(cl.source_key("Robert that 5 Harv. L. Rev. 10") == "5 harv l rev 10",
+      "source_key no longer eats 'at' inside a word")
+cR = cl.assign_dispositions(R, case_pass_ran=False, secondary_pass_ran=False)
+check(all(x["disposition"] == "unresolved-xref" and "renumbered" in x.get("reason", "")
+          for x in R["instances"] if x["xref_status"] == "name-mismatch"),
+      "name-mismatch -> unresolved-xref disposition with a renumbering reason")
+check(cl.compact(R)[1]["c"] == LONG, "compact form carries the full clause text")
+
 print("\n%s" % ("all tests passed" if not fails else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)

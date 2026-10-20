@@ -118,8 +118,8 @@ VALID_ANALYSIS_ROLES = {
 def load_json(path: Path, errors: list[str]) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        errors.append(f"missing file: {path}")
+    except OSError as exc:
+        errors.append(f"cannot read file {path}: {exc}")
         return {}
     except json.JSONDecodeError as exc:
         errors.append(f"invalid JSON in {path}: {exc}")
@@ -134,8 +134,8 @@ def load_jsonl(path: Path, errors: list[str]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        errors.append(f"missing file: {path}")
+    except OSError as exc:
+        errors.append(f"cannot read file {path}: {exc}")
         return rows
     for number, line in enumerate(lines, 1):
         if not line.strip():
@@ -326,9 +326,26 @@ def main() -> int:
         | (V4_REQUIRED_GATES if schema_version >= 4 else set())
         | (V5_REQUIRED_GATES if schema_version >= 5 else set())
     )
-    strict_coverage = schema_version >= 3 and manifest.get("effort") in {"standard", "deep"}
-    claim_map_required = schema_version >= 6 and manifest.get("effort") in {"standard", "deep"}
-    if claim_map_required:
+    gates_input = manifest.get("completion_gates")
+
+    def gate_passed(name: str) -> bool:
+        return (
+            isinstance(gates_input, dict)
+            and isinstance(gates_input.get(name), dict)
+            and gates_input[name].get("status") == "pass"
+        )
+
+    final_checks_required = args.require_ready or manifest.get("status") == "complete"
+    strict_coverage = (
+        schema_version >= 3
+        and manifest.get("effort") in {"standard", "deep"}
+        and (final_checks_required or gate_passed("planned_coverage"))
+    )
+    claim_map_applicable = schema_version >= 6 and manifest.get("effort") in {"standard", "deep"}
+    claim_map_required = claim_map_applicable and (
+        final_checks_required or gate_passed("draft_claim_map")
+    )
+    if claim_map_applicable:
         required_gates |= V6_REQUIRED_GATES
     direct_source_required = (
         schema_version >= 5
@@ -338,7 +355,7 @@ def main() -> int:
     non_waivable_gates = set(NON_WAIVABLE_GATES)
     if direct_source_required:
         non_waivable_gates.add("direct_source_audit")
-    if claim_map_required:
+    if claim_map_applicable:
         non_waivable_gates.add("draft_claim_map")
 
     for field in ("schema_version", "question", "mode", "effort", "cutoff", "status", "phase", "next_action"):
@@ -413,8 +430,10 @@ def main() -> int:
         planned_coverage = []
 
     previous: datetime | None = None
-    event_limit = datetime.fromtimestamp(event_path.stat().st_mtime, timezone.utc) + timedelta(minutes=5)
     now_limit = datetime.now(timezone.utc) + timedelta(minutes=5)
+    event_limit = now_limit
+    if event_path.is_file():
+        event_limit = datetime.fromtimestamp(event_path.stat().st_mtime, timezone.utc) + timedelta(minutes=5)
     for number, event in enumerate(events, 1):
         parsed = parse_timestamp(event.get("timestamp"), f"event row {number}", errors)
         if parsed is None:
@@ -512,10 +531,11 @@ def main() -> int:
             errors.append(f"claim {claim_id} refers to unknown sources: {', '.join(missing)}")
         if claim.get("status") == "supported" and not support:
             errors.append(f"supported claim {claim_id} has no supporting source")
-        if claim.get("importance") in {"dispositive", "material"} and claim.get("status") == "supported":
+        if claim.get("importance") in {"dispositive", "material"} and claim.get("status") in {"supported", "disputed"}:
+            evidence_ids = support + (adverse if claim.get("status") == "disputed" else [])
             direct = [
                 source_id
-                for source_id in support
+                for source_id in evidence_ids
                 if source_id in sources and sources[source_id].get("verification") in DIRECT_VERIFICATION
             ]
             if not direct:

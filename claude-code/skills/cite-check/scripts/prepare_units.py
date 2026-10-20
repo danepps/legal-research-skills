@@ -13,7 +13,12 @@ findings all traced to a resolver that lacked this context (DESIGN.md, lessons
     antecedent — which may be a CASE two notes up);
   * the full text of every "supra note N" the home note redirects through;
   * a deterministic syllabus hint (a U.S. Reports pincite equal to the cite's
-    first page is a syllabus page — CourtListener carries no syllabus text).
+    first page is a syllabus page — CourtListener carries no syllabus text);
+  * block_quote / quote_marks / footnotes_in_quote passed through from the
+    extractor when present, so the verifier knows the quote's shape.
+
+Duplicate (footnote, quote) pairs collapse to one unit (`also_in` names the
+other location); unit ids are issued after the collapse.
 
 This is all deterministic (zero model tokens). The workflow's segment/resolve
 agents consume these units; grouping quotes onto their unique source (so a
@@ -28,18 +33,28 @@ import re
 import sys
 
 ANTECEDENT_DEPTH = 3  # preceding non-empty notes carried for Id.-chain walking
+MAX_ID_WALK = 40      # ...and further back while those notes are themselves "Id."
 US_PINCITE = re.compile(r"\b(\d+)\s+U\.\s?S\.\s+(\d+),\s*(\d+)")
 
 
-def preceding_notes(notes, num, depth=ANTECEDENT_DEPTH):
-    """Full text of up to `depth` non-empty footnotes immediately before `num`."""
+def preceding_notes(notes, num, depth=ANTECEDENT_DEPTH, max_walk=MAX_ID_WALK):
+    """Full text of the non-empty footnotes before `num`: at least `depth` of
+    them, and further back while the last one carried is itself an "Id." note,
+    until the first non-Id. note (the real antecedent) is included — a chain
+    of four "Id. at N" notes used to come back with no antecedent at all.
+    Bounded at `max_walk` notes."""
     out = {}
     n = num - 1
-    while n >= 1 and len(out) < depth:
+    walked = 0
+    while n >= 1 and walked < max_walk:
         v = notes.get(str(n))
-        if v and v.get("text", "").strip(". ").strip():
-            out[str(n)] = v["text"]
         n -= 1
+        walked += 1
+        if not (v and v.get("text", "").strip(". ").strip()):
+            continue
+        out[str(n + 1)] = v["text"]
+        if len(out) >= depth and not v.get("leading_id"):
+            break
     return out
 
 
@@ -84,6 +99,10 @@ def build_units(data):
             "id": uid,
             "loc": loc,
             "footnote": num,
+            # how the extractor paired a body quote with its note: sentence-after /
+            # sentence-before are solid; paragraph-after / paragraph-before are a
+            # guess (no marker in the quote's own sentence); None = no marker at all
+            "footnote_basis": q.get("footnote_basis") if loc == "body" else "footnote-text",
             "quote": q["quote"],
             "sentence": q.get("sentence", "") if loc == "body" else "",
             "home_note": home.get("text", ""),
@@ -91,6 +110,9 @@ def build_units(data):
             "antecedents": ante,
             "supra_targets": supra_targets(notes, home, ante) if home else {},
             "syllabus_hint": syllabus_hint(home.get("text", "")),
+            "block_quote": bool(q.get("block_quote")),
+            "quote_marks": q.get("quote_marks", "double"),
+            "footnotes_in_quote": q.get("footnotes_in_quote", []),
         })
         uid += 1
 
@@ -98,7 +120,20 @@ def build_units(data):
         add(q, "body")
     for q in data.get("footnote_quotes", []):
         add(q, "footnote")
-    return units
+    # Dedupe: the same quotation pinned to the same note (typically a body quote
+    # repeated in its footnote's parenthetical) is ONE verification unit; the
+    # first occurrence (body first) keeps `loc`, and `also_in` lists the rest.
+    seen, deduped = {}, []
+    for u in units:
+        key = (u["footnote"], u["quote"])
+        if key in seen:
+            seen[key].setdefault("also_in", []).append(u["loc"])
+            continue
+        seen[key] = u
+        deduped.append(u)
+    for i, u in enumerate(deduped):
+        u["id"] = i
+    return deduped
 
 
 def main(argv):
@@ -149,7 +184,11 @@ def main(argv):
             f.write(payload)
         print(json.dumps({"unit_count": len(units),
                           "case_cites": len(out["case_cites"]),
-                          "supra_problems": len(out["supra_problems"])}, indent=2))
+                          "supra_problems": len(out["supra_problems"]),
+                          # id -> footnote for every unit, so the workflow can label
+                          # findings deterministically (pass as `unitNotes`)
+                          "unit_notes": [[u["id"], u.get("footnote")] for u in units]},
+                         indent=2))
     else:
         print(payload)
     return 0

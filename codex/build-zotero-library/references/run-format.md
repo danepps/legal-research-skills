@@ -52,10 +52,10 @@ For `reuse`, record the existing Zotero key as `existing_item_key` and put the i
 For every `reuse` decision, record the successful version-guarded membership update after using `zotero_api.py patch-item`:
 
 ```json
-{"candidate_id":"c010","item_key":"ABCD2345","collection_key":"WXYZ6789","operation":"add-to-collection","http_status":204,"written_at":"2026-07-15T19:12:00-07:00"}
+{"candidate_id":"c010","item_key":"ABCD2345","library":"user:123","collection_key":"WXYZ6789","operation":"add-to-collection","http_status":204,"written_at":"2026-07-15T19:12:00-07:00"}
 ```
 
-The validator requires one successful result for each reused item.
+The validator requires one successful result for each reused item, bound to the run's library and collection. It also requires post-update metadata and bibliographic verification in `verification.json` for reused items.
 
 ## `planned-items.json`
 
@@ -75,7 +75,7 @@ Created by `zotero_api.py create-items`. It records the operation, library, requ
 
 ## `verification.json`
 
-Created by `verify_items.py`. A machine `PASS` requires an ISBN or DOI to resolve to a record whose title matches and whose available creator/year fields do not contradict the Zotero item. The file records every resolver result and a summary.
+Created by `verify_items.py`. A machine `PASS` requires an ISBN or DOI to resolve to a record whose title matches and whose available creator/year fields do not contradict the Zotero item. The file records every resolver result and a summary. For completion, generate it with `--keys` or `--collection`: the root `library` and `source: zotero` identify the readback destination, and each result's `stored_item` contains the fetched Zotero metadata. The gate checks the stored key, target collection membership, and planned bibliographic fields. Local-input prechecks have `source: input` and cannot satisfy the readback gate.
 
 ## `manual-verifications.jsonl`
 
@@ -98,8 +98,8 @@ The source must have been opened. Record a stable journal page, catalog page, pu
 
 ## `attachment-results.jsonl`
 
-Append the exact result emitted by `attach_pdf.py --ledger`. A verified entry records the parent and attachment keys, PDF filename and content type, byte size, MD5 returned by Zotero, local SHA-256, acquisition mode, provenance URL, and verification time. New attachments default to a filesystem-safe `Creator - Year - Title.pdf` filename derived from the parent Zotero item; use a normalized `--filename` override only for a genuinely distinct attachment such as a supplement. The verification step confirms that Zotero stored the requested filename. Existing attachments are audited without renaming. Allowed acquisition modes are `url`, `file`, and `existing`. Never hand-author a `VERIFIED` result without re-fetching the attachment from Zotero.
+Append the exact result emitted by `attach_pdf.py --ledger`. A verified entry records the library, parent and attachment keys, PDF filename and content type, byte size, MD5 returned by Zotero, local SHA-256, acquisition mode, provenance URL, verification time, and `pdf_validation` with `status: parsed`, parser name, and positive page count. New attachments default to a filesystem-safe `Creator - Year - Title.pdf` filename derived from the parent Zotero item; use a normalized `--filename` override only for a genuinely distinct attachment such as a supplement. The verification step confirms that Zotero stored the requested filename. Existing attachments are audited without renaming. Allowed acquisition modes are `url`, `file`, and `existing`. Never hand-author a `VERIFIED` result without re-fetching the attachment from Zotero.
 
 ## `audit.json`
 
-Created by `validate_run.py`. `READY` requires resolved candidate decisions, provenance coverage, verified reuse operations, a one-to-one planned/write mapping, no failed writes, and a `PASS` or `MANUAL_PASS` for every newly written key. When `require_pdfs` is true, it also requires one valid `VERIFIED` attachment result for every added or reused target item.
+Created by `validate_run.py`. `READY` requires resolved candidate decisions, provenance coverage, verified reuse operations, a one-to-one planned/write mapping, no failed writes, and a `PASS` or `MANUAL_PASS` for every added or reused key, bound to the intended library and stored collection membership. When `require_pdfs` is true, it also requires one valid `VERIFIED` attachment result for every added or reused target item.
