@@ -81,7 +81,7 @@ For future work, choose the relevant folder and ask in ordinary English. You do 
 
 ## What you can ask for
 
-- **“Cite-check My Article.docx.”** Check citations, quotations, and footnote cross-references against sources, with a report showing problems and anything that could not be checked.
+- **“Cite-check My Article.docx.”** Check citations, quotations, and footnote cross-references against sources, with a report showing problems and anything that could not be checked. It also flags, in an advisory section, lower-court cases whose citation omits later history (affirmed, reversed, cert. denied) and cases a later decision overruled or limited, and on a re-run it opens with what changed since the last report.
 - **“Find me a cite for the proposition that…”** Find a few verified authorities, with specific pages and short explanations you can use in a footnote.
 - **“Proofread My Article.docx.”** Find typos, missing or repeated words, and inconsistent terminology or cross-references.
 - **“Build a Zotero collection on…”** Find sources, create records, check for duplicates, and attach available PDFs. Requires a connected Zotero library.
@@ -111,6 +111,12 @@ When the details panel opens, choose **Install for you** and select **Install**.
 **Your computer asks to install “command line developer tools.”** On a Mac, click **Install**, wait for it to finish, and retry the step. The name sounds technical, but this is an installer dialog; you do not need to type Terminal commands. If setup still reports missing software, follow its next instructions. On Windows, plugin installation needs [Git for Windows](https://git-scm.com/download/win); install it and restart Claude if prompted that Git is missing.
 
 **The setup shortcut does not appear.** Start a new conversation in the Code tab after installation. If it is still missing, click **+** beside the message box, then **Add plugins** (or **Plugins → Browse plugins**) and check that Legal Research is installed. See [Claude's plugin instructions](https://code.claude.com/docs/en/desktop#install-plugins).
+
+**Your organization manages Claude for you.** On some Team and Enterprise accounts an administrator controls which plugin sources Claude may add, and the installation line fails with a message about a blocked or unapproved marketplace. Nothing is wrong with your copy of Claude. Send your administrator this request:
+
+> Could you allow the plugin marketplace `danepps/legal-research-skills` (a GitHub repository of legal-research skills by Professor Daniel Epps, Washington University in St. Louis) in our Claude Code settings, so I can install the `legal-research` plugin? It adds research instructions and scripts only; it does not change who can see my files.
+
+If the answer is no, the [technical reference](TECHNICAL.md#install-for-claude-code) explains how to run the skills from a downloaded folder on a personal account instead.
 
 **Claude cannot find the draft.** Check that you selected the folder containing it and used the exact filename in your request. You can ask: “What files can you see in this folder?”
 

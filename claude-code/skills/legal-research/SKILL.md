@@ -109,8 +109,15 @@ targeted retrievals plus one retry wave, only if the draft flags missing authori
 cite-checks of just the cited authorities (8 per agent; case cites confirmed deterministically via
 CourtListener's citation-lookup API, `check_cite.py`, plus a systematic citing-opinions treatment
 scan via `cl_case_tools.py citing` — a relevance-ranked treatment-language probe over the case's
-actual citing opinions, with a liveness date, replacing the old one-search glance; sources a
-reader already opened this run skip existence re-checks) → light finalize. Unselected candidates
+actual citing opinions by TWO routes, the citation graph and a full-text search for the case name,
+deduplicated to distinct cases, with a liveness date; a cite that will not resolve goes through
+`cl_case_tools.py find` (caption search + opinions citing the string) before it is called
+unconfirmed; load-bearing lower-court cases also get `cl_case_tools.py history`, the RECAP docket
+and later same-litigation opinions; sources a reader already opened this run skip existence
+re-checks) → light finalize, whose Table of Authorities carries a **Validation** column per
+authority (3-voter refutation panel / checked by existence + treatment probe / not validated) and
+one sentence naming which authorities got the panel, because a screened case and a verified case
+look identical in prose. Unselected candidates
 AND the authorities each read source itself relies on are carried into the draft as hedged
 **unread leads**, so breadth stays wide while fetches stay few. Every run is spend-guarded: a
 hardwired soft ceiling (~250k output tokens lean, ~1M deep — raised from 600k on 2026-07-15 after
@@ -197,5 +204,9 @@ When editing or extending a memo BY HAND, hold your own prose to the same gate �
   never add cites from memory when relaying or editing.
 - **Open-web only.** Coverage is narrower than Westlaw/Lexis and treatment flags
   (KeyCite/Shepard's) are approximated, not authoritative. Always convey this caveat.
+- **Opinions, articles and dockets that postdate the model's training data are real.** A 2025 or
+  2026 decision nobody recognizes is not a hallucination signal; the fetched record is.
+- **Say which tier each authority got.** When editing a memo by hand, keep the Validation labels
+  in the Table of Authorities and never let an unlabeled list read as "all verified".
 - **Not legal advice.** This is research support; final cite-checking and Bluebooking remain the
   user's responsibility. Recommend a paid-database pass before anything is filed or published.

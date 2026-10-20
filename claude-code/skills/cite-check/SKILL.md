@@ -1,6 +1,6 @@
 ---
 name: cite-check
-description: Verify every citation and quotation in an article draft against the real sources — cases via CourtListener + official reporters, scholarship via the user's Zotero library then the open web — and return a graded, footnote-by-footnote report with a "needs your attention" section first, plus a citation-form section (short cites per Bluebook R. 10.9/4.2 and italics/small caps per R. 2.1(a)) decided from the draft alone. Trigger when the user wants a draft cite-checked ("cite-check this", "check the citations/quotes in this draft", "run cite-check on <file>"). Input: a .docx with real Word footnotes (markdown/plain-text fallback). Not a full Bluebook linter — signal order, citation order and cite composition stay out.
+description: Verify every citation and quotation in an article draft against the real sources — cases via CourtListener + official reporters, scholarship via the user's Zotero library then the open web — and return a graded, footnote-by-footnote report with a "needs your attention" section first, an advisory subsequent-history and treatment section (Bluebook R. 10.7 history the draft omits; cases a later decision overruled or limited), a "since the last report" diff on re-runs, plus a citation-form section (short cites per Bluebook R. 10.9/4.2 and italics/small caps per R. 2.1(a)) decided from the draft alone. Trigger when the user wants a draft cite-checked ("cite-check this", "check the citations/quotes in this draft", "run cite-check on <file>"). Input: a .docx with real Word footnotes (markdown/plain-text fallback). Not a full Bluebook linter — signal order, citation order and cite composition stay out.
 ---
 
 # Cite Check
@@ -18,14 +18,20 @@ from memory, an unfetchable source is reported unverified — never assumed).
 
 **What it checks:** that each cite resolves to the claimed source, captions/authors/titles are
 spelled right, the reporter/volume/first-page/court/year are right, quotes are verbatim or honestly
-marked, supra/id. cross-references are intact, and URLs are live.
+marked (and spoken by whom the draft says — a court reciting a party's position is not the court
+holding it), supra/id. cross-references are intact, URLs are live, and — advisory, in its own
+section — whether a lower-court case carries the subsequent history Bluebook R. 10.7 requires
+(aff'd / rev'd / vacated / cert. denied) and whether a later decision has overruled or limited a
+cited case. History comes from the RECAP docket (everything filed after the decision) and later
+same-litigation opinions on CourtListener; treatment from a two-route citing-opinion probe. Neither
+is Shepard's/KeyCite and the report says so.
 
 **Coverage ledger (added 2026-09-06) — and what is still NOT checked.** Quote-verification
 units are built from *quotations*; on their own they left every unquoted secondary source
 unaccounted for. Now `scripts/citation_ledger.py` inventories **every citation instance** in
 every footnote (case or secondary, quoted or not, with `Id.`/`supra`/short-form chains
 resolved), a secondary-source existence pass covers the unquoted articles/books/statutes/URLs,
-and the report's section H gives each instance a disposition — `verified`, `finding`,
+and the report's section I gives each instance a disposition — `verified`, `finding`,
 `existence-only`, `unverifiable`, `unchecked`, `xref`, `unresolved-xref` — and lists the
 unchecked ones by footnote. Two limits remain and the report must say so: (1) **proposition
 support** — whether an unquoted cite actually stands for the sentence it hangs on — is never
@@ -122,6 +128,11 @@ stage. Ask first.
       Claude Code restart, so agents fall back to the web this run.
    d. Pass the server name as `zoteroServer` (and `zotero:false` if no usable server this run).
 
+### 2a. Look for the previous report (re-runs)
+If `<draft's directory>/<draftName> — Cite Check findings.json` exists, this is a re-run after
+edits: keep that path for step 5, where the new report opens with what changed. Nothing else to do
+now; the run itself is identical.
+
 ### 2b. Snapshot the draft (always)
 A live OneDrive/Word co-authored file can change between extraction and delivery, which would
 make the report describe bytes that were never checked. Copy the draft once, write-protect the
@@ -189,6 +200,7 @@ Workflow({
     secondaryCites:<ledger_args.secondary>,            // unique unquoted secondary sources
     unitIds:       <null | [ids from --footnotes]>,    // partial pass only
     deep:          false,
+    history:       true,                               // false only if the user asks to skip subsequent history / treatment
     zotero:        true,                               // false if no usable Zotero server this run
     zoteroServer:  "<from pre-flight 2.3>"             // e.g. "zotero-group" (5A) or "zotero" (personal)
   }
@@ -202,15 +214,33 @@ Workflow({
    U.S. Reports pincites are flagged as *probable* syllabus and routed to the LOC bound volume,
    where the verify agent confirms which section the passage actually sits in.
 2. **Existence** — `check_cite.py` over the unique reporter cites (CourtListener paces at
-   60/min); "not found" is web-escalated (usually a CL pagination gap for recent U.S. Reports
-   volumes, not a bad cite), reporter typos proposed. In the same fan-out, **secondary-source
-   existence**: every unique unquoted article/book/statute/URL from the ledger is located
-   (Zotero, then web) and its bibliographic metadata compared to the draft's cite — 12 per
-   agent, low effort, no substance read. Under budget pressure this pass is skipped and the
-   affected instances ship as `unchecked` (never silently).
+   60/min). A cite that does not resolve is a search problem, never evidence of a bad cite:
+   CourtListener's citation metadata is uneven and a case can be present with no reporter cite
+   attached, so the agent runs `cl_case_tools.py find` (caption search, plus a search for later
+   opinions whose text cites the citation string, which proves the cite real even when the
+   opinion itself is not indexed) BEFORE any web escalation; reporter typos proposed. In the same
+   fan-out, **secondary-source existence**: every unique unquoted article/book/statute/URL from
+   the ledger is located (Zotero, then web) and its bibliographic metadata compared to the
+   draft's cite — 12 per agent, low effort, no substance read. Under budget pressure this pass is
+   skipped and the affected instances ship as `unchecked` (never silently).
+2b. **History** (added 2026-10-19) — for every case cite that exists: lower-court cases get
+   `cl_case_tools.py history` (the RECAP docket's entries after the decision date, with the
+   dispositive ones flagged — notice of appeal, USCA judgment, mandate, cert. granted/denied,
+   amended or substituted opinion, reconsideration, vacatur — plus later same-litigation
+   opinions, i.e. the reviewing court's decision), and every case gets the two-route
+   `cl_case_tools.py citing` treatment probe. A **finding** is a draft cite with no history
+   words whose record shows an outcome R. 10.7 requires, or stated history the record
+   contradicts; **treatment flags** (a later case says this one was overruled / abrogated /
+   limited) are reported separately because the draft may cite the case as history or as a
+   foil. Eight cases per agent, low effort; `history:false` skips it; under budget pressure it
+   is skipped and the report says so. Advisory throughout: RECAP is crowd-sourced, incomplete
+   and federal-only; docket text is the clerk's language; Supreme Court dockets are not on
+   PACER; no hits is not proof of good law.
 3. **Verify** — quotes are collapsed onto their **unique source** (a case cited 30 times is fetched
-   once) and one agent per source fetches it and checks every quote verbatim, every pincite, and the
-   caption/author/title/reporter/year metadata. Verbatim-ness is settled by the **deterministic
+   once) and one agent per source fetches it and checks every quote verbatim, every pincite, the
+   caption/author/title/reporter/year metadata, and **attribution** (the words are in the source,
+   but is the source quoting a party, a dissent or another case where the draft says "the Court
+   held"? — verdict `misattributed`, medium). Verbatim-ness is settled by the **deterministic
    in-file checker** (`scripts/verify_quotes.py`): the agent proposes, the script proves the quote's
    presence in the fetched text (typographic folding, marked ellipses/brackets honored) and reports
    the printed page of the match — agent judgment is reserved for substance. Manuscripts get a **version-drift** check (quote
@@ -228,22 +258,35 @@ Workflow({
    to reject the script's positional guesses as much as to confirm them). Runs after re-verify so it
    never competes with verification for budget; under pressure the candidates ship unadjudicated and
    the run records a degradation note.
-5. **Report** — a graded, footnote-numbered report in the "needs your attention first" style, with
-   a **citation coverage ledger** (section H: counts by disposition + the unchecked / unverifiable /
-   unresolved-cross-reference instances listed by footnote) and citation form in their own sections
-   near the end.
+5. **Report** — a graded, footnote-numbered report in the "needs your attention first" style: a
+   TL;DR that states the existence-only share in one sentence, the findings sections A–F, a
+   **subsequent history & treatment** section (G, advisory), couldn't-check (H), a **citation
+   coverage ledger** (section I: counts by disposition + the unchecked / unverifiable /
+   unresolved-cross-reference instances listed by footnote) and citation form in their own
+   sections near the end.
 
 The run is spend-guarded (soft cap ~650k lean / ~900k deep output tokens) with the legal-research
 degradation ladder armed; it runs in the background and notifies on completion.
 
 ### 5. Deliver
-The workflow returns `{ report, counts, exitState, degradation, artifactsCaught, ledger, … }`.
+The workflow returns `{ report, counts, exitState, degradation, artifactsCaught, ledger, history,
+findings, … }`.
+- **Re-run diff first (when step 2a found a previous findings file).** Save the result's
+  `findings` object to `<scratch>/findings_new.json` with two fields added at the top level:
+  `"snapshotSha256"` (from step 2b) and `"date"` (local date). Then
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/findings_diff.py "<previous findings.json>" "<scratch>/findings_new.json"`
+  prints a "Since the last report" block (new / still open / resolved, keyed by content so a
+  renumbered draft does not reset the count). Insert that block into the report immediately
+  after the TL;DR, before section A. Lead the deliver message with its three counts.
 - Write **`report`** to `<draft's directory>/<draftName> — Cite Check.md` (next to the draft).
+- Write the findings file for next time: `<draft's directory>/<draftName> — Cite Check findings.json`
+  (the same object, with `snapshotSha256` and `date`; overwrite the previous one — the diff has
+  already been taken).
 - Write the **companion ledger** next to it: save the result's `ledger` array to
   `<scratch>/ledger_final.json`, then
   `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py --render "<scratch>/ledger_final.json" > "<draft's directory>/<draftName> — Citation Ledger.md"`
   — one row per citation instance (note, kind, disposition, cite text). This is the audit trail
-  behind section H; `counts.ledger` has the totals for the TL;DR.
+  behind section I; `counts.ledger` has the totals for the TL;DR.
 - **Research memo header & production footer (required):** the report opens directly under the title with the structured
   header block (`Topic:` / `Date:` / `By:`); the `Production details:` block goes at the
   **very end of the file** (after everything else, set off by a `---` rule) — never up
@@ -271,7 +314,10 @@ The workflow returns `{ report, counts, exitState, degradation, artifactsCaught,
     Draft checked: test draft.docx, SHA-256 3f2a…e91b (report is stale if the hash no
     longer matches the draft).
   ```
-- Present the TL;DR counts and point to the "Needs your attention" section.
+- Present the TL;DR counts and point to the "Needs your attention" section. Mention section G in
+  one sentence when `counts.history.missingHistory` or `counts.history.treatmentFlags` is non-zero
+  (advisory: confirm on supremecourt.gov / Westlaw before changing a cite); if
+  `counts.history.ran` is false, say the history pass did not run and why.
 - If `artifactsCaught` is non-empty, mention it — those are findings the second check disproved, and
   it's a sign the guardrail is working (not something to hide).
 - Surface `exitState`: `complete` → deliver; `complete_with_limits` → deliver, noting the
@@ -312,7 +358,15 @@ The workflow returns `{ report, counts, exitState, degradation, artifactsCaught,
   volume (LOC scan) which section the passage actually sits in (syllabus, opinion, separate
   opinion) before reporting `syllabus_quote`; then flag it for replacement with the opinion's
   own language even when it is verbatim.
-- Case treatment is an approximate negative-treatment glance, not Shepard's/KeyCite — say so.
+- Case treatment and subsequent history are approximations — CourtListener's opinion index, a
+  two-route citing probe, and the RECAP docket archive (federal, crowd-sourced, incomplete; no
+  Supreme Court dockets) — not Shepard's/KeyCite. Section G is advisory and says so; no hits is
+  not proof of good law, and an empty docket is not proof that no appeal was taken.
+- **Opinions, articles and dockets that postdate the model's training data are real.** A 2025 or
+  2026 decision nobody recognizes is not a hallucination signal; the fetched record is.
+- **A citation that will not resolve is a search problem, not a fabrication signal.** Name search
+  and the citation-string search run before any web escalation, and "not found in the sources
+  checked" lists the routes tried.
 - **Form findings never outrank substance.** Short-form and typeface items go in their own section
   near the end, never in "Needs your attention": a misquote and an un-italicized signal are not the
   same kind of problem, and mixing them buries the one that matters.

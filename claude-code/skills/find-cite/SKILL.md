@@ -73,7 +73,14 @@ An unverified cite never ships — that rule is identical to the full skill's.
 
 - **Cases:** run every candidate through the deterministic lookup:
   `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/check_cite.py "<vol> U.S. <page>" …`
-  (falls back to web verification if no CourtListener token). Then **open the opinion** and
+  (falls back to web verification if no CourtListener token). A cite that does not resolve is
+  a search problem, not a bad cite: run
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/cl_case_tools.py find "<case name>" --cite "<cite>"`
+  before concluding anything. For a case doing load-bearing work, glance at treatment with
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/cl_case_tools.py citing "<cite>" --limit 10`
+  (two routes, deduplicated; a flagged row means open that case, not "treatment confirmed") and,
+  for a lower-court case, subsequent history with `… cl_case_tools.py history "<cite>"` so the
+  delivered cite carries its aff'd / rev'd / cert. denied line. Then **open the opinion** and
   confirm the passage actually supports the proposition, at the pincite, in the majority
   (not a dissent/concurrence unless flagged). Pincite to official U.S. Reports pagination
   where available (CourtListener, CAP `static.case.law`, LOC usrep scans).
@@ -109,5 +116,7 @@ the user's draft unless they explicitly ask you to insert them.
   authorship; quotes are verbatim or marked as paraphrase; uncertainty is flagged plainly.
 - Open-web coverage only (no Westlaw/Lexis); no authoritative KeyCite/Shepard's — for a
   case doing load-bearing work, glance for negative treatment and say if you didn't.
+- Opinions and articles that postdate the model's training data are real; verify them like
+  any other, never discount them for being unfamiliar.
 - Suggest signals (*see*, *see, e.g.*, *cf.*) only tentatively — signal choice is the
   user's call.

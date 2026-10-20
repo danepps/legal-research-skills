@@ -3,7 +3,8 @@ export const meta = {
   description: 'Verify every citation and quotation in an article draft against real sources — resolve Id./supra chains, collapse to unique sources, verify verbatim, re-verify high-severity findings, and grade a footnote-by-footnote report',
   phases: [
     { title: 'Segment', detail: 'resolve each quote to the specific source it hangs on (Id./supra chains, syllabus routing)' },
-    { title: 'Existence', detail: 'CourtListener existence + caption check for every case cite, plus existence/metadata check of every unique unquoted secondary source (web-escalate misses)' },
+    { title: 'Existence', detail: 'CourtListener existence + caption check for every case cite (name-search fallback before any web escalation), plus existence/metadata check of every unique unquoted secondary source' },
+    { title: 'History', detail: 'subsequent history (docket entries after the decision + later same-litigation opinions) for every lower-court case, and a two-route adverse-treatment probe for every case' },
     { title: 'Verify', detail: 'one agent per unique source: fetch once, check every quote verbatim + pincites + metadata' },
     { title: 'Re-verify', detail: 'mandatory verify-the-verifier pass on every high-severity finding' },
     { title: 'Form', detail: 'Bluebook typeface + short forms, decided from the draft alone (no sources)' },
@@ -18,7 +19,8 @@ export const meta = {
 //   unitCount, footnoteCount, caseCites:[...], supraProblems:[...],
 //   formChecks:<extract.json form_checks block>,
 //   ledger:[...], secondaryCites:[...]   (citation_ledger.py --compact)
-//   deep:boolean, footnotesOnly:[lo,hi]|null, zotero:boolean
+//   deep:boolean, footnotesOnly:[lo,hi]|null, zotero:boolean,
+//   history:boolean (default true) — the subsequent-history / treatment pass
 // }
 let A = args || {}
 if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
@@ -35,6 +37,7 @@ const SUPRA_PROBLEMS = A.supraProblems || []
 const LEDGER = Array.isArray(A.ledger) ? A.ledger : []
 const SECONDARY_CITES = Array.isArray(A.secondaryCites) ? A.secondaryCites : []
 const DEEP = !!A.deep
+const HISTORY_ON = A.history !== false // subsequent-history + treatment pass (2026-10-19)
 const ZOTERO_OK = A.zotero !== false // assume available unless SKILL.md says otherwise
 const ZOTERO_SERVER = A.zoteroServer || 'zotero' // per-project; SKILL.md pre-flight resolves it (setup registers "zotero" for a personal library, "zotero-<name>" for a group)
 // Partial pass (DESIGN.md: `--footnotes 45-80`): SKILL.md resolves a footnote
@@ -66,11 +69,13 @@ const PREPARE = `${SKILLS}/cite-check/scripts/prepare_units.py`
 const CHECK_CITE = `${SKILLS}/legal-research/check_cite.py`
 const FETCH_PAGE = `${SKILLS}/legal-research/fetch_page.py`
 const VERIFY_QUOTES = `${SKILLS}/cite-check/scripts/verify_quotes.py`
+const CL_TOOLS = `${SKILLS}/legal-research/cl_case_tools.py`
 
 // ---- knobs -------------------------------------------------------------------
 const SEGMENT_CHUNK = 28   // quote-units per resolver agent
 const EXIST_BATCH = 30     // case cites per existence agent (CL paces 60/min)
 const SECONDARY_BATCH = 12 // unique secondary sources per existence/metadata agent
+const HISTORY_BATCH = 8    // case cites per subsequent-history / treatment agent
 const VERIFY_CHUNK = 8     // small/quoteless sources bundled per verify agent
 const MIRROR_CAP = 3       // max fetch attempts per source before "unverifiable"
 
@@ -205,7 +210,10 @@ each was violated once and produced a FALSE accusation against the draft):
   with the marked alteration masked: the question is whether the marked-up quote honestly maps to
   the source, verdict "altered_marked" — not a mismatch.
 - Never judge from memory. If you could not fetch and read the source, the verdict is
-  "unverifiable" with the unlock path — never assume, never "fabricated."`
+  "unverifiable" with the unlock path — never assume, never "fabricated."
+- Opinions, articles and dockets that POSTDATE your training data are real. A 2025 or 2026
+  decision you do not recognize is not a hallucination signal; CourtListener and the open web
+  are the record, your recall is not.`
 
 // ---------------------------------------------------------------------------
 // SCHEMAS
@@ -305,7 +313,7 @@ const VERIFY_SCHEMA = {
           id: { type: 'integer', description: 'the unit id, echoed exactly' },
           verdict: {
             type: 'string',
-            enum: ['verbatim', 'altered_marked', 'fragment_framing', 'mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off', 'unverifiable'],
+            enum: ['verbatim', 'altered_marked', 'fragment_framing', 'mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off', 'misattributed', 'unverifiable'],
           },
           severity: { type: 'string', enum: ['high', 'medium', 'low'] },
           sourceText: { type: 'string', description: 'the ACTUAL source language at that location, verbatim, for a side-by-side (empty if not fetched)' },
@@ -325,7 +333,7 @@ const REVERIFY_SCHEMA = {
   properties: {
     id: { type: 'integer' },
     upheld: { type: 'boolean', description: 'false if the original high-severity verdict was a checker artifact' },
-    verdict: { type: 'string', enum: ['verbatim', 'altered_marked', 'fragment_framing', 'mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off', 'unverifiable'] },
+    verdict: { type: 'string', enum: ['verbatim', 'altered_marked', 'fragment_framing', 'mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off', 'misattributed', 'unverifiable'] },
     severity: { type: 'string', enum: ['high', 'medium', 'low'] },
     sourceText: { type: 'string' },
     reason: { type: 'string', description: 'why the original stands or was an artifact — name the artifact class if any (truncation / missing-framing / wrong-antecedent / syllabus)' },
@@ -462,10 +470,22 @@ It returns, per citation: found (bool), case_name, date_filed.
 
 STEP 2 — for each citation:
 - found + a sensible case name -> exists=true, basis "courtlistener-api", echo caseName/dateFiled.
-- NOT found -> this is usually a CourtListener pagination gap for very recent U.S. Reports volumes,
-  NOT a bad cite. Do ONE web search ("<volume> <reporter> <page>" or the case name if you can infer
-  it) to confirm. If it resolves, exists=true, basis "web". If the citation looks malformed (e.g. a
-  volume with a digit dropped, "03 U.S. 95"), propose the corrected citation.
+- NOT found -> a citation that will not resolve is a SEARCH problem, never evidence of a bad cite:
+  CourtListener's citation metadata is uneven (a case can be present and full-text searchable with
+  no reporter citation attached), and recent U.S. Reports volumes lag. BEFORE any web search, run
+  the name-search fallback, one Bash call per unresolved cite (the case name comes from the
+  draft's footnote; if you were given none, use the citation alone):
+    python3 "${CL_TOOLS}" find "<case name as cited>" --cite "<citation>" --year <year if known>
+  It returns (a) candidates — opinions whose caption matches, with their citations, court and
+  date; a candidate whose court/date/parties match the draft's cite settles existence
+  (exists=true, basis "courtlistener-api", note "resolved by name search; no reporter cite on
+  the CourtListener record" and carry the candidate's own citation if it differs); and (b)
+  citers_of_cite — opinions whose TEXT cites the citation string: a later opinion citing
+  "397 F. Supp. 3d 126" by name proves the cite is real even when the opinion itself is not in
+  the index (exists=true, basis "courtlistener-api", note which citing opinion confirmed it).
+  Only if both come back empty, do ONE web search ("<volume> <reporter> <page>" or the case
+  name) to confirm. If it resolves, exists=true, basis "web". If the citation looks malformed
+  (e.g. a volume with a digit dropped, "03 U.S. 95"), propose the corrected citation.
 - Recent F.4th / regional-reporter cites (decision plausibly <18 months old from the volume/year):
   free indexes often lack the reporter pagination entirely. Search the case NAME with the reporter
   cite, and for anything with a SCOTUS connection try the Court's QP/docket sheets ("DECISION BELOW"
@@ -476,7 +496,10 @@ STEP 2 — for each citation:
   partial web hit (a real run offered United States v. DeLeon for a cite that was correct as
   written).
 - Only if genuinely nothing resolves: exists=false, basis "unconfirmed" — and say so plainly, never
-  call it fabricated.
+  call it fabricated; in note, list the routes you tried (lookup / name search / citation-string
+  search / web).
+- Opinions that postdate your training data are real; do not downgrade a 2025–2026 cite because
+  you do not recognize the case.
 Pace yourself; if the script reports a 429 rate-limit, wait and retry once.
 ${SOURCES}`
 
@@ -563,6 +586,158 @@ log(`Secondary-source existence: ${secondaryExistence.length}/${SECONDARY_CITES.
 const existBad = existence.filter((e) => e.exists === false)
 const existFixed = existence.filter((e) => e.corrected)
 log(`Case existence: ${existence.length} checked, ${existBad.length} unconfirmed, ${existFixed.length} reporter typos.`)
+
+// ===========================================================================
+// Phase 2b — SUBSEQUENT HISTORY & TREATMENT (added 2026-10-19)
+// Bluebook R. 10.7 wants the subsequent history in the citation, and a case cited for current
+// law may have been reversed, vacated or overruled since. Direct history is what a citation
+// graph cannot see: a judgment vacated on reconsideration or reversed by a mandate often leaves
+// no published opinion for a citation search to find, so the DOCKET (RECAP, federal only) is
+// read for everything filed after the decision, alongside later same-litigation opinions; a
+// two-route citing probe (graph + name phrase) flags adverse treatment. Advisory: findings go in
+// their own report section, never in "Needs your attention", and never enter the ledger.
+// ===========================================================================
+phase('History')
+const HISTORY_RE = /\b(aff'd|affirmed|rev'd|reversed|vacated|cert\.?\s*(denied|granted|dismissed)|overruled|abrogated|superseded|modified|reh'g|rehearing|en banc|withdrawn|amended|substituted|remanded|appeal (dismissed|docketed|filed)|petition for cert)/i
+const SCOTUS_RE = /\b\d+\s+(U\.?\s?S\.?|S\.?\s?Ct\.?|L\.?\s?Ed\.?(\s?2d)?)\s+\d+/i
+const existByCite = new Map(existence.map((e) => [norm(e.citation), e]))
+const draftTextsFor = (cite) => {
+  const k = norm(cite)
+  return LEDGER.filter((x) => x.k === 'case' && x.case && norm(x.case) === k).map((x) => x.c)
+}
+const historyCases = CASE_CITES.map((cite) => {
+  const ex = existByCite.get(norm(cite)) || {}
+  const texts = draftTextsFor(cite)
+  return {
+    cite,
+    caseName: ex.caseName || '',
+    dateFiled: ex.dateFiled || '',
+    exists: ex.exists !== false,
+    scotus: SCOTUS_RE.test(cite),
+    draftHasHistory: texts.some((t) => HISTORY_RE.test(t)),
+    draftTexts: texts.slice(0, 3).map((t) => t.slice(0, 220)),
+    notes: [...new Set(LEDGER.filter((x) => x.k === 'case' && x.case && norm(x.case) === norm(cite)).map((x) => x.n))].slice(0, 8),
+  }
+})
+const HISTORY_SCHEMA = {
+  type: 'object',
+  required: ['cases'],
+  properties: {
+    cases: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['cite', 'status'],
+        properties: {
+          cite: { type: 'string', description: 'the citation, echoed exactly' },
+          status: { type: 'string', enum: ['checked', 'not-resolved', 'tool-error', 'skipped'] },
+          subsequentHistory: { type: 'string', description: 'the subsequent history found, in Bluebook order with cites, e.g. "aff\'d, 980 F.3d 157 (1st Cir. 2020), rev\'d, 600 U.S. 181 (2023)"; empty if none was found' },
+          historyBasis: { type: 'string', enum: ['docket+opinions', 'opinions-only', 'docket-only', 'none-found', 'not-checked'], description: 'what the history rests on' },
+          historyFinding: { type: 'string', description: 'ONLY when the draft\'s citation omits history you found (or states history the record contradicts): one line, quoting the draft\'s cite text and giving the history to add. Empty otherwise.' },
+          treatment: { type: 'string', description: 'adverse treatment that names THIS case (overruled / abrogated / limited / declined to follow / superseded by statute), with the treating case\'s name, cite and date and the scope as far as the snippet shows ("scope unconfirmed" otherwise). Empty if none.' },
+          treatmentRoutes: { type: 'string', description: 'coverage line: graph N (M with treatment language) / name-search N (K not in graph) / D distinct cases; most recent citing date' },
+          coverage: { type: 'string', description: 'what was and was not checked: docket read (N entries after decision, truncated?), docket skipped (state court / no RECAP record), same-litigation opinions found, name resolution route' },
+          confidence: { type: 'string', enum: ['high', 'moderate', 'low'] },
+          note: { type: 'string' },
+        },
+      },
+    },
+  },
+}
+const historyPrompt = (batch) => `You are checking the SUBSEQUENT HISTORY and current TREATMENT of case citations in a
+law-review draft, with two deterministic CourtListener tools. Bluebook R. 10.7 requires the
+subsequent history of a cited decision (aff'd / rev'd / vacated / cert. denied / overruled), and a
+case cited for current law must not have been reversed or overruled since. You READ tool output
+and report; you do not verify quotes here and you do not assess whether the draft's proposition
+is supported.
+
+CASES (echo each cite exactly as given):
+${batch.map((c) => `- cite: ${c.cite}${c.caseName ? ` | name: ${c.caseName}` : ''}${c.dateFiled ? ` | decided: ${c.dateFiled}` : ''} | ${c.scotus ? 'SUPREME COURT (no docket pass; treatment only)' : 'lower court (history + treatment)'} | draft cite text already carries history words: ${c.draftHasHistory ? 'YES' : 'no'} | cited in notes ${c.notes.join(', ') || '?'}\n    draft cite(s): ${c.draftTexts.map((t) => JSON.stringify(t)).join(' || ') || '(none captured)'}`).join('\n')}
+
+FOR EACH CASE, via Bash (load with ToolSearch "select:Bash" if needed):
+1. Lower-court cases only — subsequent history:
+     python3 "${CL_TOOLS}" history "<cite>" --name "<case name>" --year <decision year>
+   Read origin (court, level, docket number), docket.flagged_entries (each entry's flags name
+   what it is evidence of: notice_of_appeal, usca_judgment_or_opinion, mandate, cert_granted /
+   cert_denied, amended_or_substituted_opinion, reconsideration, vacated, remanded ...),
+   docket.note (why a docket pass was skipped or empty), and same_litigation_opinions (later
+   opinions in the same case; court_can_review_origin=true marks a reviewing court — THAT
+   opinion's citation is the history to report). Compose subsequentHistory from what the record
+   shows, in Bluebook order, citing the reviewing opinion where the index has it and the docket
+   entry (date, entry number, wording) where it does not. A notice of appeal alone is "appeal
+   filed, <date>" — not an outcome. An "(Attachments: ... Amended Opinion ...)" parenthetical is
+   a known, unretrieved amendment — report it as such.
+2. Every case — treatment:
+     python3 "${CL_TOOLS}" citing "<cite>" --name "<case name>" --limit 10
+   Read treatment_probe.most_relevant (mentions_target=true rows first) and
+   name_search_treatment_probe. A signal row whose snippet names THIS case's parties and says it
+   was overruled / abrogated / limited / declined to follow / superseded is a treatment flag:
+   name the treating case, cite, date, and the scope if the snippet shows it, else "scope
+   unconfirmed — open <case>". Rows about other cases are noise. Copy routes.* counts and
+   distinct_cases_returned into treatmentRoutes with most_recent_citing_date.
+3. If the cite does not resolve, the tool says so: run
+     python3 "${CL_TOOLS}" find "<case name>" --cite "<cite>" --year <year>
+   and retry with cluster:<id> from the matching candidate. If nothing resolves, status
+   "not-resolved" — that is a coverage gap, not evidence about the case.
+
+WHAT COUNTS AS A FINDING (historyFinding) — only these:
+- The draft's cite text carries NO history words, and the record shows an outcome that Bluebook
+  R. 10.7 requires: a reviewing court's affirmance / reversal / vacatur / modification, cert.
+  denied or granted, an amended or substituted opinion, a judgment vacated on reconsideration.
+- The draft states history the record contradicts (says aff'd, record shows rev'd).
+NOT a finding: a notice of appeal with no outcome (say so in coverage); history the draft already
+gives (draftHasHistory YES and consistent); a denial of rehearing (R. 10.7.1 lets it be omitted
+unless particularly relevant); a Supreme Court decision (no history to add).
+Treatment is reported in its own field, never as a history finding: the draft may cite the case
+for its history or as a foil, which you cannot tell from here.
+
+HONESTY RULES: RECAP is crowd-sourced, incomplete and federal-only — an empty docket is "no RECAP
+entries found", never "no appeal"; state-court origins get no docket pass, say so; docket text
+is the clerk's language, not a holding — do not characterize scope from "VACATED and REMANDED"
+alone; the opinion index and the docket are separate sources. Supreme Court dockets are not on
+PACER, so cert. history rests on lower-court docket entries or a later same-litigation opinion
+— say "cert. history unconfirmed" when neither shows it. No hits is not proof of good law
+(this is not Shepard's/KeyCite). Cases decided after your training data are real. Cap
+confidence at moderate when the docket could not be read or only one citing route returned;
+low when the case did not resolve or a tool errored. Never report from memory.
+Pace yourself; on a 429 rate-limit, wait and retry once.`
+const historyBatches = []
+const historyTargets = HISTORY_ON ? historyCases.filter((c) => c.exists) : []
+for (let i = 0; i < historyTargets.length; i += HISTORY_BATCH) historyBatches.push(historyTargets.slice(i, i + HISTORY_BATCH))
+let historyResults = []
+let historyRan = false
+if (historyBatches.length && !tight(RESERVE_REPORT + RESERVE_REVERIFY + historyBatches.length * 5000)) {
+  historyRan = true
+  const hAgent = (b, i) => agent(historyPrompt(b), { label: `history:${i * HISTORY_BATCH}-${i * HISTORY_BATCH + b.length}`, phase: 'History', schema: HISTORY_SCHEMA, model: VERIFY_MODEL, effort: DEEP ? 'medium' : 'low' })
+  const outs = await parallel(historyBatches.map((b, i) => async () => {
+    let r = await hAgent(b, i)
+    if (!r) { log(`history batch ${i} died — retrying once`); r = await hAgent(b, i) }
+    return r
+  }))
+  for (const o of outs.filter(Boolean)) historyResults.push(...(o.cases || []))
+  const got = new Set(historyResults.map((h) => norm(h.cite)))
+  const missed = historyTargets.filter((c) => !got.has(norm(c.cite)))
+  for (const c of missed) historyResults.push({ cite: c.cite, status: 'skipped', coverage: 'no result returned (agent failure)', confidence: 'low' })
+  if (missed.length) degradation.push(`${missed.length} case cite(s) got no subsequent-history result (agent failure) — listed as not checked`)
+} else if (historyBatches.length) {
+  degradation.push(`subsequent-history / treatment pass skipped for ${historyTargets.length} case cites (budget)`)
+} else if (!HISTORY_ON && CASE_CITES.length) {
+  degradation.push('subsequent-history / treatment pass turned off by the caller (history:false)')
+}
+const historyByCite = new Map(historyResults.map((h) => [norm(h.cite), h]))
+const historyFindings = historyResults.filter((h) => h.status === 'checked' && h.historyFinding)
+const treatmentFlags = historyResults.filter((h) => h.status === 'checked' && h.treatment)
+const historyUnchecked = historyResults.filter((h) => h.status !== 'checked')
+const histLine = (h) => {
+  const c = historyCases.find((x) => norm(x.cite) === norm(h.cite)) || {}
+  return `- ${h.cite}${c.notes && c.notes.length ? ` (n.${c.notes.join(', n.')})` : ''}` +
+    (h.historyFinding ? `\n    history: ${h.historyFinding}` : '') +
+    (h.subsequentHistory && !h.historyFinding ? `\n    record shows: ${h.subsequentHistory}` : '') +
+    (h.treatment ? `\n    treatment: ${h.treatment}` : '') +
+    `\n    basis: ${h.historyBasis || 'n/a'}; ${h.coverage || ''}; routes: ${h.treatmentRoutes || 'n/a'}; confidence ${h.confidence || '?'}` +
+    (h.note ? `\n    note: ${h.note}` : '')
+}
+log(`History: ${historyResults.length}/${historyTargets.length} cases checked — ${historyFindings.length} missing-history findings, ${treatmentFlags.length} treatment flags, ${historyUnchecked.length} not checked.`)
 
 // ===========================================================================
 // Collapse resolved quotes onto UNIQUE sources (lesson 1: fetch once)
@@ -660,7 +835,17 @@ PER-QUOTE VERDICTS (see the discipline rules below — apply them strictly):
 - not_found_in_sources: you searched every source the footnote names and the quote is in none of
   them. This is NOT "fabricated." HIGH severity, but say exactly which sources you searched.
 - pincite_off: quote is verbatim but sits on a different page than cited (give both). MEDIUM.
+- misattributed: the words ARE in the source, but the source is quoting someone else — a party's
+  brief or argument, a lower court, a dissent or concurrence, an earlier case, a witness — and
+  the draft's framing attributes them to the court (or the author) itself. Read the sentence
+  around the match and the draft's body sentence before using this; a court adopting a quoted
+  formulation as its own is not misattribution. MEDIUM; name the actual speaker in note and
+  quote the source's attribution in sourceText.
 - unverifiable: could not fetch/read the source — give the unlock path. Never guess.
+ATTRIBUTION CHECK (substance, after the deterministic check): for every verbatim/normalized/
+altered match, look at who is speaking in the source at that spot — the court for itself, or the
+court reciting a party's position, a dissent, or another case. If the draft says "the Court held/
+explained/reasoned" and the matched words are a recital, that is the misattributed verdict above.
 Set severity honestly; fill sourceText for every high-severity verdict; report basis per verdict.
 Collect citation-metadata problems (reporter typo, wrong volume/page/year/court, author/title/journal
 discrepancy, impossible pincite) in metadataFindings. EVIDENCE TAG (2026-10-19): end EVERY
@@ -751,7 +936,7 @@ for (const v of verifyResults) {
       source: (res && res.source) || (v.sourceIdentified) || (b && b.source) || '',
       sourceIdentified: v.sourceIdentified || '',
       verdict: q.verdict,
-      severity: q.severity || (['mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source'].includes(q.verdict) ? 'high' : q.verdict === 'pincite_off' ? 'medium' : 'low'),
+      severity: q.severity || (['mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source'].includes(q.verdict) ? 'high' : ['pincite_off', 'misattributed'].includes(q.verdict) ? 'medium' : 'low'),
       sourceText: q.sourceText || '',
       pinciteFinding: q.pinciteFinding || '',
       basis: q.basis || v.fetchBasis || '',
@@ -850,7 +1035,7 @@ for (const f of findings) {
 // ===========================================================================
 const XREF_KINDS = new Set(['id', 'supra', 'case-short'])
 const VERIFIED_V = new Set(['verbatim', 'altered_marked', 'fragment_framing'])
-const FINDING_V = new Set(['mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off'])
+const FINDING_V = new Set(['mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off', 'misattributed'])
 const caseExist = new Map(existence.map((e) => [norm(e.citation), e]))
 const secExist = new Map(secondaryExistence.map((s) => [s.key, s]))
 const ledgerByNote = new Map()
@@ -1034,6 +1219,16 @@ const counts = {
   ledger: ledgerCounts,
   secondaryChecked: secondaryExistence.length,
   secondaryNotFound: secBad.length,
+  misattributed: findings.filter((f) => f.verdict === 'misattributed' && !f.artifact).length,
+  history: {
+    ran: historyRan,
+    casesTargeted: historyTargets.length,
+    casesChecked: historyResults.filter((h) => h.status === 'checked').length,
+    lowerCourtCases: historyTargets.filter((c) => !c.scotus).length,
+    missingHistory: historyFindings.length,
+    treatmentFlags: treatmentFlags.length,
+    notChecked: historyUnchecked.length,
+  },
 }
 
 const fmtFinding = (f) => {
@@ -1066,8 +1261,12 @@ substantive; this reader is sophisticated. Do NOT invent anything — use only t
 
 REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sections):
 - Title + TL;DR: "${FOOTNOTE_COUNT} footnotes swept" and the counts (verbatim / marked-alteration /
-  mismatch / unverifiable; case cites checked; broken supras; pincite/metadata issues). State the
-  verification basis honestly (everything rests on a fetched source; nothing judged from memory).
+  mismatch / unverifiable; case cites checked; broken supras; pincite/metadata issues; missing
+  subsequent history and treatment flags). The TL;DR MUST also carry one plain sentence with the
+  ledger figure for citations that were confirmed to exist but NOT read for whether they support
+  the proposition ("N of M citation instances are existence-only"), so the reader sees the
+  unchecked share before the findings. State the verification basis honestly (everything rests
+  on a fetched source; nothing judged from memory).
 - **A. Needs your attention first** — the HIGH-severity findings (mismatches, not-found, syllabus
   quotes, superseded-source), each with draft text vs. source text and the fix. These are the ones
   that would embarrass in print.
@@ -1081,9 +1280,16 @@ REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sect
   not something wrong. Author-order claims never go in "Errors (fix)" without that tag (companion/
   multi-part articles rotate author order between parts).
 - **F. URLs** — dead links (with archived replacements) and bot-blocked-but-live notes.
-- **G. Couldn't check (what would unlock each)** — unverifiable items, each with its unlock path
+- **G. Subsequent history & treatment (advisory)** — from the HISTORY block below. Two lists:
+  "Add subsequent history" (the draft's cite omits an outcome the record shows: give the draft's
+  cite text and the history to add, with its basis — docket entry or reviewing opinion) and
+  "Treatment flags" (a later case says this one was overruled / abrogated / limited: name it,
+  give the scope as far as known, and say the author must confirm how the draft uses the case).
+  Then one line each for cases not checked. Keep this section ADVISORY in tone: the docket is
+  the clerk's language, RECAP is incomplete, and no hits is not proof of good law.
+- **H. Couldn't check (what would unlock each)** — unverifiable items, each with its unlock path
   (Hein/JSTOR pull, add PDF to Zotero, physical copy).
-- **H. Citation coverage ledger** — REQUIRED, from the ledger block below: what every citation
+- **I. Citation coverage ledger** — REQUIRED, from the ledger block below: what every citation
   instance got, and above all what did NOT get checked.
 - A short method note: deterministic extraction + supra/existence checks; quotes verified by agents
   against fetched sources; a mandatory verify-the-verifier pass on high-severity findings; free/
@@ -1091,7 +1297,8 @@ REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sect
   the coverage limits plainly: every citation instance is inventoried in section H; quoted
   passages were verified against fetched text; case cites and unquoted secondary sources were
   existence/metadata-checked ONLY — whether an unquoted cite actually supports its proposition
-  was NOT assessed.
+  was NOT assessed; subsequent history and treatment were checked against CourtListener's
+  opinion index and the RECAP docket archive (federal, incomplete), not Shepard's/KeyCite.
 
 CRITICAL — do not resurrect checker artifacts: ${counts.artifactsCaught} high-severity findings were
 re-derived and found to be CHECKER ARTIFACTS (verbatim after all). They are EXCLUDED from the
@@ -1114,8 +1321,11 @@ REPORT DISCIPLINE (each rule below is standing feedback from the professor on a 
   agent failure). Keep it in section A but say in its line that it rests on one checker and should
   be confirmed against the source before acting.
 - QUOTES NOT CHECKED (listed below, if any) are quotes the run never verified because an agent
-  failed. They are not findings; list them in section G as "not checked this run — re-run", by
+  failed. They are not findings; list them in section H as "not checked this run — re-run", by
   footnote, so the author knows the gap.
+- A "misattributed" finding means the words are in the source but spoken by someone the draft
+  does not name (a party, a dissent, a lower court). Section B or D, medium: give the actual
+  speaker from the finding's note and the source's attribution.
 
 COUNTS: ${JSON.stringify(counts)}
 
@@ -1140,26 +1350,35 @@ ${existBad.map((e) => `- UNCONFIRMED: ${e.citation} — ${e.note || ''}`).join('
 === URL FINDINGS (section F) ===
 ${urlFindings.map((u) => `- ${u}`).join('\n') || '(none)'}
 
-=== UNVERIFIABLE (section G) ===
+=== SUBSEQUENT HISTORY & TREATMENT (section G — advisory) ===
+${historyRan ? `${counts.history.casesChecked} of ${counts.history.casesTargeted} case cites checked (${counts.history.lowerCourtCases} lower-court cases got the docket/same-litigation pass; Supreme Court cites got the treatment probe only).` : `PASS DID NOT RUN (${degradation.find((d) => /history/.test(d)) || 'no case cites'}) — say so in section G in one sentence.`}
+ADD SUBSEQUENT HISTORY (the draft's cite omits an outcome the record shows):
+${historyFindings.map(histLine).join('\n') || '(none)'}
+TREATMENT FLAGS (a later case says this one was overruled / abrogated / limited — the author must confirm how the draft uses it):
+${treatmentFlags.filter((h) => !h.historyFinding).map(histLine).join('\n') || '(none)'}
+NOT CHECKED / NOT RESOLVED:
+${historyUnchecked.map((h) => `- ${h.cite} — ${h.status}: ${h.coverage || h.note || ''}`).join('\n') || '(none)'}
+
+=== UNVERIFIABLE (section H) ===
 ${findings.filter((f) => f.verdict === 'unverifiable').map(fmtFinding).join('\n') || '(none)'}
 
-=== QUOTES NOT CHECKED — agent failure, not a finding (section G; list by footnote) ===
+=== QUOTES NOT CHECKED — agent failure, not a finding (section H; list by footnote) ===
 ${[...unresolvedIds.map((i) => `- n.${UNIT_NOTES.get(i) ?? '?'} unit ${i} — no source resolution`), ...unverifiedUnits.map((r) => `- n.${r.footnote ?? '?'} unit ${r.id} — no verdict: "${(r.quote || '').slice(0, 120)}"`)].join('\n') || '(none)'}
 
 === SECONDARY-SOURCE EXISTENCE (sections E/G) ===
 ${secondaryExistence.length}/${SECONDARY_CITES.length} unique unquoted secondary sources existence-checked${secondaryPassRan ? '' : ' — PASS SKIPPED (budget); list them as UNCHECKED in section H'}.
 NOT FOUND (draft cites a source no catalog/site could locate — section E, phrase as "not found in the sources checked"):
 ${secBad.map((s) => `- key ${s.key}: ${s.note || ''}`).join('\n') || '(none)'}
-UNCONFIRMED (section G, with what would unlock each):
+UNCONFIRMED (section H, with what would unlock each):
 ${secUnconfirmed.map((s) => `- key ${s.key}: ${s.note || ''}`).join('\n') || '(none)'}
 METADATA DISCREPANCIES — EVIDENCED (section E "Errors (fix)"; from the existence agents, each line names the source record the agent opened):
 ${secMeta.map((m) => `- ${m}`).join('\n') || '(none)'}
 METADATA DISCREPANCIES — UNEVIDENCED (section E "Confirm" ONLY — untagged findings and "confirm: …" notes, derived from search snippets or third-party listings, never from the source's own page; phrase each as "confirm …", never as a correction, and never promote one to the TL;DR):
 ${secMetaSoft.map((m) => `- ${m}`).join('\n') || '(none)'}
 
-=== CITATION COVERAGE LEDGER (section H — REQUIRED; place it AFTER section G and BEFORE Citation form) ===
+=== CITATION COVERAGE LEDGER (section I — REQUIRED; place it AFTER section H and BEFORE Citation form) ===
 ${LEDGER.length} citation instances inventoried across ${FOOTNOTE_COUNT} footnotes. Dispositions: ${JSON.stringify(ledgerCounts)}.
-Write section H as: (1) one sentence with the counts; (2) one plain sentence that "existence-only"
+Write section I as: (1) one sentence with the counts; (2) one plain sentence that "existence-only"
 instances were confirmed to exist but were NOT read for whether they support the proposition they
 are cited for, and that "xref" instances (Id./supra/short forms) inherit their antecedent's status;
 (3) the three lists below, each item as "n.N — cite text", so the author can see exactly what was
@@ -1193,7 +1412,24 @@ Return ONLY the finished report in Markdown via the report field.`,
 
 const exitState = degradation.length
   ? 'complete_with_limits'
-  : (counts.unverifiable || existBad.length || ledgerCounts.unchecked || secUnconfirmed.length ? 'complete_with_limits' : 'complete')
+  : (counts.unverifiable || existBad.length || ledgerCounts.unchecked || secUnconfirmed.length || historyUnchecked.length ? 'complete_with_limits' : 'complete')
+
+// Structured findings for `scripts/findings_diff.py` (2026-10-19): a re-run after edits leads
+// with what is new / still open / resolved. Identity is by content, never by footnote number.
+const findingItems = [
+  ...findings.filter((f) => !f.artifact && FINDING_V.has(f.verdict) && f.verdict !== 'unverifiable').map((f) => {
+    const q = resById.get(f.id)
+    return { kind: 'quote', footnote: f.footnote, verdict: f.verdict, severity: f.severity, quote: (q && q.quote) || '', source: f.sourceIdentified || f.source, label: `${f.verdict}: "${((q && q.quote) || '').slice(0, 100)}" — ${(f.sourceIdentified || f.source || '').slice(0, 60)}` }
+  }),
+  ...metaFindingsEvidenced.map((m) => ({ kind: 'metadata', label: m.slice(0, 200) })),
+  ...secMeta.map((m) => ({ kind: 'metadata', label: m.slice(0, 200) })),
+  ...SUPRA_PROBLEMS.map((s) => ({ kind: 'supra', footnote: s.footnote, claims: s.claims, supraNote: s.supra_note, label: `"${s.claims}, supra note ${s.supra_note}" — target does not name ${s.claims}` })),
+  ...existBad.map((e) => ({ kind: 'existence', cite: e.citation, label: `unconfirmed: ${e.citation}` })),
+  ...secBad.map((s) => ({ kind: 'secondary', source: s.key, label: `not found: ${s.key} ${s.note || ''}`.slice(0, 200) })),
+  ...formAll.map((f) => ({ kind: 'form', location: f.location, find: f.find, problem: f.problem, label: `${f.problem} — "${(f.find || '').slice(0, 80)}"` })),
+  ...historyFindings.map((h) => ({ kind: 'history', cite: h.cite, label: h.historyFinding.slice(0, 200) })),
+  ...treatmentFlags.map((h) => ({ kind: 'treatment', cite: h.cite, label: h.treatment.slice(0, 200) })),
+]
 
 return {
   draftName: DRAFT_NAME,
@@ -1205,5 +1441,7 @@ return {
   formConventions,
   ledger: LEDGER,                 // every instance with its disposition `d` — render with citation_ledger.py --render
   secondaryExistence,
+  history: historyResults,        // per-case subsequent-history / treatment results (section G)
+  findings: { items: findingItems }, // for scripts/findings_diff.py — SKILL.md adds snapshotSha256 + date and saves it next to the report
   report: report.report,
 }

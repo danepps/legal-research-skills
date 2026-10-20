@@ -89,7 +89,9 @@ const SCOUT_MODEL = 'haiku'   // survey: search-snippet harvesting only
 const READ_MODEL = 'sonnet'   // triage, full reads, gap-fill reads
 const VERIFY_MODEL = 'sonnet' // cite-checking
 
-const SOURCES = `FREE / OPEN-WEB LEGAL SOURCES ONLY (no Westlaw/Lexis):
+const SOURCES = `Opinions, articles and dockets that POSTDATE your training data are real — a 2025 or 2026
+decision you do not recognize is not a hallucination signal; the fetched record is, your recall is not.
+FREE / OPEN-WEB LEGAL SOURCES ONLY (no Westlaw/Lexis):
 - Case law: CourtListener, Justia, Google Scholar case law, Cornell LII, Caselaw Access Project,
   official court sites (supremecourt.gov, the U.S. Courts of Appeals, state high courts).
 - Scholarship: SSRN, Google Scholar, law-school digital-commons repositories, HeinOnline open
@@ -985,11 +987,18 @@ Then, for EACH authority below, do a QUICK confirmation on the free legal web:
 does it match the source; (4) for CASES, a systematic treatment check via the citing-opinions tool
 (one Bash call per case):
   python3 "${CL_TOOLS}" citing "<reporter cite>" --limit 15
-Read treatment_probe.most_relevant, prioritizing rows with mentions_target=true (the snippet
-actually names this case's parties). A signal row about THIS case (e.g. "overruled by <X>") goes
-in currentTreatment — name the treating case and, if the snippet shows it, the scope (full
+Read treatment_probe.most_relevant AND name_search_treatment_probe, prioritizing rows with
+mentions_target=true (the snippet actually names this case's parties). The tool runs TWO routes —
+the citation graph and a full-text search for the case name filed after the decision — because
+they miss different cases; routes says what each returned and distinct_cases_returned is the
+deduplicated count (the index is one row per opinion, so a case with a dissent is two rows —
+never report row counts as case counts). A signal row about THIS case (e.g. "overruled by <X>")
+goes in currentTreatment — name the treating case and, if the snippet shows it, the scope (full
 overruling / partial abrogation / narrowing); if scope isn't visible, report the signal with
 "scope unconfirmed". Rows about OTHER cases are noise — ignore them; the tool's caveats explain.
+If the cite will not resolve, run python3 "${CL_TOOLS}" find "<case name>" --cite "<cite>" first:
+an unresolved citation is a search problem, never evidence of fabrication, and opinions whose
+text cite the string confirm it is real. Opinions that postdate your training data are real.
 Also report most_recent_citing_date as a plain fact in currentTreatment — "most recent citing
 opinion in the CourtListener index: <date>" — and, if that date is old, add that the index covers
 only the opinions CourtListener holds and the probe read only the top rows. That field shows
@@ -1071,9 +1080,14 @@ refuted=false and give correctedCitation.
 Tip: for CASES, settle existence and the reporter cite deterministically first — via the Bash tool
 (load with ToolSearch "select:Bash" if needed): python3 "${CHECK_CITE}" "<cite>" — and check
 treatment systematically with: python3 "${CL_TOOLS}" citing "<cite>" --limit 15 (read
-treatment_probe.most_relevant, mentions_target=true rows first; a signal about THIS case →
-currentTreatment with the treating case named; rows about other cases are noise). Then spend your
-adversarial effort on the quote and the pincite.
+treatment_probe.most_relevant and name_search_treatment_probe, mentions_target=true rows first; a
+signal about THIS case → currentTreatment with the treating case named; rows about other cases
+are noise; distinct_cases_returned, not row counts, is the number of citing cases). A cite that
+will not resolve is a search problem (python3 "${CL_TOOLS}" find "<name>" --cite "<cite>"), not a
+refutation. For a LOWER-COURT case cited for current law, also run python3 "${CL_TOOLS}" history
+"<cite>" and report in currentTreatment any reversal, vacatur or cert. disposition the docket or a
+later same-litigation opinion shows. Opinions that postdate your training data are real. Then
+spend your adversarial effort on the quote and the pincite.
 ACCESS DISCIPLINE: at most 3 access attempts, via WebSearch/WebFetch only — never browser
 automation, library proxies, or SSO/login flows. "I could not open the source" is NOT a refutation
 by itself: if the source is paywalled, judge on what you could reach and say so in your reasoning.
@@ -1163,6 +1177,10 @@ if (toVerify.length && tight(RESERVE_FINALIZE + toVerify.length * PER_CHECK)) {
   log(`Budget tight — cite-checking only ${verifyList.length} load-bearing/gap-fill authorities; ${skippedSet.size} left unchecked.`)
 }
 
+// Which authorities got the 3-voter adversarial panel (deep mode): the memo must label each
+// authority's validation tier, since a screened case and a panel-verified case look identical
+// on the page (2026-10-19).
+const panelSet = new Set()
 let verdicts = []
 if (verifyList.length) {
   const jobs = []
@@ -1171,6 +1189,7 @@ if (verifyList.length) {
   // load-bearing — cap the refute set so a generous draft can't fan out unboundedly.
   const loadBearing = DEEP ? verifyList.filter((c) => c.loadBearing) : []
   const refuteSet = new Set(loadBearing.slice(0, REFUTE_CAP).map((c) => c.gi))
+  for (const gi of refuteSet) panelSet.add(gi)
   if (loadBearing.length > REFUTE_CAP)
     log(`Deep refutation capped at ${REFUTE_CAP} of ${loadBearing.length} load-bearing authorities; the rest get the standard chunk check.`)
   for (const c of verifyList) {
@@ -1202,7 +1221,13 @@ const vFor = (c) => {
   if (c.wasRead && v.verdict === 'verified') v.basis = 'direct-full-text'
   return v
 }
-const tagged = toVerify.map((c) => ({ ...c, v: vFor(c) }))
+const checkKind = (c, v) => {
+  if (v.verdict === 'unchecked') return 'not validated (budget)'
+  if (/NOT CHECKED/.test(v.notes || '')) return 'not validated (checker failure)'
+  if (panelSet.has(c.gi)) return /SHORT PANEL|SINGLE-VOTER/.test(v.notes || '') ? 'verified (short refutation panel)' : 'verified (3-voter refutation panel)'
+  return 'checked (existence + citing-opinion treatment probe)'
+}
+const tagged = toVerify.map((c) => { const v = vFor(c); return { ...c, v, check: checkKind(c, v) } })
 const okCount = tagged.filter((t) => t.v.verdict === 'verified').length
 const fixCount = tagged.filter((t) => t.v.verdict === 'needs-correction').length
 const badCount = tagged.filter((t) => t.v.verdict === 'unverified').length
@@ -1226,7 +1251,7 @@ phase('Finalize')
 const verifyReport = tagged
   .map(
     (t) =>
-      `- [${t.v.verdict}${t.v.basis ? ` | ${t.v.basis}` : ''}] ${t.citation}${t.v.correctedCitation ? ` -> ${t.v.correctedCitation}` : ''}${
+      `- [${t.v.verdict}${t.v.basis ? ` | ${t.v.basis}` : ''} | tier: ${t.check}] ${t.citation}${t.v.correctedCitation ? ` -> ${t.v.correctedCitation}` : ''}${
         t.v.currentTreatment ? ` (${t.v.currentTreatment})` : ''
       }${t.v.notes ? ` — ${t.v.notes}` : ''}`
   )
@@ -1271,7 +1296,14 @@ ${gapReport ? `- POST-DRAFT ADDITIONS: the authorities below were retrieved afte
   gaps the draft itself flagged. Weave each into the memo where the draft noted the gap, with its
   cite — subject to its cite-check verdict above. Remove the corresponding gap notes.` : ''}
 - Append two sections:
-  * **Table of Authorities** (only verified/corrected authorities, grouped by type).
+  * **Table of Authorities** (only verified/corrected authorities, grouped by type), with a
+    **Validation** column copied from each authority's "tier:" label in the cite-check results:
+    "verified (3-voter refutation panel)" / "verified (short refutation panel)" / "checked
+    (existence + citing-opinion treatment probe)" / "not validated (...)". A checked case and a
+    panel-verified case look identical in prose, so the label is the only place the reader can
+    tell them apart. Under the table, ONE sentence naming which authorities got the refutation
+    panel and why (load-bearing), and which were only checked; if NO authority got the panel
+    (lean mode), say so in as many words — never let an unlabeled table read as "all verified".
   * **Limits of this research** — what could not be verified, gaps, that ONLY free/open-web sources
     were used, and that a Westlaw/Lexis pass plus a manual Bluebook check is recommended before
     publication or filing. Disclose the VERIFICATION BASIS mix using the labels in the cite-check
