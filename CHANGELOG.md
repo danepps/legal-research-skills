@@ -2,6 +2,10 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.4.0 (2026-10-19)
+
+- Claude Code `setup`: a new optional step offers automatic updates of the plugin. Claude Code updates a plugin on its own only when its marketplace has auto-update on, which is off for a third-party marketplace such as `danepps`; the setup helper's new `auto-update on|off|status` subcommand sets the documented `autoUpdate` field on the marketplace's `extraKnownMarketplaces` entry in `~/.claude/settings.json` (the same field the Enable auto-update choice under `/plugin` writes, and the one Claude Code consults first), reads the effective state back following the documented precedence, and reports the `DISABLE_UPDATES`, `DISABLE_AUTOUPDATER`, and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` variables that switch the whole update pass off. The skill reports only what the helper read back, never the user's answer; skipping changes nothing; a marketplace already enabled through `/plugin` is recognized and never toggled off; a plugin that was not installed from the marketplace is reported as not updatable this way instead of failing setup. `status` now carries an `auto_update` block. Twenty-two regression checks cover these cases. No scheduler, startup hook, or self-modifying cache logic is added on the Claude Code side; this follows Codex's proposal of the same date except that the switch is written as a setting rather than left to the `/plugin` screen, because Claude Code's reference documents that field.
+
 ## 1.3.0 (2026-10-19)
 
 A review release. Two independent reviews of the Claude Code skills (one by Codex, one by Claude with probe-verified fixtures) found defects that could produce false findings, silently incomplete runs, or wrong footnote numbers. Every item below was reproduced before it was fixed and carries a regression test; the offline suite grew from 14 to 26 test programs.

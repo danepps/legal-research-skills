@@ -65,6 +65,8 @@ old_umask = os.umask(0o022)      # the default umask the review tested under
 setup.TOKEN_FILE = os.path.join(tmp, "config", "courtlistener", "token")
 setup.SETTINGS = os.path.join(tmp, "claude", "settings.json")
 setup.CLAUDE_JSON = os.path.join(tmp, "claude.json")
+setup.KNOWN_MARKETPLACES = os.path.join(tmp, "plugins", "known_marketplaces.json")
+setup.INSTALLED_PLUGINS = os.path.join(tmp, "plugins", "installed_plugins.json")
 setup.probe_courtlistener = lambda tok: (True, "probe stubbed")
 NO_ENV = {"COURTLISTENER_API_TOKEN": None, "COURTLISTENER_TOKEN": None}
 
@@ -162,6 +164,138 @@ try:
     check("status: reports the environment source and that it overrides the file",
           cl.get("source") == "environment variable COURTLISTENER_API_TOKEN"
           and cl.get("token_file_present") is True and cl.get("env_overrides_file") is True)
+
+    # ---- automatic updates: the documented autoUpdate field, read and written truthfully ---
+    QUIET = {v: None for v in setup.AUTOUPDATE_OFF_VARS + (setup.AUTOUPDATE_FORCE_VAR,)}
+    GH = {"source": "github", "repo": "danepps/legal-research-skills"}
+
+    def write(path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f)
+
+    def backups():
+        return [n for n in os.listdir(os.path.dirname(setup.SETTINGS)) if n.startswith("settings.json.bak-")]
+
+    # 1. registered nowhere: status says so, "on" refuses with a next step and writes nothing
+    write(setup.SETTINGS, {"permissions": {"allow": ["WebFetch"]}})
+    for p in (setup.KNOWN_MARKETPLACES, setup.INSTALLED_PLUGINS):
+        if os.path.exists(p):
+            os.remove(p)
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_status, [])
+    au = out.get("auto_update", {})
+    check("auto-update: unregistered marketplace reported as not registered",
+          au.get("registered") is False and au.get("effective") == "not registered" and au.get("plugin", {}).get("installed") is False)
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_auto_update, ["on"])
+    check("auto-update: on refuses when the marketplace is not registered",
+          rc == 1 and out.get("ok") is False and "not registered" in out.get("next_step", "") and out.get("changed") is False)
+    check("auto-update: refusal leaves settings.json untouched",
+          json.load(open(setup.SETTINGS)) == {"permissions": {"allow": ["WebFetch"]}} and not backups())
+    check("auto-update: bad argument exits 2", setup.cmd_auto_update(["sideways"]) == 2)
+
+    # 2. registry knows the marketplace, settings do not: default is off; "on" creates the entry
+    write(setup.KNOWN_MARKETPLACES, {"danepps": {"source": GH, "installLocation": "/x", "lastUpdated": "2026-10-19T00:00:00Z"}})
+    write(setup.INSTALLED_PLUGINS, {"version": 2, "plugins": {"legal-research@danepps": [
+        {"scope": "user", "installPath": "/x/1.3.0", "version": "1.3.0"}]}})
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_status, [])
+    au = out["auto_update"]
+    check("auto-update: registry-only marketplace is off by default, with the default named as the source",
+          au["registered"] is True and au["effective"] == "off" and au["settings_entry_present"] is False
+          and au["effective_source"].startswith("default") and au["blocked_by"] == [])
+    check("auto-update: status reads the installed plugin version back",
+          au["plugin"] == {"installed": True, "version": "1.3.0", "scope": "user"})
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_auto_update, ["on"])
+    s = json.load(open(setup.SETTINGS))
+    check("auto-update: on writes autoUpdate true on a settings entry built from the registry's source",
+          rc == 0 and out["changed"] is True and out.get("entry_created_from") == setup.KNOWN_MARKETPLACES
+          and s["extraKnownMarketplaces"]["danepps"] == {"source": GH, "autoUpdate": True})
+    check("auto-update: other settings keys survive and a backup was made",
+          s["permissions"] == {"allow": ["WebFetch"]} and out.get("backup") and len(backups()) == 1)
+    check("auto-update: result reports on, from settings.json, with no warnings",
+          out["auto_update"]["effective"] == "on" and out["auto_update"]["effective_source"].endswith(setup.SETTINGS)
+          and "warning" not in out and "warning_plugin" not in out)
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_auto_update, ["on"])
+    check("auto-update: on again is a no-op (no write, no backup)",
+          rc == 0 and out["changed"] is False and "backup" not in out and len(backups()) == 1)
+
+    # 3. off writes an explicit false and keeps the entry's source; status agrees
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_auto_update, ["off"])
+    s = json.load(open(setup.SETTINGS))
+    check("auto-update: off writes autoUpdate false and keeps the source",
+          rc == 0 and out["changed"] is True and s["extraKnownMarketplaces"]["danepps"] == {"source": GH, "autoUpdate": False})
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_status, [])
+    check("auto-update: status reports off from settings.json after off",
+          out["auto_update"]["effective"] == "off" and out["auto_update"]["settings_value"] is False)
+
+    # 4. a marketplace already enabled through the registry (the /plugin toggle) is recognized as on
+    write(setup.SETTINGS, {"enabledPlugins": {"legal-research@danepps": True}})
+    write(setup.KNOWN_MARKETPLACES, {"danepps": {"source": GH, "autoUpdate": True}})
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_status, [])
+    au = out["auto_update"]
+    check("auto-update: registry autoUpdate true is read as on, from the registry file",
+          au["effective"] == "on" and au["effective_source"] == setup.KNOWN_MARKETPLACES and au["registry_value"] is True)
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_auto_update, ["on"])
+    check("auto-update: on over a registry-enabled marketplace stays on and never toggles it off",
+          rc == 0 and out["auto_update"]["effective"] == "on"
+          and json.load(open(setup.SETTINGS))["extraKnownMarketplaces"]["danepps"]["autoUpdate"] is True)
+
+    # 5. an existing settings entry with a custom source keeps that source
+    custom = {"source": "git", "url": "https://git.example.edu/mirror/legal-research-skills.git"}
+    write(setup.SETTINGS, {"extraKnownMarketplaces": {"danepps": {"source": custom}}})
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_auto_update, ["on"])
+    check("auto-update: an existing entry's custom source is preserved",
+          json.load(open(setup.SETTINGS))["extraKnownMarketplaces"]["danepps"] == {"source": custom, "autoUpdate": True}
+          and "entry_created_from" not in out)
+
+    # 6. the global kill switches: effective off, named in blocked_by, with a warning from "on"
+    with env(**{**QUIET, "DISABLE_AUTOUPDATER": "1"}):
+        rc, out = run_cmd(setup.cmd_status, [])
+    au = out["auto_update"]
+    check("auto-update: DISABLE_AUTOUPDATER=1 makes the effective state off and is named",
+          au["settings_value"] is True and au["effective"] == "off" and au["blocked_by"] == ["DISABLE_AUTOUPDATER"])
+    with env(**{**QUIET, "DISABLE_AUTOUPDATER": "1"}):
+        rc, out = run_cmd(setup.cmd_auto_update, ["on"])
+    check("auto-update: on under a kill switch still exits 0 but warns and reports off",
+          rc == 0 and "DISABLE_AUTOUPDATER" in out.get("warning", "") and out["auto_update"]["effective"] == "off")
+    with env(**{**QUIET, "DISABLE_AUTOUPDATER": "1", "FORCE_AUTOUPDATE_PLUGINS": "1"}):
+        rc, out = run_cmd(setup.cmd_status, [])
+    check("auto-update: FORCE_AUTOUPDATE_PLUGINS=1 overrides the kill switch",
+          out["auto_update"]["effective"] == "on" and out["auto_update"]["blocked_by"] == [])
+    with env(**{**QUIET, "DISABLE_AUTOUPDATER": "0"}):
+        rc, out = run_cmd(setup.cmd_status, [])
+    check("auto-update: a variable set to 0 does not count", out["auto_update"]["blocked_by"] == [])
+    write(setup.SETTINGS, {"env": {"DISABLE_UPDATES": "1"}, "extraKnownMarketplaces": {"danepps": {"source": GH, "autoUpdate": True}}})
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_status, [])
+    check("auto-update: a kill switch in settings.json's env block is detected too",
+          out["auto_update"]["blocked_by"] == ["DISABLE_UPDATES"] and out["auto_update"]["effective"] == "off")
+
+    # 7. a plugin not installed from the marketplace is flagged when turning updates on
+    os.remove(setup.INSTALLED_PLUGINS)
+    write(setup.SETTINGS, {"extraKnownMarketplaces": {"danepps": {"source": GH}}})
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_auto_update, ["on"])
+    check("auto-update: warns when the plugin is not recorded as installed from the marketplace",
+          rc == 0 and "not recorded as installed" in out.get("warning_plugin", ""))
+
+    # 8. an unreadable settings.json: status lists the error, on refuses without writing
+    with open(setup.SETTINGS, "w") as f:
+        f.write("{not json")
+    with env(**QUIET):
+        rc, out = run_cmd(setup.cmd_auto_update, ["on"])
+    check("auto-update: a corrupt settings.json is refused with a next step, file untouched",
+          rc == 1 and out["ok"] is False and setup.SETTINGS in out.get("next_step", "")
+          and open(setup.SETTINGS).read() == "{not json")
 finally:
     os.umask(old_umask)
     shutil.rmtree(tmp, ignore_errors=True)

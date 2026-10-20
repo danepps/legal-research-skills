@@ -26,6 +26,21 @@ The model runs this so the user never edits a configuration file by hand.
         Dynamic workflows row in /config writes. Needed on a Claude Pro plan for
         cite-check, proofread, and legal-research; harmless elsewhere. Prints JSON.
 
+    python3 setup.py auto-update on|off|status
+        Turn background updates of this plugin on or off, or report their state.
+        Claude Code updates a plugin automatically when the marketplace it came
+        from has auto-update on; for a third-party marketplace such as danepps
+        that is off unless set. The switch is the documented "autoUpdate" field
+        on the marketplace's entry under extraKnownMarketplaces in
+        ~/.claude/settings.json (the same field the Enable auto-update choice
+        under /plugin > Marketplaces writes), which takes precedence over the
+        copy in ~/.claude/plugins/known_marketplaces.json. "on" and "off" write
+        that field, creating the entry from the registry's source if settings
+        lack one, and refuse (exit 1) when the marketplace is registered
+        nowhere. "status" is read-only. Every form prints the resulting state,
+        including DISABLE_UPDATES-style variables that switch the whole update
+        pass off. Takes effect in the next session.
+
     python3 setup.py zotero --key <api-key> --library-id <id> [--type user|group] [--name zotero]
         Register a Zotero MCP server (uvx zotero-mcp) under mcpServers in
         ~/.claude.json, merging with the existing file. Refuses to overwrite an
@@ -53,6 +68,14 @@ HOME = os.path.expanduser("~")
 TOKEN_FILE = os.path.join(HOME, ".config", "courtlistener", "token")
 SETTINGS = os.path.join(HOME, ".claude", "settings.json")
 CLAUDE_JSON = os.path.join(HOME, ".claude.json")
+KNOWN_MARKETPLACES = os.path.join(HOME, ".claude", "plugins", "known_marketplaces.json")
+INSTALLED_PLUGINS = os.path.join(HOME, ".claude", "plugins", "installed_plugins.json")
+MARKETPLACE = "danepps"
+PLUGIN = "legal-research"
+# Documented at https://code.claude.com/docs/en/plugins/loading#when-auto-update-runs:
+# any of these set to 1 turns the whole plugin auto-update pass off unless the last is set.
+AUTOUPDATE_OFF_VARS = ("DISABLE_UPDATES", "DISABLE_AUTOUPDATER", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC")
+AUTOUPDATE_FORCE_VAR = "FORCE_AUTOUPDATE_PLUGINS"
 CL_API = "https://www.courtlistener.com/api/rest/v4/citation-lookup/"
 PROBE_CITE = "347 U.S. 483"
 PROBE_NAME = "Brown v. Board of Education"
@@ -213,10 +236,71 @@ def zotero_servers(cfg):
     return out
 
 
+def _var_set(name, settings):
+    """True if an environment variable is set (process environment first, then the
+    "env" block of settings.json, which Claude Code exports to every session)."""
+    val = os.environ.get(name)
+    if val is None:
+        val = ((settings or {}).get("env") or {}).get(name)
+    if val is None:
+        return False
+    return str(val).strip().lower() not in ("", "0", "false", "no")
+
+
+def plugin_install(installed):
+    """The user-scope install record of this plugin from this marketplace, if any."""
+    records = ((installed or {}).get("plugins") or {}).get(f"{PLUGIN}@{MARKETPLACE}") or []
+    if isinstance(records, dict):            # older single-record layout
+        records = [records]
+    for r in records:
+        if isinstance(r, dict):
+            return {"installed": True, "version": r.get("version"), "scope": r.get("scope")}
+    return {"installed": False, "version": None, "scope": None}
+
+
+def auto_update_state(settings, known, installed):
+    """Resolve whether the danepps marketplace auto-updates, following the documented
+    precedence: the settings entry's autoUpdate, then the registry entry's, then the
+    default (off for a third-party marketplace). Reads only the user settings file and
+    the per-user registry; a managed or project settings file that also declares the
+    marketplace would take precedence and is not consulted, which the "scope" says."""
+    s_entry = ((settings or {}).get("extraKnownMarketplaces") or {}).get(MARKETPLACE)
+    k_entry = (known or {}).get(MARKETPLACE)
+    s_val = s_entry.get("autoUpdate") if isinstance(s_entry, dict) else None
+    k_val = k_entry.get("autoUpdate") if isinstance(k_entry, dict) else None
+    registered = isinstance(s_entry, dict) or isinstance(k_entry, dict)
+    if not registered:
+        effective, source = "not registered", None
+    elif isinstance(s_val, bool):
+        effective, source = ("on" if s_val else "off"), f"extraKnownMarketplaces in {SETTINGS}"
+    elif isinstance(k_val, bool):
+        effective, source = ("on" if k_val else "off"), KNOWN_MARKETPLACES
+    else:
+        effective, source = "off", "default for a third-party marketplace"
+    blocked_by = [] if _var_set(AUTOUPDATE_FORCE_VAR, settings) else [v for v in AUTOUPDATE_OFF_VARS if _var_set(v, settings)]
+    if blocked_by and effective == "on":
+        effective = "off"
+    return {
+        "marketplace": MARKETPLACE,
+        "registered": registered,
+        "settings_entry_present": isinstance(s_entry, dict),
+        "settings_value": s_val if isinstance(s_val, bool) else None,
+        "registry_value": k_val if isinstance(k_val, bool) else None,
+        "effective": effective,
+        "effective_source": source,
+        "blocked_by": blocked_by,
+        "plugin": plugin_install(installed),
+        "scope": "user settings and the per-user registry; a managed or project settings file "
+                 "that also declares this marketplace takes precedence and was not read",
+    }
+
+
 # ---------------------------------------------------------------- commands
 def cmd_status(_args):
     settings, s_err = read_json(SETTINGS)
     cfg, c_err = read_json(CLAUDE_JSON)
+    known, k_err = read_json(KNOWN_MARKETPLACES)
+    installed, i_err = read_json(INSTALLED_PLUGINS)
     token, source = courtlistener_token()
     cl = {"configured": token is not None, "source": source, "works": None, "detail": None,
           "token_file_present": os.path.isfile(TOKEN_FILE)}
@@ -235,10 +319,12 @@ def cmd_status(_args):
         "web_permissions": web_allowed(settings),
         "enableWorkflows": workflows_enabled(settings),
         "zotero": {"uvx_installed": on_path("uvx"), "servers": zotero_servers(cfg)},
+        "auto_update": auto_update_state(settings, known, installed),
         "git_installed": on_path("git"),
         "pdftotext_installed": on_path("pdftotext"),
-        "files": {"settings": SETTINGS, "claude_json": CLAUDE_JSON, "token_file": TOKEN_FILE},
-        "errors": [e for e in (s_err, c_err) if e],
+        "files": {"settings": SETTINGS, "claude_json": CLAUDE_JSON, "token_file": TOKEN_FILE,
+                  "known_marketplaces": KNOWN_MARKETPLACES, "installed_plugins": INSTALLED_PLUGINS},
+        "errors": [e for e in (s_err, c_err, k_err, i_err) if e],
     }
     print(json.dumps(report, indent=2))
     return 0
@@ -295,6 +381,64 @@ def cmd_enable_workflows(_args):
         backup = write_json(SETTINGS, settings)
     print(json.dumps({"ok": True, "changed": changed, "backup": backup, "path": SETTINGS,
                       "note": "takes effect in the next Claude Code session"}))
+    return 0
+
+
+def cmd_auto_update(args):
+    if len(args) != 1 or args[0] not in ("on", "off", "status"):
+        print("usage: setup.py auto-update on|off|status", file=sys.stderr)
+        return 2
+    want = args[0]
+    settings, s_err = read_json(SETTINGS)
+    known, k_err = read_json(KNOWN_MARKETPLACES)
+    installed, i_err = read_json(INSTALLED_PLUGINS)
+    errors = [e for e in (s_err, k_err, i_err) if e]
+    before = auto_update_state(settings, known, installed)
+    out = {"ok": True, "requested": want, "changed": False, "file": SETTINGS, "errors": errors}
+    if want == "status":
+        out["auto_update"] = before
+        print(json.dumps(out, indent=2))
+        return 0
+    if s_err:
+        out.update(ok=False, auto_update=before,
+                   next_step=f"{SETTINGS} could not be read ({s_err}); fix or move that file, then run setup again")
+        print(json.dumps(out, indent=2))
+        return 1
+    target = want == "on"
+    if not before["registered"]:
+        out.update(ok=False, auto_update=before,
+                   next_step=f"the {MARKETPLACE} marketplace is not registered on this computer, so there is "
+                             f"nothing for Claude Code to update automatically; install the plugin with "
+                             f"/plugin install {PLUGIN} --marketplace {MARKETPLACE}/legal-research-skills, "
+                             f"then run setup again")
+        print(json.dumps(out, indent=2))
+        return 1
+    settings = settings or {}
+    markets = settings.setdefault("extraKnownMarketplaces", {})
+    entry = markets.get(MARKETPLACE)
+    if not isinstance(entry, dict):
+        # settings lack the entry: build it from the registry's source so nothing moves
+        src = (known.get(MARKETPLACE) or {}).get("source") if isinstance(known, dict) else None
+        if not isinstance(src, dict):
+            src = {"source": "github", "repo": f"{MARKETPLACE}/legal-research-skills"}
+        entry = {"source": src}
+        markets[MARKETPLACE] = entry
+        out["entry_created_from"] = KNOWN_MARKETPLACES
+    if entry.get("autoUpdate") is not target:
+        entry["autoUpdate"] = target
+        out["backup"] = write_json(SETTINGS, settings)
+        out["changed"] = True
+    after = auto_update_state(settings, known, installed)
+    out["auto_update"] = after
+    if target and after["blocked_by"]:
+        out["warning"] = ("automatic updates are switched on for this marketplace but the whole update pass "
+                          "is off while " + ", ".join(after["blocked_by"]) + " is set; unset it, or set "
+                          f"{AUTOUPDATE_FORCE_VAR}=1, for updates to run")
+    if target and not after["plugin"]["installed"]:
+        out["warning_plugin"] = (f"{PLUGIN} is not recorded as installed from {MARKETPLACE} in {INSTALLED_PLUGINS}; "
+                                 "auto-update only refreshes plugins installed from the marketplace")
+    out["note"] = "takes effect in the next session"
+    print(json.dumps(out, indent=2))
     return 0
 
 
@@ -355,6 +499,7 @@ COMMANDS = {
     "courtlistener": cmd_courtlistener,
     "allow-web": cmd_allow_web,
     "enable-workflows": cmd_enable_workflows,
+    "auto-update": cmd_auto_update,
     "zotero": cmd_zotero,
 }
 
