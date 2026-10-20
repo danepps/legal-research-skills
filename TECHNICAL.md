@@ -116,7 +116,9 @@ Independent implementations for Codex CLI. These skills combine source review wi
 
 ### Install for Codex
 
-**Plugin installation (Codex CLI and desktop app):** these commands require a current Codex command-line installation. If `codex` is not recognized, follow the [Codex CLI installation guide](https://learn.chatgpt.com/docs/cli) first; having the desktop app alone does not establish that this command is available in your terminal. Then install the six research skills and update setup helper together:
+**Desktop installation without the CLI:** download the repository ZIP, open the extracted outer folder as a local Codex project, and install from its marketplace in Plugins. See the [desktop walkthrough](README.md#set-up-with-codex). This route uses the included catalog and needs no terminal commands; updates to the downloaded copy are manual.
+
+**Command-line alternative:** the commands below require a current Codex CLI. If `codex` is not recognized, use the desktop route above or follow the [Codex CLI installation guide](https://learn.chatgpt.com/docs/cli). To install the six research skills and update setup helper through the CLI:
 
 ```sh
 codex plugin marketplace add danepps/legal-research-skills

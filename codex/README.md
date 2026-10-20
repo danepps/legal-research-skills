@@ -6,7 +6,36 @@ the Claude skills or configure external accounts.
 
 ## Install
 
-In a terminal with a current Codex CLI:
+### Desktop app, without the CLI
+
+You can install through Codex in the ChatGPT desktop app without installing the
+Codex CLI or typing terminal commands:
+
+1. [Download the repository ZIP](https://github.com/danepps/legal-research-skills/archive/refs/heads/main.zip)
+   and extract it. Keep the `legal-research-skills-main` folder in a stable
+   location, separate from your research documents.
+2. Select that outer folder as your local project in Codex. The download already
+   contains `.agents/plugins/marketplace.json` and the plugin it references;
+   no file editing or Git installation is needed.
+3. Restart the desktop app, reopen that project, and open **Plugins**. Select
+   **Daniel Epps: Codex Research Skills**, then **Legal Research Skills**, and use
+   the install button (shown as **+** in some app versions).
+4. Start a new Codex conversation before using the skills. Select your research
+   folder and ask Codex to check the requirements below and guide you through any
+   missing Python or account setup.
+
+OpenAI documents [local marketplace discovery and installation in the desktop app](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list).
+The downloaded ZIP has been checked with Codex's native app backend: it discovers
+this marketplace and all seven skills without registering a marketplace through
+the CLI. A complete installation through the desktop buttons on a fresh account
+has not yet been tested.
+
+This is a local copy with manual updates; see below. The optional scheduled
+updater requires the GitHub installation described next.
+
+### Command-line alternative
+
+Only this alternative requires a current Codex CLI. In your terminal:
 
 ```sh
 codex plugin marketplace add danepps/legal-research-skills
@@ -18,7 +47,7 @@ refresh the app, open Plugins, and look for **Legal Research Skills** under
 **Daniel Epps: Codex Research Skills**. In the CLI, `/plugins` opens the plugin
 browser. If `codex plugin` is unavailable, update the Codex CLI first.
 
-This installs from the repository's marketplace. It is not a listing in
+Both routes use the repository's marketplace. It is not a listing in
 OpenAI's curated public directory.
 
 The plugin's skill names are:
@@ -57,18 +86,26 @@ relevant skill. Authenticated source files must be supplied by the user.
 
 ## Updates and removal
 
-For optional automatic updates, start a Codex session and say:
+**Desktop ZIP installation:** download and extract a fresh ZIP, select its folder
+in Codex, restart the app, and install from that local source. If the old version
+remains, remove the plugin in Plugins and reinstall it from the new folder.
+Keep research files outside the downloaded tools folder. To remove the plugin,
+use its removal control in Plugins.
+
+**GitHub installation through the CLI:** for optional automatic updates, start a
+Codex session and say:
 
 > Use $legal-research:setup to enable automatic updates.
 
 This installs a per-user schedule on macOS, Linux with systemd, or Windows. It
 checks for updates daily while you are logged in, including when Codex is closed.
-Automatic updates are off until you enable them. Start a new Codex session to use
+Automatic updates are off until you enable them, and this helper does not support
+ZIP downloads or other local marketplaces. Start a new Codex session to use
 an updated plugin. Ask the same setup skill to show status, check now, or disable
 automatic updates. See [automatic updates](setup/references/automatic-updates.md)
 for requirements, failure behavior, and removal after the plugin is uninstalled.
 
-For manual updates, use these commands in order, stopping if the refresh fails.
+For manual updates to the CLI installation, use these commands in order, stopping if the refresh fails.
 Refresh the repository marketplace and install its current plugin version:
 
 ```sh

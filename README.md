@@ -2,7 +2,7 @@
 
 Check citations, proofread drafts, find supporting authorities, build a Zotero library, and write research memos using Claude or Codex. These free add-ons give the AI detailed research instructions and tools for checking its work.
 
-**No coding or Terminal experience needed for the Claude desktop guide below.** You click through setup and paste a few shortcuts into the app's message box. After that, you ask for help in ordinary English.
+**You can install these tools through either desktop app without opening Terminal.** Claude has a guided setup conversation; Codex can install from a downloaded folder. After setup, you ask for help in ordinary English.
 
 Created by [Daniel Epps](https://law.wustl.edu/faculty-staff-directory/profile/daniel-epps/), a law professor who uses these tools in his own scholarship. [Questions or trouble getting started? Email me.](mailto:epps@wustl.edu)
 
@@ -12,7 +12,7 @@ You need **only one** of these apps:
 
 - **I'm starting from scratch:** follow the [Claude desktop guide](#set-up-with-claude-desktop), which walks you through setup without Terminal.
 - **I already use Claude:** follow the [same guide](#set-up-with-claude-desktop). If the desktop app is already installed, start at step 2.
-- **I already use Codex:** see [Set up with Codex](#set-up-with-codex). Its installation currently requires extra technical setup.
+- **I already use Codex:** follow the [Codex desktop guide](#set-up-with-codex). You do not need the Codex command-line tool.
 
 The add-ons are free. Using them requires access to Claude Code or Codex through your AI provider. A full cite-check can use a substantial amount of your plan, so begin with a short document.
 
@@ -120,17 +120,25 @@ When the details panel opens, select **Install** for your user account. Then con
 
 ## Set up with Codex
 
-The Codex version supports citation checking, citation finding, proofreading, Zotero library building, research memos, and broader research projects. Once installed and configured, you can use it from the desktop app and ask in ordinary English.
+**You do not need to install the Codex CLI or use Terminal for this route.** Use Codex in the ChatGPT desktop app, with access to folders on your computer. You do not need Claude as well.
 
-**Installation currently needs someone comfortable with technical setup.** The commands require the Codex command-line tool to be installed, and CourtListener and Zotero need separate configuration. The Codex setup helper manages automatic updates only. You do not need to install Claude as well.
+1. **Download the tools.** [Download the ZIP file](https://github.com/danepps/legal-research-skills/archive/refs/heads/main.zip) and open it to extract the folder. On Windows, choose **Extract All** if needed. Keep the resulting `legal-research-skills-main` folder somewhere you can find it again, such as Documents.
+2. **Open that folder in Codex.** In the desktop app, select the downloaded folder as your local project. Choose the outer `legal-research-skills-main` folder; it contains the catalog that tells the app where to find the plugin.
+3. **Open the plugin browser.** Restart the desktop app, reopen that project, and open **Plugins**. Choose the source named **Daniel Epps: Codex Research Skills**, open **Legal Research Skills**, and select the install button, which may appear as **+**. If that source does not appear, check that the selected project is the extracted folder, then [get in touch](mailto:epps@wustl.edu) if it is still missing.
+4. **Check research setup.** Start a new Codex conversation with your draft's folder selected. Ask: “Check what I need to use Legal Research Skills on this computer, including Python, web access, and CourtListener. Walk me through anything missing.” Installing the plugin adds the research instructions and scripts; Python and research accounts still need to be available. Zotero is optional. The plugin's named `setup` helper handles updates only, so it is not a replacement for this check.
+5. **Try a short draft.** Ask: “Cite-check My Article.docx. Leave the draft unchanged, and show me how to open the report.” Substitute your actual filename.
 
-If you already use the Codex command-line tool, or someone is helping you, follow the [Codex installation instructions](TECHNICAL.md#install-for-codex) and [account configuration](TECHNICAL.md#prerequisites-and-configuration). The [Codex plugin guide](https://github.com/danepps/legal-research-skills/blob/main/codex/README.md) lists the skills and explains updates and removal. If you want the walkthrough that avoids Terminal, use the [Claude desktop guide](#set-up-with-claude-desktop).
+This uses OpenAI's documented [installation from a local folder](https://developers.openai.com/plugins/build/plugins#build-your-own-curated-plugin-list). The download already includes the catalog, so you do not need to create or edit it.
+
+**Updates for this route are manual.** Keep the downloaded tools separate from your research documents. To update, download a fresh ZIP and repeat the folder-selection and installation steps. If the plugin still shows the old version, remove it in Plugins and install it from the new folder. The optional scheduled updater does not update ZIP installations.
+
+If you prefer Terminal, use the [command-line installation instructions](TECHNICAL.md#install-for-codex). The [Codex plugin guide](https://github.com/danepps/legal-research-skills/blob/main/codex/README.md) has more details, including [research-account configuration](TECHNICAL.md#prerequisites-and-configuration).
 
 ## Keeping up to date
 
 **Claude:** during setup, say yes to automatic updates if you want them. You can change your choice later by entering `/legal-research:setup` in the Code tab and asking to turn automatic updates on or off.
 
-**Codex:** after installing the plugin, say: “Use $legal-research:setup to enable automatic updates.” You can also ask it to show update status or turn updates off. See the [Codex update guide](https://github.com/danepps/legal-research-skills/blob/main/codex/setup/references/automatic-updates.md) for details.
+**Codex:** if you used the ZIP download, follow the manual update steps in the [Codex desktop guide](#set-up-with-codex). If you installed through the command-line instructions, you can instead say: “Use $legal-research:setup to enable automatic updates.” See the [Codex update guide](https://github.com/danepps/legal-research-skills/blob/main/codex/setup/references/automatic-updates.md) for details.
 
 Start a new conversation after an update to use the updated tools. Release notes are in the [Claude changelog](CHANGELOG.md) and [Codex changelog](https://github.com/danepps/legal-research-skills/blob/main/codex/CHANGELOG.md).
 
@@ -140,7 +148,7 @@ Start a new conversation after an update to use the updated tools. Release notes
 
 ## Technical reference
 
-For terminal installation, account configuration, how the tools work, and contributor information, see the [technical reference](TECHNICAL.md). You can skip that page when following the Claude desktop walkthrough.
+For terminal installation, account configuration, how the tools work, and contributor information, see the [technical reference](TECHNICAL.md). The desktop installation steps above do not require Terminal.
 
 ## About
 
