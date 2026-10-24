@@ -34,6 +34,10 @@ check("different verdict -> different key", fd.key_of(q1) != fd.key_of(dict(q1, 
 check("form key from find + problem", fd.key_of(f1) == fd.key_of(dict(f1, footnote=99)) and fd.key_of(f1) != fd.key_of(dict(f1, problem="other")))
 check("existence and history keys differ by kind", fd.key_of(e1) != fd.key_of(dict(e1, kind="history")))
 check("explicit key wins", fd.key_of({"kind": "quote", "key": "abc"}) == "abc")
+s1 = {"kind": "support", "footnote": 12, "verdict": "not_supported", "source": "Doe, 110 Harv. L. Rev. 815", "claim": "Courts have uniformly held X."}
+check("support key ignores footnote number", fd.key_of(s1) == fd.key_of(dict(s1, footnote=40)))
+check("support key changes with the verdict", fd.key_of(s1) != fd.key_of(dict(s1, verdict="contradicted")))
+check("support-confirm (overstated) is a different kind from support", fd.key_of(s1) != fd.key_of(dict(s1, kind="support-confirm", verdict="overstated")))
 
 tmp = tempfile.mkdtemp()
 prev = os.path.join(tmp, "prev.json")

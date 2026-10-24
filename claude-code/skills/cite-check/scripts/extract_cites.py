@@ -9,6 +9,9 @@ pipeline needs to check citations and quotations against real sources:
     one false "fabricated" verdict), plus a deterministic pre-parse of its
     cross-references (leading "Id.", "supra note N" targets) and the reporter-
     style case citations it contains;
+  * for EVERY numbered footnote, the body sentence its marker sits in (the
+    `anchor`: sentence, preceding sentence, marker position) — the proposition
+    an unquoted cite is asked to support (opt-in support pass, 2026-10-24);
   * every quotation >= MIN_QUOTE_WORDS words in the body, paired with the
     footnote that follows it AND its full surrounding body sentence (the
     framing context — its absence caused the practice run's false "dropped not"
@@ -550,6 +553,50 @@ def find_footnote_quotes(notes_by_num):
     return quotes
 
 
+# ---- footnote anchors (the proposition a footnote is asked to support) -----
+# Added for the opt-in proposition-support pass (2026-10-24). A quotation
+# already carries its body sentence; an UNQUOTED footnote carried nothing, so
+# no agent could be asked whether the cite supports the sentence it hangs on.
+# Unlike the quote -> footnote pairing, this is exact: the marker sits inside
+# the sentence, so there is nothing to guess. The one open question — how much
+# of the surrounding text the note supports — is recorded as `position`
+# (a mid-sentence marker usually supports the clause before it, which is
+# emitted separately as `clause`) and left to the reader.
+def footnote_anchors(paras, id2num, block_paras=()):
+    """{rendered number: anchor dict} for every numbered marker in the body."""
+    out = {}
+    for pi, para in enumerate(paras):
+        spans = sentence_spans(para)
+        for m in FN_PLACEHOLDER.finditer(para):
+            num = _num(id2num, m.group(1))
+            if num is None or num in out:
+                continue
+            idx = next((k for k, (s, e) in enumerate(spans) if s <= m.start() < e), None)
+            if idx is None:
+                s, e, prev = 0, len(para), ""
+            else:
+                s, e = spans[idx]
+                prev = ""
+                if idx > 0:
+                    ps, pe = spans[idx - 1]
+                    prev = _clean(FN_PLACEHOLDER.sub("", para[ps:pe]))
+                elif pi > 0:
+                    ls, le = sentence_spans(paras[pi - 1])[-1]
+                    prev = _clean(FN_PLACEHOLDER.sub("", paras[pi - 1][ls:le]))
+            tail = FN_PLACEHOLDER.sub("", para[m.end():e])
+            mid = bool(re.search(r"\w", tail))
+            out[num] = {
+                "para": pi,
+                "sentence": _clean(FN_PLACEHOLDER.sub("", para[s:e])),
+                "previous": prev,
+                "clause": _clean(FN_PLACEHOLDER.sub("", para[s:m.start()])) if mid else "",
+                "position": "mid-sentence" if mid else "sentence-end",
+                "paragraph_end": idx is None or idx == len(spans) - 1,
+                "block_quote": pi in block_paras,
+            }
+    return out
+
+
 # ---- Bluebook FORM layer (typeface + short forms) ---------------------------
 # Scope-lock lifted by the user 2026-08-10 ("undo the lock insofar as it's stopping
 # you from checking obvious stuff"). These run off the SAME shared module
@@ -744,6 +791,16 @@ def main(argv):
                         % (len(unreferenced), ", ".join(unreferenced)))
     notes_by_num = {int(k): v["text"] for k, v in notes.items()}
 
+    # The body sentence each footnote marker sits in — the proposition an
+    # unquoted cite is asked to support (prepare_support_units.py reads it).
+    anchors = footnote_anchors(paras, id2num, extra.get("block_paras", set()))
+    for k, v in notes.items():
+        v["anchor"] = anchors.get(int(k))
+    no_anchor = [k for k, v in notes.items() if v["anchor"] is None]
+    if no_anchor:
+        warnings.append("%d numbered footnote(s) have no body anchor sentence (marker not "
+                        "found in a body paragraph): n.%s" % (len(no_anchor), ", n.".join(no_anchor)))
+
     body_quotes = find_body_quotes(paras, id2num, extra.get("block_paras", set()))
     footnote_quotes = find_footnote_quotes(notes_by_num)
 
@@ -800,6 +857,7 @@ def main(argv):
         "deleted_footnote_ids", "unreferenced_footnote_ids", "empty_footnote_ids",
         "endnote_count", "warnings")}
     summary["custom_mark_footnotes"] = len(custom_notes)
+    summary["footnotes_without_anchor"] = len(no_anchor)
     summary["unique_case_cite_count"] = len(data["unique_case_cites"])
     summary["supra_problem_candidates"] = len(supra_problems)
     summary["form_findings"] = len(form["findings"])

@@ -13,15 +13,20 @@ implying coverage it never had.
 
 Deterministic, stdlib only, zero model tokens. Reads extract_cites.py's JSON.
 
-What it does NOT do: assess whether an unquoted cite actually SUPPORTS the sentence it
-hangs on. That would mean reading every source; the ledger labels such instances
-"existence-only (support not assessed)" rather than pretending.
+What it does NOT do on its own: assess whether an unquoted cite actually SUPPORTS the
+sentence it hangs on. That means reading the source, which the OPT-IN support pass
+(prepare_support_units.py + the workflow's Support phase, 2026-10-24) does for the
+instances in its scope; everything it did not read stays "existence-only (support not
+assessed)" rather than pretending. For that pass each instance also records its
+Bluebook signal, its pincite/locator and its proposition parenthetical.
 
 Usage:
     python3 citation_ledger.py <extract.json> [ledger.json]      # full ledger
     python3 citation_ledger.py <extract.json> --compact           # workflow args form
     python3 citation_ledger.py <extract.json> --note 12           # one footnote, readable
-    python3 citation_ledger.py --render <ledger_final.json>       # markdown companion table
+    python3 citation_ledger.py --render <ledger_final.json> [--extract <extract.json>]
+                                                                  # markdown companion table
+                                                                  # (+ body sentence per note)
 
 The workflow (cite-check.workflow.js) joins agent results back onto the ledger with
 the same rules as assign_dispositions() below; that function is the reference
@@ -151,6 +156,112 @@ def supra_name_keys(outer):
     return keys
 
 
+# ---- signal / locator / parenthetical (support-pass inputs, 2026-10-24) -------
+# The introductory signal decides WHAT the cite claims (R. 1.2): no signal or "see"
+# = direct support; "see also" = additional support; "cf." = support by analogy;
+# "see generally" = background; "compare ... with" = comparison; "but see"/"contra"
+# = CONTRARY authority. A support checker that reads a "but see" cite as a support
+# claim manufactures a false finding, so the signal is recorded per instance.
+SIGNAL_RE = re.compile(
+    r"^(see,?\s+e\.g\.,?|see\s+also|see\s+generally|but\s+see|but\s+cf\.|cf\.|see|"
+    r"compare|accord|contra|e\.g\.,?)(?=[\s,])", re.IGNORECASE)
+
+
+def signal_of(clause):
+    m = SIGNAL_RE.match((clause or "").strip())
+    if not m:
+        return ""
+    sig = re.sub(r"\s+", " ", m.group(1).lower()).rstrip(",")
+    return "see, e.g." if sig.replace(",", "") == "see e.g." else sig
+
+
+_PIN_TAIL = (r"(\d{1,4}(?:\s*[–-]\s*\d{1,4})?(?:\s*(?:&|,)\s*\d{1,4}(?:\s*[–-]\s*\d{1,4})?)*"
+             r"(?:\s*(?:&\s*)?nn?\.\s*\d+(?:\s*[–-]\s*\d+)?)?)")
+AT_PIN = re.compile(r"\bat\s+" + _PIN_TAIL)
+CASE_PIN = re.compile(r"\b\d{1,4}\s+(?:%s)\s+(?:\([^)]{1,24}\)\s+)?\d{1,4},\s*" % REPORTER_ANY
+                      + _PIN_TAIL)
+SECTION_PIN = re.compile(r"§§?\s*[\w.\-–]+(?:\([\w]+\))*")
+PARA_PIN = re.compile(r"¶¶?\s*\d+(?:\s*[–-]\s*\d+)?")
+BOOK_PIN = re.compile(r"\s" + _PIN_TAIL + r"\s*\((?=[^()]*\d{4}\))")
+
+
+def locate(clause, kind):
+    """The pincite / locator this instance points at, as printed ("431", "820–21",
+    "§ 1983", "¶ 12"), or "" for a whole-work cite. A whole-work cite is the one the
+    support pass cannot read at a page, so the distinction drives its scope."""
+    outer = _strip_parens(clause) if kind != "case" else clause
+    m = AT_PIN.search(outer)
+    if m:
+        return _clean(m.group(1))
+    if kind in ("case", "case-short"):
+        m = CASE_PIN.search(clause)
+        if m:
+            return _clean(m.group(1))
+    if kind == "statute":
+        m = SECTION_PIN.search(clause)
+        return _clean(m.group(0)) if m else ""
+    m = PARA_PIN.search(outer)
+    if m:
+        return _clean(m.group(0))
+    if kind == "article":
+        jm = JOURNAL.search(outer)
+        if jm:
+            m = re.compile(r",\s*" + _PIN_TAIL).match(outer, jm.end())
+            if m:
+                return _clean(m.group(1))
+    if kind == "book":
+        m = BOOK_PIN.search(clause)
+        if m:
+            return _clean(m.group(1))
+    return ""
+
+
+def parentheticals(clause):
+    """Top-level parenthetical contents, in order."""
+    out, depth, start = [], 0, None
+    for i, ch in enumerate(clause or ""):
+        if ch == "(":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == ")" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                out.append(clause[start + 1:i])
+                start = None
+    return out
+
+
+# Parentheticals that are not a proposition: year/court, edition, quoting/citing,
+# emphasis/alteration notes, and separate-opinion labels.
+_NON_PROP = re.compile(
+    r"^(?:quoting|citing|cited|emphasis|alterations?|internal|footnotes?|citations?|en banc|"
+    r"per curiam|plurality|\d{4}\b|[A-Z0-9][\w.'’&\s]*\d{4}$|\d+(?:st|d|th)?\s+ed\.|"
+    r"[A-Z][\w.'’\s]*,\s*(?:C\.?J|J|JJ)\.,?\s*(?:concurring|dissenting)|"
+    r"(?:[A-Z]\.\s*)*[A-Z][\w.'’\s]*ed\.?,?\s+\d{4})", re.IGNORECASE)
+_OPINION_NOTE = re.compile(r"\b(concurring|dissenting|plurality opinion|per curiam|statement of)\b",
+                           re.IGNORECASE)
+
+
+def proposition_parenthetical(clause):
+    """The first parenthetical that states what the source is cited FOR
+    ("holding that ...", "noting the ..."), or ""."""
+    for p in parentheticals(clause):
+        t = _clean(p)
+        if len(t.split()) >= 3 and not _NON_PROP.match(t):
+            return t
+    return ""
+
+
+def opinion_note(clause):
+    """A separate-opinion parenthetical ("Thomas, J., concurring") the draft itself
+    supplies — posture the support checker must honor, not flag."""
+    for p in parentheticals(clause):
+        if _OPINION_NOTE.search(p):
+            return _clean(p)
+    return ""
+
+
 # ---- classification ----------------------------------------------------------
 def classify(clause):
     """-> (kind, primary_case_cite_or_None, nested_case_cites, supra_note_or_None,
@@ -236,6 +347,11 @@ def build_ledger(data):
                 "quoted": _has_quote(clause),
                 "xref_note": sn, "xref_name": sname,
                 "xref_target": None, "xref_status": None,
+                # support-pass inputs (2026-10-24)
+                "signal": signal_of(clause),
+                "pincite": locate(clause, kind),
+                "parenthetical": proposition_parenthetical(clause),
+                "opinion_note": opinion_note(clause),
             }
             instances.append(inst)
             order += 1
@@ -246,6 +362,8 @@ def build_ledger(data):
                     "nested_cases": [], "quoted": False, "nested": True,
                     "xref_note": None, "xref_name": None,
                     "xref_target": None, "xref_status": None,
+                    "signal": "", "pincite": locate(nc, "case"), "parenthetical": "",
+                    "opinion_note": "",
                 })
                 order += 1
     # a body quote pinned to a note with exactly one substantive instance is that
@@ -338,22 +456,43 @@ def _resolve_xrefs(instances):
 VERIFIED_VERDICTS = ("verbatim", "altered_marked", "fragment_framing")
 FINDING_VERDICTS = ("mismatch", "not_found_in_sources", "syllabus_quote",
                     "superseded_source", "pincite_off")
+# Opt-in support pass (2026-10-24). "overstated" is a CONFIRM item by design (the
+# author's call, 2026-10-24): the source supports a narrower or weaker claim than
+# the sentence makes, which is a judgment, never an error.
+SUPPORT_FINDING_VERDICTS = ("contradicted", "not_supported")
+SUPPORT_CONFIRM_VERDICTS = ("overstated",)
+SUPPORTED_VERDICTS = ("supported", "supported_qualified")
+
+
+def support_disposition(verdict):
+    if verdict in SUPPORT_FINDING_VERDICTS:
+        return "support-finding"
+    if verdict in SUPPORT_CONFIRM_VERDICTS:
+        return "support-confirm"
+    if verdict in SUPPORTED_VERDICTS:
+        return "supported"
+    if verdict == "unverifiable":
+        return "support-unverifiable"
+    return None  # "unread" / unknown: the instance keeps its non-support disposition
 
 
 def assign_dispositions(ledger, case_existence=None, secondary_existence=None,
                         quote_verdicts=None, secondary_pass_ran=True,
-                        case_pass_ran=True):
+                        case_pass_ran=True, support_verdicts=None):
     """case_existence: {normalized cite: {"exists": bool|None}}
     secondary_existence: {source key: {"exists": bool|None}}
     quote_verdicts: {instance i: [verdict, ...]} (already joined to instances)
+    support_verdicts: {instance i: verdict} from the opt-in support pass
     Mutates ledger instances in place, adding `disposition` (+ `reason`), and
     returns counts by disposition."""
     case_existence = case_existence or {}
     secondary_existence = secondary_existence or {}
     quote_verdicts = quote_verdicts or {}
+    support_verdicts = support_verdicts or {}
     inst = ledger["instances"]
     for x in inst:
         k = x["kind"]
+        sd = support_disposition(support_verdicts.get(x["i"]))
         if k == "text":
             x["disposition"] = "not-a-citation"
             continue
@@ -378,6 +517,10 @@ def assign_dispositions(ledger, case_existence=None, secondary_existence=None,
             vs = quote_verdicts.get(x["i"], [])
             if any(v in FINDING_VERDICTS for v in vs):
                 x["disposition"] = "finding"
+            elif sd and x["xref_status"] == "resolved":
+                # an "Id. at 512" read for support has its own status now
+                x["disposition"] = sd
+                x["reason"] = "support pass: %s" % support_verdicts[x["i"]]
             continue
         vs = quote_verdicts.get(x["i"], [])
         if k == "case":
@@ -395,10 +538,19 @@ def assign_dispositions(ledger, case_existence=None, secondary_existence=None,
             # exists False + basis "unconfirmed" = could not tell -> unverifiable below
         if any(v in FINDING_VERDICTS for v in vs) or exists is False:
             x["disposition"] = "finding"
+        elif sd == "support-finding" or sd == "support-confirm":
+            x["disposition"] = sd
+            x["reason"] = "support pass: %s" % support_verdicts[x["i"]]
         elif any(v in VERIFIED_VERDICTS for v in vs):
             x["disposition"] = "verified"
+        elif sd == "supported":
+            x["disposition"] = "supported"
+            x["reason"] = "support pass: %s" % support_verdicts[x["i"]]
         elif vs and all(v == "unverifiable" for v in vs):
             x["disposition"] = "unverifiable"
+        elif sd == "support-unverifiable":
+            x["disposition"] = "support-unverifiable"
+            x["reason"] = "source exists; could not be read for support"
         elif exists is True:
             x["disposition"] = "existence-only"
             x["reason"] = "source exists; no quotation to verify; proposition support NOT assessed"
@@ -420,28 +572,49 @@ def compact(ledger):
     """Small form for Workflow args: one short object per instance."""
     return [{"i": x["i"], "n": x["note"], "k": x["kind"], "c": x["text"],
              "key": x["key"], "case": x["case_cite"], "x": x.get("xref_final"),
-             "xs": x["xref_status"], "q": x["quoted"]} for x in ledger["instances"]]
+             "xs": x["xref_status"], "q": x["quoted"],
+             "s": x.get("signal", ""), "pin": x.get("pincite", ""),
+             "par": bool(x.get("parenthetical"))} for x in ledger["instances"]]
 
 
-def render(instances):
+def render(instances, anchors=None):
     """Markdown table for the companion '<draft> — Citation Ledger.md' file. Accepts the
-    workflow's returned ledger (compact form with `d`) or the full form with `disposition`."""
-    rows = ["| Note | # | Kind | Disposition | Citation (as in draft) |", "|---|---|---|---|---|"]
+    workflow's returned ledger (compact form with `d`) or the full form with `disposition`.
+    `anchors` ({note number: anchor dict}, from extract.json's footnotes) adds the body
+    sentence each note hangs on, so an existence-only row can be audited by eye."""
+    anchors = anchors or {}
+    cols = "| Note | # | Kind | Signal | Disposition | Citation (as in draft) |"
+    sep = "|---|---|---|---|---|---|"
+    if anchors:
+        cols += " Supports (body sentence) |"
+        sep += "---|"
+    rows = [cols, sep]
     counts = {}
     for x in instances:
         d = x.get("d") or x.get("disposition") or "?"
         counts[d] = counts.get(d, 0) + 1
         text = (x.get("c") or x.get("text") or "").replace("|", "\\|")
         why = x.get("why") or x.get("reason") or ""
-        rows.append("| n.%s | %s | %s | %s%s | %s |" % (
-            x.get("n", x.get("note")), x["i"], x.get("k", x.get("kind")), d,
-            (" (%s)" % why) if why and d in ("unchecked", "unverifiable") else "", text[:200]))
+        note = x.get("n", x.get("note"))
+        row = "| n.%s | %s | %s | %s | %s%s | %s |" % (
+            note, x["i"], x.get("k", x.get("kind")), x.get("s", x.get("signal", "")) or "—", d,
+            (" (%s)" % why) if why and d in ("unchecked", "unverifiable", "support-unverifiable") else "",
+            text[:200])
+        if anchors:
+            a = anchors.get(str(note)) or anchors.get(note) or {}
+            sent = (a.get("clause") or a.get("sentence") or "").replace("|", "\\|")
+            row += " %s |" % sent[:220]
+        rows.append(row)
     head = ["# Citation ledger", "",
             "Every citation instance the extractor found, with what the cite-check run did to it. "
             "`existence-only` = the source exists but was not read for whether it supports the "
-            "proposition; `xref` = an Id./supra/short form that inherits its antecedent's status; "
+            "proposition; `supported` / `support-confirm` / `support-finding` / "
+            "`support-unverifiable` = the opt-in support pass read it (`support-confirm` is a "
+            "possible overstatement to confirm, never an error); "
+            "`xref` = an Id./supra/short form that inherits its antecedent's status; "
             "`unchecked` = no pass reached it; `internal-ref` = a cross-reference within the draft "
-            "(infra/supra Section, or an unfilled placeholder), not a source.", "",
+            "(infra/supra Section, or an unfilled placeholder), not a source. The Signal column "
+            "is the Bluebook introductory signal (— = direct support, no signal).", "",
             "Totals: " + ", ".join("%s %d" % (k, v) for k, v in sorted(counts.items())), ""]
     return "\n".join(head + rows) + "\n"
 
@@ -454,7 +627,11 @@ def main(argv):
         obj = json.load(open(argv[1], encoding="utf-8"))
         inst = obj["instances"] if isinstance(obj, dict) and "instances" in obj else \
             obj["ledger"] if isinstance(obj, dict) and "ledger" in obj else obj
-        sys.stdout.write(render(inst))
+        anchors = None
+        if "--extract" in argv:  # join the body anchor sentence by footnote number
+            ex = json.load(open(argv[argv.index("--extract") + 1], encoding="utf-8"))
+            anchors = {k: v.get("anchor") or {} for k, v in ex.get("footnotes", {}).items()}
+        sys.stdout.write(render(inst, anchors))
         return 0
     data = json.load(open(argv[0], encoding="utf-8"))
     ledger = build_ledger(data)

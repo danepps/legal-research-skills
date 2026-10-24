@@ -10,6 +10,7 @@ markers by eye — the off-by-one marker-convention trap (NOTES item 12).
 Usage:
     verify_quotes.py SOURCE_FILE "quote one" ["quote two" ...]
     verify_quotes.py SOURCE_FILE --json QUOTES.json [--first-page N]
+    verify_quotes.py SOURCE_FILE --page 512 [--first-page N]   # print one printed page
 
 SOURCE_FILE is extracted source text (e.g. `fetch_page.py <url> > src.txt`).
 QUOTES.json is a list of {"id": ..., "quote": "...", "pincite": "516-17"}.
@@ -568,6 +569,51 @@ def _page_in(page, pr):
     return a is not None and b is not None and a <= pr[1] and b >= pr[0]
 
 
+def print_page(raw, spec, first_page, max_chars):
+    """--page: print the text of printed page N (or N-M) using the same page-boundary
+    detection the quote check uses, so a support agent reads the pincited page without
+    dumping a whole opinion into its context. Exit 1 when the file carries no page
+    boundaries or the page is outside the file."""
+    spans, marker = find_page_spans(raw)
+    if marker == "none":
+        print("no page boundaries in this file (no <<pg. N>>, form feeds or star pagination); "
+              "read it by searching for the passage instead", file=sys.stderr)
+        return 1
+    m = re.match(r"^\s*(\d+)\s*(?:[-–]\s*(\d+))?\s*$", spec)
+    if not m:
+        print("--page takes N or N-M", file=sys.stderr)
+        return 2
+    lo = int(m.group(1))
+    hi = int(m.group(2)) if m.group(2) else lo
+    if hi < lo:  # "512-13" style
+        hi = int(str(lo)[:len(str(lo)) - len(m.group(2))] + m.group(2))
+    bounds = [(s, n) for s, e, n in spans]
+    cuts = [0] + [s for s, e, n in spans] + [len(raw)]
+    pages = {}
+    for k in range(len(cuts) - 1):
+        a, b = cuts[k], cuts[k + 1]
+        if b <= a:
+            continue
+        pg = page_of(bounds, first_page, a)
+        pages.setdefault(pg, []).append(raw[a:b])
+    avail = sorted(p for p in pages if p is not None)
+    want = [p for p in range(lo, hi + 1) if p in pages]
+    if not want:
+        print("page %s not in this file (marker: %s; pages %s–%s)%s" % (
+            spec, marker, avail[0] if avail else "?", avail[-1] if avail else "?",
+            "; with form feeds the numbering depends on --first-page" if marker == "form-feed" else ""),
+            file=sys.stderr)
+        return 1
+    out = []
+    for p in want:
+        out.append("[[page %d — marker: %s]]\n" % (p, marker) + "".join(pages[p]).strip("\f\n"))
+    text = "\n\n".join(out)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n[TRUNCATED at %d chars — narrow the page range]" % max_chars
+    sys.stdout.write(text + "\n")
+    return 0
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("source", help="extracted source text file")
@@ -575,6 +621,12 @@ def main(argv):
     ap.add_argument("--json", dest="json_path", help="JSON file: [{id, quote, pincite}]")
     ap.add_argument("--first-page", type=int, default=1,
                     help="printed page number of the source's first page (form-feed sources)")
+    ap.add_argument("--page", dest="page",
+                    help="print the text of printed page N (or a range N-M) instead of "
+                         "checking quotes — for the support pass, which reads a pincited "
+                         "page rather than matching a quotation")
+    ap.add_argument("--max-chars", type=int, default=12_000,
+                    help="cap on --page output (default 12000)")
     args = ap.parse_args(argv)
 
     try:
@@ -585,6 +637,9 @@ def main(argv):
     except OSError as e:
         print(f"cannot read source: {e}", file=sys.stderr)
         return 2
+
+    if args.page:
+        return print_page(raw, args.page, args.first_page, args.max_chars)
 
     items = [{"quote": q} for q in args.quotes]
     if args.json_path:

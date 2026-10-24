@@ -1,6 +1,6 @@
 ---
 name: cite-check
-description: Verify every citation and quotation in an article draft against the real sources — cases via CourtListener + official reporters, scholarship via the user's Zotero library then the open web — and return a graded, footnote-by-footnote report with a "needs your attention" section first, an advisory subsequent-history and treatment section (Bluebook R. 10.7 history the draft omits; cases a later decision overruled or limited), a "since the last report" diff on re-runs, plus a citation-form section (short cites per Bluebook R. 10.9/4.2 and italics/small caps per R. 2.1(a)) decided from the draft alone. Trigger when the user wants a draft cite-checked ("cite-check this", "check the citations/quotes in this draft", "run cite-check on <file>"). Input: a .docx with real Word footnotes (markdown/plain-text fallback). Not a full Bluebook linter — signal order, citation order and cite composition stay out.
+description: Verify every citation and quotation in an article draft against the real sources — cases via CourtListener + official reporters, scholarship via the user's Zotero library then the open web — and return a graded, footnote-by-footnote report with a "needs your attention" section first, an advisory subsequent-history and treatment section (Bluebook R. 10.7 history the draft omits; cases a later decision overruled or limited), a "since the last report" diff on re-runs, plus a citation-form section (short cites per Bluebook R. 10.9/4.2 and italics/small caps per R. 2.1(a)) decided from the draft alone, and an OPT-IN proposition-support pass that reads each unquoted cite at its pincite and says whether it supports the sentence it hangs on (overstatement is reported as a confirm item, never an error). Trigger when the user wants a draft cite-checked ("cite-check this", "check the citations/quotes in this draft", "run cite-check on <file>"). Input: a .docx with real Word footnotes (markdown/plain-text fallback). Not a full Bluebook linter — signal order, citation order and cite composition stay out.
 ---
 
 # Cite Check
@@ -31,12 +31,37 @@ units are built from *quotations*; on their own they left every unquoted seconda
 unaccounted for. Now `scripts/citation_ledger.py` inventories **every citation instance** in
 every footnote (case or secondary, quoted or not, with `Id.`/`supra`/short-form chains
 resolved), a secondary-source existence pass covers the unquoted articles/books/statutes/URLs,
-and the report's section I gives each instance a disposition — `verified`, `finding`,
-`existence-only`, `unverifiable`, `unchecked`, `xref`, `unresolved-xref` — and lists the
-unchecked ones by footnote. Two limits remain and the report must say so: (1) **proposition
-support** — whether an unquoted cite actually stands for the sentence it hangs on — is never
-assessed (that is what `existence-only` means); (2) pincites are checked only where a quotation
-anchors them. Treat `existence-only` as "real source, unread," never as "passed."
+and the report's section J gives each instance a disposition — `verified`, `finding`,
+`existence-only`, `unverifiable`, `unchecked`, `xref`, `unresolved-xref`, plus the support
+pass's `supported` / `support-confirm` / `support-finding` / `support-unverifiable` — and lists
+the unchecked ones by footnote. Two limits remain and the report must say so: (1) **proposition
+support** — whether an unquoted cite actually stands for the sentence it hangs on — is assessed
+ONLY when the opt-in support pass runs (below); otherwise `existence-only` means exactly that;
+(2) pincites are checked only where a quotation anchors them, or where the support pass read
+the page. Treat `existence-only` as "real source, unread," never as "passed."
+
+**Proposition support (OPT-IN, added 2026-10-24).** With `support:true`, every unquoted citation
+instance the ledger inventories becomes a *support unit*: the body sentence its footnote marker
+sits in (or, for a mid-sentence marker, the clause before it), the full footnote, its Bluebook
+signal, its pincite (a bare `Id.` inherits its antecedent's page; a bare `Author, supra note N`
+does not — it is the whole work), its proposition parenthetical and any separate-opinion note the
+draft gives. `scripts/prepare_support_units.py` builds them deterministically. An agent fetches
+each source once (a source a verify agent already fetched for a quote gets its support units
+folded into that agent), reads the pincited page with `verify_quotes.py --page`, and judges the
+claim **through its signal** (a `but see` cite claims contrary authority; `cf.` claims analogy;
+`see generally` claims background). Verdicts: `supported`, `supported_qualified` (support from a
+posture the draft does not disclose — dicta, a concurrence, a reported view; advisory),
+`overstated` (**a confirm item by the author's decision — the source supports a narrower or
+weaker claim; never called an error, never in "Needs your attention"**), `not_supported` (medium),
+`contradicted` (high), `unverifiable`, `unread`. Every `not_supported` / `contradicted` verdict
+goes through the same independent second derivation as a high-severity quote finding before it
+reaches the report; the report shows the draft's claim and the source's passage side by side.
+Default scope is **pincited** instances (a page, section, URL or parenthetical to read); bare
+whole-work cites are listed as not read unless `supportScope:"all"`. Quoted instances are not
+support units (the quote path, with its fragment-framing judgment, covers them). **Cost:** this
+pass fetches sources the quote pass never touched and reads for substance, so a run with
+`support:true` is typically two to four times the verify-stage cost; the soft cap rises by
+350k when it is on. Say so when the user asks for it on a long draft.
 
 **Plus the obvious FORM problems (scope lock lifted by the user, 2026-08-10 — "undo the lock insofar as
 it's stopping you from checking obvious stuff").** A `Form` phase reports what is decidable from the
@@ -68,6 +93,14 @@ prose, cite-check verifies the authorities** — they now happen to share the ci
 - **footnotes** — optional partial pass, e.g. "footnotes 45–80" or a list. Default: whole draft.
 - **deep** — optional; heavier verification (medium-effort verify agents, higher soft cap). Turn on
   for a near-final draft or when the user says "deep"/"thorough".
+- **support** — optional, OFF by default. Turn on when the user asks whether the cites actually
+  support their propositions ("check that the sources support what I cite them for", "check
+  proposition support", "do the signal cites hold up", "support pass"). Never infer it from
+  "deep" or "thorough" — deep buys care per quote, support buys a different check with a
+  different cost (see above); when the user asks for support on a long draft, say in one
+  sentence that it reads every pincited unquoted cite and costs roughly two to four times a
+  standard run. `supportScope:"all"` additionally reads bare whole-work cites; only when the
+  user asks for that explicitly.
 - If the draft has tracked changes, say so and ask whether to accept-all before checking (the parser
   reads the current/accepted text and skips tracked deletions, but a heavily-marked draft is worth a
   heads-up).
@@ -156,6 +189,23 @@ python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py "<scr
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py "<scratch>/extract.json" --compact > "<scratch>/ledger_args.json"
 ```
 
+With `support:true`, also build the support units (zero model tokens):
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/prepare_support_units.py "<scratch>/extract.json" "<scratch>/support_units.json"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/prepare_support_units.py "<scratch>/extract.json" --compact > "<scratch>/support_args.json"
+```
+
+The first prints `unit_count`, `in_scope_pincited`, `whole_work`, `by_kind`, `unique_sources`,
+`units_without_anchor`. Glance at `whole_work`: those are bare cites to an entire work that the
+default scope will NOT read — say the number at deliver time. `units_without_anchor` should be
+0; a non-zero count means footnote markers the body parser could not place (the extractor
+warns). The `--compact` file holds the `units` array the workflow takes as `supportUnits`.
+For a partial pass, `--footnotes 45-80` prints the support unit ids for those notes (the
+workflow still takes the whole `supportUnits` array; restrict with `unitIds` only for quotes —
+support units outside the chosen footnotes are simply not in scope when you pass a filtered
+`supportUnits` array, so filter the compact list to those ids yourself).
+
 `citation_ledger.py` prints instance_count / by_kind / unique_secondary_cites / unresolved_xrefs.
 Glance at `by_kind`: a large `other` or `text` count means the footnotes use a citation form the
 splitter doesn't recognise — those instances still ship in the ledger (as `unchecked` /
@@ -201,6 +251,9 @@ Workflow({
     unitIds:       <null | [ids from --footnotes]>,    // partial pass only
     deep:          false,
     history:       true,                               // false only if the user asks to skip subsequent history / treatment
+    support:       false,                              // OPT-IN: true only when the user asks for proposition support
+    supportUnits:  <support_args.units>,               // with support:true — prepare_support_units.py --compact
+    supportScope:  "pincited",                         // "all" also reads bare whole-work cites (explicit request only)
     zotero:        true,                               // false if no usable Zotero server this run
     zoteroServer:  "<from pre-flight 2.3>"             // e.g. "zotero-group" (5A) or "zotero" (personal)
   }
@@ -245,10 +298,19 @@ Workflow({
    presence in the fetched text (typographic folding, marked ellipses/brackets honored) and reports
    the printed page of the match — agent judgment is reserved for substance. Manuscripts get a **version-drift** check (quote
    present in the cited draft but gone/moved in the current SSRN version → `superseded-source`).
+3b. **Support** (opt-in, 2026-10-24) — the support units whose source a verify agent fetched
+   anyway were already judged inside that agent; the rest are bundled by unique source (one
+   agent per multi-unit source, five single-unit sources per agent) and read at the pincite
+   with `verify_quotes.py --page`, medium effort (a judgment, never low). Under budget pressure
+   it degrades in order — whole-work units (if `all`), then secondary sources, then the whole
+   dedicated pass — and every skipped unit is disclosed as not read.
 4. **Verify-the-verifier** — a MANDATORY independent re-derivation of every high-severity finding
    (mismatch / not-found / syllabus / superseded) from the full footnote + body sentence, to catch
    the checker artifacts that context-deprivation produces (the practice run had five). Confirmed
-   artifacts are dropped; genuine findings are restated with source text.
+   artifacts are dropped; genuine findings are restated with source text. With the support pass
+   on, every `not_supported` / `contradicted` verdict gets the same second derivation, checking
+   the support-specific artifact classes (a paraphrased claim, a misread signal, the clause vs the
+   sentence, the wrong antecedent or page, undisclosed posture).
 4a. **Ledger join** — every quote verdict and existence result is joined back onto the citation
    instances (same rules as `citation_ledger.assign_dispositions`, the tested reference). Each
    instance ends with a disposition; `unchecked` is a first-class outcome, not an absence.
@@ -259,18 +321,20 @@ Workflow({
    never competes with verification for budget; under pressure the candidates ship unadjudicated and
    the run records a degradation note.
 5. **Report** — a graded, footnote-numbered report in the "needs your attention first" style: a
-   TL;DR that states the existence-only share in one sentence, the findings sections A–F, a
-   **subsequent history & treatment** section (G, advisory), couldn't-check (H), a **citation
-   coverage ledger** (section I: counts by disposition + the unchecked / unverifiable /
-   unresolved-cross-reference instances listed by footnote) and citation form in their own
-   sections near the end.
+   TL;DR that states the existence-only share in one sentence (and the support counts when the
+   pass ran), the findings sections A–F, a **subsequent history & treatment** section (G,
+   advisory), **proposition support** (H: not supported / confirm: possible overstatement /
+   qualified support, or one sentence that the opt-in pass did not run; contradicted items go
+   in A), couldn't-check (I), a **citation coverage ledger** (section J: counts by disposition +
+   the unchecked / unverifiable / unresolved-cross-reference instances listed by footnote) and
+   citation form in their own sections near the end.
 
 The run is spend-guarded (soft cap ~650k lean / ~900k deep output tokens) with the legal-research
 degradation ladder armed; it runs in the background and notifies on completion.
 
 ### 5. Deliver
 The workflow returns `{ report, counts, exitState, degradation, artifactsCaught, ledger, history,
-findings, … }`.
+support, findings, … }`.
 - **Re-run diff first (when step 2a found a previous findings file).** Save the result's
   `findings` object to `<scratch>/findings_new.json` with two fields added at the top level:
   `"snapshotSha256"` (from step 2b) and `"date"` (local date). Then
@@ -284,9 +348,10 @@ findings, … }`.
   already been taken).
 - Write the **companion ledger** next to it: save the result's `ledger` array to
   `<scratch>/ledger_final.json`, then
-  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py --render "<scratch>/ledger_final.json" > "<draft's directory>/<draftName> — Citation Ledger.md"`
-  — one row per citation instance (note, kind, disposition, cite text). This is the audit trail
-  behind section I; `counts.ledger` has the totals for the TL;DR.
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py --render "<scratch>/ledger_final.json" --extract "<scratch>/extract.json" > "<draft's directory>/<draftName> — Citation Ledger.md"`
+  — one row per citation instance (note, kind, signal, disposition, cite text, and — from
+  `--extract` — the body sentence the note hangs on, so an `existence-only` row can be checked by
+  eye). This is the audit trail behind section J; `counts.ledger` has the totals for the TL;DR.
 - **Research memo header & production footer (required):** the report opens directly under the title with the structured
   header block (`Topic:` / `Date:` / `By:`); the `Production details:` block goes at the
   **very end of the file** (after everything else, set off by a `---` rule) — never up
@@ -314,6 +379,12 @@ findings, … }`.
     Draft checked: test draft.docx, SHA-256 3f2a…e91b (report is stale if the hash no
     longer matches the draft).
   ```
+- With `support:true`, lead with `counts.support` in one sentence: units read, not supported,
+  contradicted, overstated (say "to confirm", never "errors"), qualified, and how many were not
+  read (`unitsOutOfScope` whole-work cites, `unread` budget skips, `notChecked` agent failures).
+  If `counts.support.ran` is false, say the support pass did not run and why (`degradation`).
+  If `counts.support.artifactsCaught` is non-zero, mention it as the guardrail working; if
+  `singleChecker` is non-zero, say those support findings rest on one checker.
 - Present the TL;DR counts and point to the "Needs your attention" section. Mention section G in
   one sentence when `counts.history.missingHistory` or `counts.history.treatmentFlags` is non-zero
   (advisory: confirm on supremecourt.gov / Westlaw before changing a cite); if
@@ -331,7 +402,8 @@ findings, … }`.
 - Note once, in the deliver message: free/open-web sources only, so a Westlaw/Lexis pass and a
   manual Bluebook check remain the user's responsibility before publication. Citation *form* now
   gets its own section (short cites + typeface), but signal order, citation order, and cite
-  composition are still unchecked.
+  composition are still unchecked. Without `support:true`, say that unquoted cites were
+  existence-checked only and that the support pass is available on request.
 - `formFindings` / `formConventions` come back alongside the report if you want the raw list.
 
 ## Guardrails (inherited house rules — never relax)
@@ -372,3 +444,13 @@ findings, … }`.
   same kind of problem, and mixing them buries the one that matters.
 - **No typeface claim without the formatting layer.** On a markdown draft, or for a footnote whose
   formatted text didn't align with the validated parser's text, the answer is silence — not a guess.
+- **Overstatement is a confirm item, never an error (the author's decision, 2026-10-24).** A
+  source that supports a narrower or weaker claim than the sentence makes is reported under
+  "Confirm: possible overstatement" with the source's actual scope and passage, phrased as
+  something to check. It never enters "Needs your attention" and the deliver message never calls
+  it an error.
+- **A support verdict is a judgment, judged through the signal.** `not_supported` and
+  `contradicted` reach the report only after the independent second derivation (or labelled
+  single-checker when budget prevented it); a `but see` or `cf.` cite is judged for the claim its
+  signal makes; a support finding with no source passage is unverified, not a finding. The pass is
+  opt-in and the report says in one sentence when it did not run.

@@ -282,4 +282,24 @@ print()
 if failures:
     print(f"{failures} FAILURES")
     sys.exit(1)
+print("--page mode (support pass, 2026-10-24)")
+import tempfile as _tf
+def _page(text, args):
+    with _tf.TemporaryDirectory() as td:
+        path = os.path.join(td, "src.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        p = subprocess.run([sys.executable, SCRIPT, path] + args, capture_output=True, text=True)
+        return p.returncode, p.stdout, p.stderr
+rc, out, err = _page("intro *431 four thirty-one *432 four thirty-two *433 four thirty-three", ["--page", "432"])
+check("star pagination: --page prints that page only", rc == 0 and "four thirty-two" in out and "four thirty-one" not in out and "marker: star" in out)
+rc, out, err = _page("intro *431 four thirty-one *432 four thirty-two *433 four thirty-three", ["--page", "431-32"])
+check("a range '431-32' expands and prints both pages", rc == 0 and "four thirty-one" in out and "four thirty-two" in out and "four thirty-three" not in out)
+rc, out, err = _page("page one\fpage two\fpage three", ["--page", "816", "--first-page", "815"])
+check("form feeds: --first-page maps printed numbers", rc == 0 and "page two" in out and "page one" not in out)
+rc, out, err = _page("page one\fpage two\fpage three", ["--page", "900", "--first-page", "815"])
+check("a page outside the file exits 1 and names the range", rc == 1 and "815" in err and "817" in err)
+rc, out, err = _page("no markers here at all", ["--page", "5"])
+check("no page boundaries -> exit 1 with advice", rc == 1 and "no page boundaries" in err)
+
 print("all tests passed")

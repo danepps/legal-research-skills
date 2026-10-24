@@ -235,6 +235,16 @@ check("endnotes trigger a loud warning in the summary",
 check("tracked insertions/deletions reported", data["tracked_insertions"] and data["tracked_deletions"])
 check("signal-prefixed Id. ('See, e.g., id.') is a leading Id.", by_num[3]["leading_id"] is True)
 
+print("footnote anchors (support pass, 2026-10-24)")
+a1, a13, a11 = by_num[1]["anchor"], by_num[13]["anchor"], by_num[11]["anchor"]
+check("n.1 anchor = its sentence, marker at sentence end",
+      a1["position"] == "sentence-end" and a1["sentence"].startswith("The Court held that") and a1["clause"] == "")
+check("n.2 anchor carries the preceding sentence (n.1's)", by_num[2]["anchor"]["previous"].startswith("The Court held that"))
+check("marker BEFORE the quote (n.13) is mid-sentence with the clause before it",
+      a13["position"] == "mid-sentence" and a13["clause"] == "As Smith argued," and "framers" in a13["sentence"])
+check("block-quote paragraph (n.11) is flagged on its anchor", a11["block_quote"] is True)
+check("no footnote without an anchor", summary.get("footnotes_without_anchor") == 0)
+
 print("body text")
 check("deleted text is gone, inserted text stays, deleted marker not rendered",
       "deleted text with a footnote" not in fmt and "inserted text with a footnote[[FN:12]]" in fmt

@@ -97,7 +97,7 @@ For future work, choose the relevant folder and ask in ordinary English. You do 
 
 ## What you can ask for
 
-- **“Cite-check My Article.docx.”** Check citations, quotations, and footnote cross-references against sources, with a report showing problems and anything that could not be checked. It also flags, in an advisory section, lower-court cases whose citation omits later history (affirmed, reversed, cert. denied) and cases a later decision overruled or limited, and on a re-run it opens with what changed since the last report.
+- **“Cite-check My Article.docx.”** Check citations, quotations, and footnote cross-references against sources, with a report showing problems and anything that could not be checked. It also flags, in an advisory section, lower-court cases whose citation omits later history (affirmed, reversed, cert. denied) and cases a later decision overruled or limited, and on a re-run it opens with what changed since the last report. Unquoted citations are confirmed to exist but not read; ask for a **support check** (“check that the sources support what I cite them for”) to have each one read at its cited page, which costs more and reports possible overstatement as something to confirm rather than as an error.
 - **“Find me a cite for the proposition that…”** Find a few verified authorities, with specific pages and short explanations you can use in a footnote.
 - **“Proofread My Article.docx.”** Find typos, missing or repeated words, and inconsistent terminology or cross-references.
 - **“Build a Zotero collection on…”** Find sources, create records, check for duplicates, and attach available PDFs. Requires a connected Zotero library.

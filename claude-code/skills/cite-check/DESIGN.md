@@ -84,3 +84,17 @@ The full manual pipeline ran end-to-end and caught real errors (a fabricated quo
 6. **WAF reality:** SSRN, bepress/digital-commons, and several university repositories block scripted fetches outright. Mirror chain that worked: journal's own site → non-bepress repositories → Wayback → Google Books snippet search (rescued every bookseller-checkable book quote). Cap attempts per source; mark unverifiable with the unlock path (Hein/JSTOR pull) rather than burning retries.
 7. **Agent hygiene rules to hardwire in prompts:** never `open`/GUI-view a PDF (popped the user's PDF reader mid-run); never install software without asking (an agent Homebrew-installed `tesseract` — useful, but ask; consider bundling OCR as a declared optional dependency instead); dedupe quote rows before chunking.
 8. **Cost estimate revised:** the practice run spent ~2.2M subagent tokens — way over the 150–350k spec estimate — driven by cross-chunk re-fetching, WAF retry loops, and unresolved *Id.* dead ends. With fixes 1, 2, and 6, a realistic target is **400–700k for a ~400-footnote draft**; keep legal-research's soft-cap/degradation ladder armed regardless.
+
+## Addendum 2026-10-24 — proposition support (opt-in)
+
+The 2026-09-06 ledger made the gap explicit (`existence-only` = real source, unread). The
+support pass closes it on request. Design decisions, in the author's words where they were his:
+**opt-in** (`support:true`), because reading every source is a different cost profile from
+matching quotations; **"overclaiming should be a confirm"** — `overstated` never enters "Needs
+your attention" and is phrased as something to check; a verdict is judged **through the signal**
+(the ledger now records it per instance) and from the draft's own anchor sentence, which
+`extract_cites.py` now emits for every footnote; `not_supported` / `contradicted` get the same
+verify-the-verifier pass as high-severity quote findings; default scope is pincited cites, because
+a bare whole-work cite is the expensive, artifact-prone read. The calibration run on a real draft
+is the step that settles whether these verdicts are trustworthy; the first such run should be
+read the way the 2026-07-12 practice run was, with every finding checked against the source.

@@ -7,7 +7,8 @@ the previous file with the new one and prints a Markdown "Since the last report"
 findings that are NEW, findings STILL OPEN (unchanged), and findings RESOLVED (no longer
 reported). Dispositions carry forward by a stable key built from the finding's own content
 (the draft quote, the source, the verdict; the find-string and problem for a form finding;
-the cite for an existence or history item), never from the footnote number, which renumbers
+the cite for an existence or history item; the claim, source and verdict for a support
+item), never from the footnote number, which renumbers
 every time the author adds a note.
 
 Usage:
@@ -41,6 +42,9 @@ def key_of(item):
         basis = f"{kind}|{norm(item.get('cite') or item.get('source'))}"
     elif kind == "supra":
         basis = f"supra|{norm(item.get('claims'))}|{item.get('supraNote')}"
+    elif kind in ("support", "support-confirm"):
+        # a support verdict is about (claim, source, verdict); the footnote number is not identity
+        basis = f"{kind}|{norm(item.get('source'))[:80]}|{norm(item.get('claim'))[:160]}|{item.get('verdict') or ''}"
     else:
         basis = f"{kind}|{norm(item.get('label'))[:160]}"
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
