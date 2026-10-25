@@ -16,9 +16,10 @@ Usage:
     python3 findings_diff.py PREVIOUS.json CURRENT.json --json # machine-readable
 
 Both files are the workflow's `findings` object: {"snapshotSha256": ..., "date": ...,
-"support": {"ran": bool, "scope": "pincited"|"all"},
+"support": {"ran": bool, "scope": "pincited"|"all", "complete": bool, "read": [{"source", "claim"}, ...]},
 "items": [{"kind": ..., "footnote": ..., "key": ..., "label": ...}, ...]}. A support finding
-absent from a run whose pass did not run (or ran at another scope) is listed as "not
+absent from the current run is "resolved" only if the current run actually read a unit
+with the same source and claim (the `read` list); otherwise it is listed as "not
 rechecked", never as resolved. `key` is computed
 by the workflow (and recomputed here if absent) so the two sides agree. Stdlib only.
 """
@@ -74,12 +75,23 @@ def diff(prev, cur, prev_meta=None, cur_meta=None):
     was NOT rechecked — it is never reported as resolved."""
     cs = (cur_meta or {}).get("support") or {}
     ps = (prev_meta or {}).get("support") or {}
-    rechecked = bool(cs.get("ran")) and (not ps or cs.get("scope") == ps.get("scope"))
+    read = cs.get("read") if isinstance(cs.get("read"), list) else None
+    # Per item when the current run exported what it read: the prior finding was rechecked
+    # only if a unit with the same source and claim was actually read this run. Without that
+    # list (older findings files), fall back to "pass ran, same scope, and complete".
+    fallback = bool(cs.get("ran")) and (not ps or cs.get("scope") == ps.get("scope")) and cs.get("complete", True) is not False
+
+    def rechecked(item):
+        if read is None:
+            return fallback
+        src, claim = norm(item.get("source"))[:80], norm(item.get("claim"))[:160]
+        return any(norm(r.get("source"))[:80] == src and norm(r.get("claim"))[:160] == claim for r in read)
+
     new = [cur[k] for k in cur if k not in prev]
     still = [cur[k] for k in cur if k in prev]
     absent = [prev[k] for k in prev if k not in cur]
-    resolved = [i for i in absent if i.get("kind") not in SUPPORT_KINDS or rechecked]
-    not_rechecked = [i for i in absent if i.get("kind") in SUPPORT_KINDS and not rechecked]
+    resolved = [i for i in absent if i.get("kind") not in SUPPORT_KINDS or rechecked(i)]
+    not_rechecked = [i for i in absent if i.get("kind") in SUPPORT_KINDS and not rechecked(i)]
     moved = [(prev[k], cur[k]) for k in cur if k in prev and prev[k].get("footnote") != cur[k].get("footnote")]
     return {"new": new, "still_open": still, "resolved": resolved, "not_rechecked": not_rechecked, "renumbered": moved}
 

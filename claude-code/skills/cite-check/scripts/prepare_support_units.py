@@ -130,8 +130,11 @@ def compact(units):
     return [{"id": u["id"], "i": u["i"], "n": u["note"], "k": u["kind"], "key": u["key"],
              "src": u["source"][:200], "pin": u["pincite"], "sig": u["signal"],
              "scope": u["scope"],
-             # the claim, for report lines (full context is loaded by --pick at run time)
-             "claim": (u["anchor"]["clause"] or u["anchor"]["sentence"])[:260]} for u in units]
+             # the claim, for report lines, and the fields an agent's claim must be verbatim in
+             # (the workflow validates every returned claim against these; --pick loads the rest)
+             "claim": (u["anchor"]["clause"] or u["anchor"]["sentence"])[:260],
+             "sent": u["anchor"]["sentence"], "cl": u["anchor"]["clause"],
+             "par": u["parenthetical"], "prose": " | ".join(u["note_prose"])} for u in units]
 
 
 def summary(units):

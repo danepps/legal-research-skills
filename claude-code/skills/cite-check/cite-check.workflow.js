@@ -104,6 +104,7 @@ const REVERIFY_MODEL = 'sonnet'
 // bundling and Id./supra pre-resolution; with them the target is 400-700k.
 const RESERVE_REPORT = 60_000
 const RESERVE_REVERIFY = 40_000
+const RESERVE_SUPPORT_AUDIT = 30_000 // kept back from the support pass so its adverse verdicts can be re-derived
 let SOFT_CAP = DEEP ? 900_000 : 650_000  // +100k (2026-09-06) for the secondary-source existence pass
 if (SUPPORT_ON) SOFT_CAP += 350_000       // the support pass reads sources the quote pass never fetched
 // budget.spent() is TURN-GLOBAL (main loop + every workflow this turn). Baseline
@@ -277,7 +278,9 @@ paraphrase) and claimBasis (anchor.sentence / anchor.clause / parenthetical / no
 locator (the page you actually read; if the pincited page does not exist or holds nothing relevant,
 say so); sourceText (verbatim, <= 400 chars) for every verdict except unverifiable/unread; reason
 (one line, claim vs source); basis; and for not_supported / contradicted, searched (the key terms
-you searched the fetched source for, and what came back).
+you searched the fetched source for, and what came back). A verdict that arrives without a
+full-text basis, a passage and a locator (or an adverse one without the search) is NOT accepted:
+the unit is reported unverifiable, so fill them.
 
 DISCIPLINE (each rule mirrors a false finding the quote pass once produced):
 - A supporting passage a page or two off the pincite is a pincite NOTE inside a supported verdict
@@ -1162,7 +1165,7 @@ let supportRan = false
 const supportSkippedUnits = []
 if (SUPPORT_ON && supportDedicated.length) {
   // Budget ladder: whole-work units first (if 'all'), then secondary sources, then skip.
-  const need = () => RESERVE_REPORT + RESERVE_REVERIFY + supportDedicated.length * PER_SUPPORT_SOURCE
+  const need = () => RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT + supportDedicated.length * PER_SUPPORT_SOURCE
   if (tight(need()) && SUPPORT_SCOPE === 'all') {
     const dropped = supportDedicated.filter((b) => b.units.every((u) => u.scope === 'whole-work'))
     supportDedicated = supportDedicated.filter((b) => !b.units.every((u) => u.scope === 'whole-work'))
@@ -1204,23 +1207,67 @@ if (SUPPORT_ON && (supportDedicated.length || foldedKeys.size)) {
     for (const v of list) for (const sv of (v.supportVerdicts || [])) supportRaw.push({ ...sv, sourceKey: v.sourceKey, sourceIdentified: v.sourceIdentified || '', basis: sv.basis || v.fetchBasis || '' })
   }
 }
-// Join verdicts to units; anything in scope with no verdict is disclosed as not checked.
+// Join verdicts to units, VALIDATING each agent result before accepting it (Codex review,
+// 2026-10-25, item 2). A result for an id outside the in-scope units, or under a source key
+// that is not the unit's, is dropped; a read verdict without a full-text basis, a source
+// passage and a locator, or an adverse verdict without the search it rests on, is not a
+// completed read: it becomes "unverifiable" with the rejection as its reason, so the unit is
+// disclosed in section I instead of counted as checked. The claim text is accepted only when
+// it occurs verbatim in the unit; otherwise the unit's own anchor is shown and the swap noted.
 const supportFindings = []
 const seenSupport = new Set()
+const supportRejected = []
 const supportSeverity = (v) => (v === 'contradicted' ? 'high' : v === 'not_supported' ? 'medium' : v === 'overstated' ? 'confirm' : 'low')
+const READ_VERDICTS = new Set(['supported', 'supported_qualified', 'overstated', 'not_supported', 'contradicted'])
+const ADVERSE_VERDICTS = new Set(['not_supported', 'contradicted'])
+const FULL_TEXT_BASES = new Set(['direct-full-text', 'authoritative-reproduction'])
+const inScopeSupportIds = new Set(supportInScope.map((u) => u.id))
+const claimBasisOf = (u, claim) => {
+  const n = norm(claim)
+  if (!n) return ''
+  for (const [field, basis] of [['cl', 'anchor.clause'], ['sent', 'anchor.sentence'], ['par', 'parenthetical'], ['prose', 'note_prose'], ['claim', 'anchor'], ['src', 'citation']]) {
+    if (u[field] && norm(u[field]).includes(n)) return basis
+  }
+  return ''
+}
+// Evidence gaps in a support result, as the agent (or the reviewer) reported it.
+const checkSupportResult = (u, r, reviewer = false) => {
+  const gaps = []
+  if (!reviewer && r.sourceKey && r.sourceKey !== u.key) gaps.push('returned under a different source key')
+  if (READ_VERDICTS.has(r.verdict)) {
+    if (!reviewer && !FULL_TEXT_BASES.has(r.basis || '')) gaps.push(`basis "${r.basis || 'unstated'}" is not full text`)
+    if (!(r.sourceText || '').trim()) gaps.push('no source passage')
+    if (!(r.locator || '').trim()) gaps.push('no locator')
+  }
+  if (ADVERSE_VERDICTS.has(r.verdict) && !(r.searched || '').trim()) gaps.push('no source search reported')
+  return gaps
+}
 for (const sv of supportRaw) {
   const u = supportUnitById.get(sv.id)
-  if (!u || seenSupport.has(sv.id)) continue
+  if (!u || !inScopeSupportIds.has(sv.id)) { supportRejected.push({ id: sv.id, footnote: u ? u.n : undefined, reason: u ? 'unit is out of scope' : 'unknown support unit id' }); continue }
+  if (seenSupport.has(sv.id)) continue
   seenSupport.add(sv.id)
-  const verdict = SUPPORT_VERDICTS.includes(sv.verdict) ? sv.verdict : 'unverifiable'
+  let verdict = SUPPORT_VERDICTS.includes(sv.verdict) ? sv.verdict : 'unverifiable'
+  let reason = sv.reason || ''
+  let rejected = false
+  const gaps = verdict === 'unread' ? [] : checkSupportResult(u, { ...sv, verdict })
+  if (gaps.length) {
+    rejected = true
+    supportRejected.push({ id: sv.id, footnote: u.n, reason: gaps.join('; ') })
+    reason = `agent result not accepted (${gaps.join('; ')})${reason ? ' — agent said: ' + reason.slice(0, 160) : ''}`
+    verdict = 'unverifiable'
+  }
+  const basis = sv.claim ? claimBasisOf(u, sv.claim) : ''
   supportFindings.push({
     id: sv.id, i: u.i, footnote: u.n, kind: u.k, signal: u.sig, pincite: u.pin, scope: u.scope,
-    source: u.src, claim: sv.claim || u.claim || '', claimBasis: sv.claimBasis || (u.claim ? 'anchor' : ''),
-    searched: sv.searched || '', sourceIdentified: sv.sourceIdentified || '',
+    source: u.src, claim: basis ? sv.claim : (u.claim || ''), claimBasis: basis || (u.claim ? 'anchor' : ''),
+    claimNote: sv.claim && !basis ? 'the agent\'s claim text was not verbatim in the unit; the unit\'s own anchor is shown' : '',
+    searched: sv.searched || '', sourceIdentified: sv.sourceIdentified || '', rejected,
     verdict, posture: sv.posture || '', locator: sv.locator || '', sourceText: sv.sourceText || '',
-    reason: sv.reason || '', basis: sv.basis || '', severity: supportSeverity(verdict),
+    reason, basis: sv.basis || '', severity: supportSeverity(verdict),
   })
 }
+if (supportRejected.length) degradation.push(`${supportRejected.length} support result(s) not accepted (missing evidence, wrong source key or unknown unit) — those units are unverifiable this run`)
 const supportNoVerdict = supportInScope.filter((u) => !seenSupport.has(u.id) && !supportSkippedUnits.some((s) => s.id === u.id))
 if (supportRan && supportNoVerdict.length) degradation.push(`${supportNoVerdict.length} support unit(s) got no verdict (agent failure or skipped ids) — listed as NOT CHECKED`)
 if (SUPPORT_ON) log(`Support: ${supportFindings.length} verdicts — ${supportFindings.filter((f) => f.verdict === 'contradicted').length} contradicted, ${supportFindings.filter((f) => f.verdict === 'not_supported').length} not supported, ${supportFindings.filter((f) => f.verdict === 'overstated').length} overstated (confirm), ${supportFindings.filter((f) => f.verdict === 'supported_qualified').length} qualified, ${supportFindings.filter((f) => f.verdict === 'supported').length} supported; ${supportNoVerdict.length} no verdict, ${supportSkippedUnits.length} skipped (budget), ${supportOutOfScope.length} out of scope.`)
@@ -1336,21 +1383,27 @@ if (supportToReverify.length && !tight(supportToReverify.length * 6000)) {
     agent(supportReverifyPrompt(f), { label: `re-verify-support:n.${f.footnote}#${f.id}`, phase: 'Re-verify', schema: SUPPORT_REVERIFY_SCHEMA, model: REVERIFY_MODEL, effort: 'medium' })))
   for (const o of outs.filter(Boolean)) supportReverified.set(o.id, o)
   const lost = supportToReverify.filter((f) => !supportReverified.has(f.id)).length
-  if (lost) degradation.push(`${lost} support finding(s) got no re-verify verdict (agent failure) — flagged as single-checker`)
+  if (lost) degradation.push(`${lost} adverse support verdict(s) got no re-verify result (agent failure) — listed as not re-derived, not as findings`)
   log(`Support re-verify: ${supportReverified.size} findings re-derived, ${[...supportReverified.values()].filter((r) => r.upheld === false).length} were checker artifacts (corrected).`)
 } else if (supportToReverify.length) {
-  degradation.push(`support re-verify skipped for ${supportToReverify.length} findings (budget) — flagged as single-checker`)
+  degradation.push(`support re-verify skipped for ${supportToReverify.length} adverse verdict(s) (budget) — listed as not re-derived, not as findings`)
 }
 for (const f of supportFindings) {
   const rv = supportReverified.get(f.id)
   if (!rv) continue
+  const corrected = SUPPORT_VERDICTS.includes(rv.verdict) ? rv.verdict : null
+  const final = rv.upheld === false ? corrected : f.verdict
+  // The reviewer's result is held to the same evidence rule as the first checker's: an upheld
+  // adverse verdict needs the reviewer's own passage and the search it rests on; a corrected
+  // read verdict needs a passage and a locator. Otherwise the finding counts as NOT re-verified.
+  const gaps = final ? checkSupportResult(supportUnitById.get(f.id), { verdict: final, sourceText: rv.sourceText, locator: rv.locator || f.locator, searched: rv.searched || f.searched }, true) : ['no valid verdict']
+  if (gaps.length) { f.reverifyGaps = gaps.join('; '); continue }
   f.reverified = true
-  const corrected = SUPPORT_VERDICTS.includes(rv.verdict) ? rv.verdict : f.verdict
-  // an "artifact" here means the finding dissolved (the cite supports the claim after all);
-  // a downgrade to overstated/qualified is a corrected verdict, not an artifact, and stays reported
-  f.artifact = rv.upheld === false && ['supported', 'supported_qualified'].includes(corrected)
+  // an "artifact" means the finding dissolved entirely (the cite supports the claim); a downgrade
+  // to overstated or qualified support is a corrected verdict that stays reported in its new place
+  f.artifact = rv.upheld === false && final === 'supported'
   f.firstVerdict = f.verdict
-  f.verdict = corrected
+  f.verdict = final
   f.severity = supportSeverity(f.verdict)
   if (rv.sourceText) f.sourceText = rv.sourceText
   if (rv.posture) f.posture = rv.posture
@@ -1358,7 +1411,12 @@ for (const f of supportFindings) {
   if (rv.searched) f.searched = rv.searched
   f.reverifyReason = rv.reason || ''
 }
-const supportByInstance = new Map(supportFindings.filter((f) => !f.artifact).map((f) => [f.i, f.verdict]))
+// The author's rule: an adverse support verdict reaches the report only after an independent
+// second derivation. One that got none (budget, a dead or evidence-less reviewer) is NOT a
+// finding: it is listed in section I as not re-derived this run, and the ledger records the
+// instance as unverifiable rather than as a support finding.
+for (const f of supportFindings) if (ADVERSE_VERDICTS.has(f.verdict) && !f.reverified) f.unaudited = true
+const supportByInstance = new Map(supportFindings.map((f) => [f.i, f.artifact ? 'supported' : f.unaudited ? 'unverifiable' : f.verdict]))
 
 // ===========================================================================
 // Citation-instance LEDGER JOIN — mirror of citation_ledger.assign_dispositions()
@@ -1571,17 +1629,19 @@ const counts = {
     unitsTotal: SUPPORT_UNITS.length,
     unitsInScope: supportInScope.length,
     unitsOutOfScope: supportOutOfScope.length,
-    unitsChecked: supportFindings.filter((f) => !['unverifiable', 'unread'].includes(f.verdict)).length,
-    supported: supportFindings.filter((f) => f.verdict === 'supported' || f.artifact).length,
-    qualified: supportFindings.filter((f) => f.verdict === 'supported_qualified' && !f.artifact).length,
+    unitsChecked: supportFindings.filter((f) => READ_VERDICTS.has(f.verdict) && !f.unaudited).length,
+    supported: supportFindings.filter((f) => f.verdict === 'supported').length, // includes retracted adverse verdicts (artifacts)
+    qualified: supportFindings.filter((f) => f.verdict === 'supported_qualified').length,
     overstated: supportFindings.filter((f) => f.verdict === 'overstated').length,
-    notSupported: supportFindings.filter((f) => f.verdict === 'not_supported').length,
-    contradicted: supportFindings.filter((f) => f.verdict === 'contradicted').length,
+    notSupported: supportFindings.filter((f) => f.verdict === 'not_supported' && !f.unaudited).length,
+    contradicted: supportFindings.filter((f) => f.verdict === 'contradicted' && !f.unaudited).length,
     unverifiable: supportFindings.filter((f) => f.verdict === 'unverifiable').length,
+    rejected: supportRejected.length,
     unread: supportFindings.filter((f) => f.verdict === 'unread').length + supportSkippedUnits.length,
     notChecked: supportNoVerdict.length,
     artifactsCaught: supportFindings.filter((f) => f.artifact).length,
-    singleChecker: supportFindings.filter((f) => ['contradicted', 'not_supported'].includes(f.verdict) && !f.reverified).length,
+    unauditedAdverse: supportFindings.filter((f) => f.unaudited).length,
+    singleChecker: supportFindings.filter((f) => f.unaudited).length, // same figure; kept for SKILL.md
   },
   history: {
     ran: historyRan,
@@ -1610,6 +1670,7 @@ const fmtFinding = (f) => {
 const fmtSupport = (f) => `- n.${f.footnote} [${f.verdict}${f.severity === 'high' ? ', HIGH' : ''}${['contradicted', 'not_supported'].includes(f.verdict) && !f.reverified ? ', SINGLE-CHECKER — not re-verified' : ''}] ` +
   `${f.signal ? f.signal + ' ' : ''}${(f.source || '').slice(0, 120)}${f.pincite ? ' at ' + f.pincite : ''}` +
   `\n    cited for (draft${f.claimBasis ? ', ' + f.claimBasis : ''}): "${(f.claim || '').slice(0, 260)}"` +
+  (f.claimNote ? `\n    note: ${f.claimNote}` : '') +
   (f.sourceText ? `\n    source says: "${f.sourceText.slice(0, 400)}"` : '') +
   (f.searched ? `\n    searched: ${f.searched.slice(0, 200)}` : '') +
   (f.posture ? `\n    posture: ${f.posture}` : '') +
@@ -1617,7 +1678,7 @@ const fmtSupport = (f) => `- n.${f.footnote} [${f.verdict}${f.severity === 'high
   (f.reason ? `\n    reason: ${f.reason}` : '') +
   (f.reverifyReason ? `\n    re-verify: ${f.reverifyReason}${f.firstVerdict && f.firstVerdict !== f.verdict ? ` (first checker said ${f.firstVerdict})` : ''}` : '') +
   `\n    basis: ${f.basis || 'unstated'}`
-const supportSec = (pred) => supportFindings.filter((f) => !f.artifact && pred(f)).map(fmtSupport).join('\n') || '(none)'
+const supportSec = (pred) => supportFindings.filter((f) => !f.artifact && !f.unaudited && pred(f)).map(fmtSupport).join('\n') || '(none)'
 
 const metaFindingsFlat = [...new Set(verifyResults.flatMap((v) => v.metadataFindings || []))]
 // Same evidence gate as the existence pass: a verify agent's metadata correction is a fix only
@@ -1719,7 +1780,8 @@ REPORT DISCIPLINE (each rule below is standing feedback from the professor on a 
   supports <claim>; it says <scope>". "supported_qualified" is advisory. Every support line keeps
   the claim (the draft's sentence or clause) and the source passage side by side; a support
   finding with no source passage is by construction unverified — move it to section I, do not
-  present it as a finding.
+  present it as a finding. An adverse support verdict listed below as NOT RE-DERIVED is not a
+  finding either: section I only, as "not checked this run — re-run", never A or H.
 
 COUNTS: ${JSON.stringify(counts)}
 
@@ -1754,7 +1816,7 @@ NOT CHECKED / NOT RESOLVED:
 ${historyUnchecked.map((h) => `- ${h.cite} — ${h.status}: ${h.coverage || h.note || ''}`).join('\n') || '(none)'}
 
 === PROPOSITION SUPPORT (section H${SUPPORT_ON ? '; contradicted items ALSO go in A' : ''}) ===
-${SUPPORT_ON ? `Pass ran: ${supportRan ? 'yes' : 'NO (' + (degradation.find((d) => /^support/.test(d)) || 'no units in scope') + ')'}; scope ${SUPPORT_SCOPE}; ${counts.support.unitsInScope} unquoted instances in scope (${counts.support.unitsOutOfScope} whole-work cites out of scope, not read); ${counts.support.unitsChecked} read; ${counts.support.artifactsCaught} first-checker findings re-derived as artifacts (EXCLUDED below).
+${SUPPORT_ON ? `Pass ran: ${supportRan ? 'yes' : 'NO (' + (degradation.find((d) => /^support/.test(d)) || 'no units in scope') + ')'}; scope ${SUPPORT_SCOPE}; ${counts.support.unitsInScope} unquoted instances in scope (${counts.support.unitsOutOfScope} whole-work cites out of scope, not read); ${counts.support.unitsChecked} read; ${counts.support.artifactsCaught} first-checker findings re-derived as artifacts (EXCLUDED below); ${counts.support.unauditedAdverse} adverse verdict(s) not re-derived (NOT findings — section I); ${counts.support.rejected} agent result(s) not accepted.
 CONTRADICTED (section A — the source says the opposite; each survived or awaits re-verify as labelled):
 ${supportSec((f) => f.verdict === 'contradicted')}
 NOT SUPPORTED (section H first list; medium):
@@ -1764,6 +1826,10 @@ ${supportSec((f) => f.verdict === 'overstated')}
 QUALIFIED SUPPORT — POSTURE (section H third list; advisory, one line each):
 ${supportSec((f) => f.verdict === 'supported_qualified')}
 SUPPORTED: ${counts.support.supported} (counts only — never list them).
+ADVERSE VERDICTS NOT INDEPENDENTLY RE-DERIVED (section I ONLY — NOT findings; one line each by footnote, "adverse support verdict not re-derived this run — re-run", naming the first checker's verdict):
+${supportFindings.filter((f) => f.unaudited).map(fmtSupport).join('\n') || '(none)'}
+AGENT RESULTS NOT ACCEPTED (section I; the unit is unverifiable this run — give the reason):
+${supportRejected.map((r) => `- n.${r.footnote ?? '?'} support unit ${r.id} — ${r.reason}`).join('\n') || '(none)'}
 UNVERIFIABLE (section I, with unlock paths):
 ${supportSec((f) => f.verdict === 'unverifiable')}
 NOT READ — out of scope (${supportOutOfScope.length} whole-work cites; one sentence) / budget (${supportSkippedUnits.length}) / agent failure (${supportNoVerdict.length}; list by footnote in section I):
@@ -1838,7 +1904,7 @@ const findingItems = [
   ...secBad.map((s) => ({ kind: 'secondary', source: s.key, label: `not found: ${s.key} ${s.note || ''}`.slice(0, 200) })),
   ...formAll.map((f) => ({ kind: 'form', location: f.location, find: f.find, problem: f.problem, label: `${f.problem} — "${(f.find || '').slice(0, 80)}"` })),
   ...historyFindings.map((h) => ({ kind: 'history', cite: h.cite, label: h.historyFinding.slice(0, 200) })),
-  ...supportFindings.filter((f) => !f.artifact && ['contradicted', 'not_supported', 'overstated'].includes(f.verdict)).map((f) => ({
+  ...supportFindings.filter((f) => !f.artifact && !f.unaudited && ['contradicted', 'not_supported', 'overstated'].includes(f.verdict)).map((f) => ({
     kind: f.verdict === 'overstated' ? 'support-confirm' : 'support', footnote: f.footnote, verdict: f.verdict, severity: f.severity,
     source: f.source, claim: f.claim, label: `${f.verdict}: ${(f.source || '').slice(0, 60)}${f.pincite ? ' at ' + f.pincite : ''} — "${(f.claim || '').slice(0, 100)}"`,
   })),
@@ -1857,6 +1923,15 @@ return {
   secondaryExistence,
   history: historyResults,        // per-case subsequent-history / treatment results (section G)
   support: supportFindings,       // per-unit proposition-support verdicts (section H; opt-in)
-  findings: { items: findingItems, support: { on: SUPPORT_ON, ran: supportRan, scope: SUPPORT_SCOPE } }, // for scripts/findings_diff.py — SKILL.md adds snapshotSha256 + date and saves it next to the report; `support` lets a later diff tell "resolved" from "not rechecked"
+  findings: {
+    items: findingItems,
+    // what the support pass actually read this run, so a later diff can tell "resolved" from
+    // "not rechecked" per item (Codex review, 2026-10-25, item 4) rather than by scope name
+    support: {
+      on: SUPPORT_ON, ran: supportRan, scope: SUPPORT_SCOPE,
+      complete: supportRan && !supportSkippedUnits.length && !supportNoVerdict.length && !supportRejected.length,
+      read: supportFindings.filter((f) => READ_VERDICTS.has(f.verdict) && !f.unaudited).map((f) => ({ source: f.source, claim: f.claim })),
+    },
+  }, // for scripts/findings_diff.py — SKILL.md adds snapshotSha256 + date and saves it next to the report; `support` lets a later diff tell "resolved" from "not rechecked"
   report: report.report,
 }

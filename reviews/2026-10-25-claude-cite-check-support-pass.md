@@ -149,3 +149,52 @@ All five existing Claude cite-check helper test programs passed at the reviewed 
 The audit, downgrade, and output-acceptance reproductions executed the relevant blocks extracted from the actual JavaScript workflow, with deterministic mocked agent/budget dependencies. The rerun-diff and library-resolution reproductions called the Python functions directly. No live research agents or real Zotero operations were used.
 
 Add the workflow reproductions to the repository's automated tests so the helper test suite cannot pass while these reporting and accounting failures remain.
+
+---
+
+## Response (Claude, 2026-10-25)
+
+All four findings were reproduced and are fixed on the branch; the pre-existing
+resolver bug is fixed too. Each fix has an offline regression check, and the workflow's
+accounting is now exercised by the suite through `scripts/workflow_harness.mjs` and
+`scripts/test_workflow_support.py` (stubbed agents, named scenarios; skipped only when
+`node` is absent).
+
+1. **Unaudited adverse conclusions.** An adverse support verdict that got no independent
+   second derivation (budget, a dead reviewer, or a reviewer whose result lacks the required
+   evidence) is marked `unaudited`: excluded from the findings items and from the
+   not-supported / contradicted counts, listed in section I as "not re-derived this run",
+   and recorded in the ledger as `support-unverifiable`, never `support-finding`. The
+   support pass now reserves audit capacity (`RESERVE_SUPPORT_AUDIT`) before spending on
+   dedicated support agents. Scenarios `budget-tight` and `lost-reviewer` in the harness
+   test cover both paths.
+2. **Agent output validation.** Every returned result is checked before acceptance: the
+   id must be an in-scope unit; a result under a different source key is rejected; a read
+   verdict needs a full-text basis, a source passage and a locator; an adverse verdict also
+   needs the search it rests on. A rejected result makes the unit `unverifiable` with the
+   rejection as its reason (section I), and `counts.support.rejected` reports how many. The
+   claim is accepted only when it occurs verbatim in the unit's own fields (clause,
+   sentence, parenthetical, footnote prose; the compact units now carry them); otherwise
+   the unit's anchor is shown and the substitution is noted. Reviewer output is held to the
+   same rule: an upheld adverse verdict needs the reviewer's own passage and a search, else
+   the finding counts as not re-verified. Scenario `bad-results` covers wrong source key,
+   out-of-scope id, no passage, citation-only basis, invented claim and a search-less
+   adverse verdict.
+3. **Qualified-support downgrade.** `artifact` now means only that the finding dissolved
+   entirely (final verdict `supported`). A downgrade to `supported_qualified` or
+   `overstated` keeps its final verdict, is counted in its own bucket, is listed in its own
+   advisory or confirm list with the first verdict named, and the ledger records the final
+   disposition. A full retraction is recorded as `supported` in the ledger and counts as
+   read. Scenarios `downgrade` and `retracted`.
+4. **Limited re-runs.** The findings export now carries `support.read` (the source and
+   claim of every unit actually read and, for adverse verdicts, audited) and
+   `support.complete`. `findings_diff.py` resolves a prior support finding only when the
+   current run read a unit with the same source and claim; otherwise it is "not rechecked".
+   Older findings files without the list fall back to the conservative rule (pass ran, same
+   scope, complete).
+
+**Resolver.** `attach_pdf.resolve_library` now applies `--library` before deciding whether
+a configuration file is needed, so an API key plus an explicit destination resolves with
+no `ZOTERO_LIBRARY_ID` and no config file; a regression check was added to
+`test_build_library.py`, and the five readback checks pass. That makes the offline suite
+green on this branch for the first time since the build-library change landed on `main`.

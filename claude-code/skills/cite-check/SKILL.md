@@ -385,8 +385,12 @@ support, findings, … }`.
   contradicted, overstated (say "to confirm", never "errors"), qualified, and how many were not
   read (`unitsOutOfScope` whole-work cites, `unread` budget skips, `notChecked` agent failures).
   If `counts.support.ran` is false, say the support pass did not run and why (`degradation`).
-  If `counts.support.artifactsCaught` is non-zero, mention it as the guardrail working; if
-  `singleChecker` is non-zero, say those support findings rest on one checker.
+  If `counts.support.artifactsCaught` is non-zero, mention it as the guardrail working. If
+  `unauditedAdverse` is non-zero, those are adverse verdicts the second check could not re-derive
+  (budget or a failed reviewer): they are listed in section I as not checked, never as findings —
+  say so and offer a targeted re-run. If `rejected` is non-zero, an agent returned a verdict
+  without the evidence the schema requires (passage, locator, full-text basis, search); those
+  units are unverifiable this run and listed in section I with the reason.
 - Present the TL;DR counts and point to the "Needs your attention" section. Mention section G in
   one sentence when `counts.history.missingHistory` or `counts.history.treatmentFlags` is non-zero
   (advisory: confirm on supremecourt.gov / Westlaw before changing a cite); if
@@ -452,7 +456,9 @@ support, findings, … }`.
   something to check. It never enters "Needs your attention" and the deliver message never calls
   it an error.
 - **A support verdict is a judgment, judged through the signal.** `not_supported` and
-  `contradicted` reach the report only after the independent second derivation (or labelled
-  single-checker when budget prevented it); a `but see` or `cf.` cite is judged for the claim its
-  signal makes; a support finding with no source passage is unverified, not a finding. The pass is
-  opt-in and the report says in one sentence when it did not run.
+  `contradicted` reach the report ONLY after the independent second derivation; one that got none
+  (budget, a failed or evidence-less reviewer) is listed in section I as not checked, never as a
+  finding. A verdict an agent returns without a full-text basis, a source passage and a locator
+  (or an adverse one without the search it rests on) is not accepted: the unit is unverifiable
+  this run. A `but see` or `cf.` cite is judged for the claim its signal makes. The pass is opt-in
+  and the report says in one sentence when it did not run.
