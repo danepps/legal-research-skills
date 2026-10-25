@@ -28,7 +28,9 @@ def without_note_number(value):
 def key_of(item):
     # Recompute; trusting a stale caller-supplied key would hide content changes.
     kind = item.get("kind", "")
-    if kind == "quote":
+    if kind == "support":
+        fields = [item.get("category"), item.get("resolved_source_label", item.get("source")), item.get("claim"), item.get("verdict")]
+    elif kind == "quote":
         fields = [kind, item.get("quote"), item.get("source"), item.get("verdict")]
     elif kind == "form":
         fields = [kind, without_note_number(item.get("find")), item.get("source"), item.get("problem")]
@@ -64,10 +66,19 @@ def snapshot(run):
             bucket.append(check["quote"])
     items = []
     for verdict in read_rows(run / "verdicts.jsonl"):
-        if verdict["status"] not in {"mismatch", "partial", "unverified"}:
+        if verdict["status"] not in {"mismatch", "partial", "unverified"} and verdict.get("category") != "support_qualified":
             continue
         unit = units[verdict["unit_id"]]
         source = sources[unit["source_id"]]["canonical_citation"]
+        if isinstance(verdict.get("support"), dict):
+            support = verdict["support"]
+            items.append({"kind": "support", "category": verdict["category"],
+                          "resolved_source_label": unit["resolved_source_label"], "source": source,
+                          "claim": support["claim"], "verdict": support["verdict"],
+                          "label": verdict["suggested_action"], "unit_id": unit["unit_id"],
+                          "footnote": unit.get("footnote_number"), "note_id": unit.get("note_id"),
+                          "paragraph_number": unit.get("paragraph_number")})
+            continue
         items.append({"kind": "quote" if unit["unit_id"] in quotes else "citation",
                       "quote": "\n".join(sorted(quotes.get(unit["unit_id"], []))), "source": source, "cite": source,
                       "verdict": verdict["category"], "find": verdict.get("draft_find_string"),
@@ -87,6 +98,11 @@ def snapshot(run):
         item["key"] = key_of(item)
     return {"schema_version": 1, "snapshotSha256": manifest["draft_sha256"],
             "date": manifest.get("created_at"), "scope": manifest["scope"],
+            **({"support_pass": manifest["support_pass"],
+            "support_complete": manifest.get("support_pass", {}).get("enabled") is True
+                and not any(manifest.get("counts", {}).get("support", {}).get(k, 0)
+                            for k in ("out_of_scope", "unread_budget", "unread_failure", "unverifiable"))}
+               if manifest.get("support_pass", {}).get("enabled") is True else {}),
             "coverage_complete": manifest.get("completion_target", manifest.get("status")) == "complete"
                 and manifest["scope"] in {"standard", "deep"},
             "items": items}
@@ -96,10 +112,13 @@ def diff(previous, current):
     before, after = index_items(previous["items"]), index_items(current["items"])
     absent = [before[k] for k in before.keys() - after.keys()]
     comparable = previous.get("coverage_complete") is True and current.get("coverage_complete") is True
+    resolved = [item for item in absent if comparable and (item.get("kind") != "support"
+                or (current.get("support_pass", {}).get("enabled") is True and current.get("support_complete") is True))]
+    not_rechecked = [item for item in absent if item not in resolved]
     return {"new": [after[k] for k in sorted(after.keys() - before.keys())],
             "still_open": [after[k] for k in sorted(after.keys() & before.keys())],
-            "resolved": sorted(absent, key=lambda r: r["key"]) if comparable else [],
-            "not_rechecked": [] if comparable else sorted(absent, key=lambda r: r["key"]),
+            "resolved": sorted(resolved, key=lambda r: r["key"]),
+            "not_rechecked": sorted(not_rechecked, key=lambda r: r["key"]),
             "renumbered": [after[k] for k in sorted(after.keys() & before.keys())
                            if [o.get("footnote") for o in before[k]["occurrences"]] != [o.get("footnote") for o in after[k]["occurrences"]]]}
 
@@ -145,3 +164,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

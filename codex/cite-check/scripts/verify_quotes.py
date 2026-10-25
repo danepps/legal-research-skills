@@ -617,10 +617,50 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]], append: bool, replace: b
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def read_pages(raw: str, request: str, first_page: int | None = None,
+               marker_follows: bool = False, limit: int = 12000) -> str:
+    """Read raw page text using exactly the matcher's boundary detection."""
+    requested = parse_pincite(request)
+    if requested is None:
+        raise ValueError("--page requires a printed page or range, for example 431-32")
+    spans, marker = page_spans(raw, marker_follows)
+    if not spans:
+        raise ValueError("No page boundaries found; search the text for the proposition's key terms.")
+    pages = []
+    if marker == "form_feed":
+        if marker_follows:
+            raise ValueError("--marker-follows requires explicit or star page markers")
+        if first_page is None:
+            raise ValueError("Form feeds require --first-page for printed pagination; otherwise search the text.")
+        chunks = raw.split("\f")
+        if not chunks[0].strip(): chunks.pop(0)
+        if chunks and not chunks[-1].strip(): chunks.pop()
+        pages = [(first_page + n, text) for n, text in enumerate(chunks)]
+    elif marker.endswith("_footer"):
+        start = 0
+        for left, right, number in spans:
+            pages.append((number, raw[start:left]))
+            start = right
+    else:
+        for index, (_, right, number) in enumerate(spans):
+            end = spans[index + 1][0] if index + 1 < len(spans) else len(raw)
+            pages.append((number, raw[right:end]))
+    available = {number for number, _ in pages}
+    low, high = requested
+    if not available or high - low + 1 > len(available) or any(n not in available for n in range(low, high + 1)):
+        extent = f"{min(available)}-{max(available)}" if available else "none"
+        raise ValueError(f"Requested page(s) {request} unavailable; available page range: {extent} (gaps may exist).")
+    text = "\n".join(f"[Page {n}]\n{body.strip()}" for n, body in pages if low <= n <= high)
+    if len(text) > limit:
+        text = text[:limit] + f"\n[TRUNCATED at {limit} characters; narrow --page or search the cached text.]"
+    return text
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source", type=Path)
     parser.add_argument("quotes", nargs="*")
+    parser.add_argument("--page", help="read a printed page or range from cached text")
     parser.add_argument("--json", dest="json_path", type=Path)
     parser.add_argument(
         "--first-page",
@@ -636,8 +676,13 @@ def main() -> int:
     if not args.source.is_file():
         parser.error(f"source file not found: {args.source}")
     try:
-        items = load_items(args)
         raw = args.source.read_text(encoding="utf-8", errors="replace")
+        if args.page:
+            if args.quotes or args.json_path or args.output or args.append or args.replace:
+                raise ValueError("--page cannot be combined with quotation/output modes")
+            print(read_pages(raw, args.page, args.first_page, args.marker_follows))
+            return 0
+        items = load_items(args)
         spans, marker = page_spans(raw, args.marker_follows)
         if args.marker_follows and not marker.endswith("_footer"):
             raise ValueError("--marker-follows requires explicit or star page markers")
@@ -685,3 +730,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

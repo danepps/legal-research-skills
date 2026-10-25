@@ -31,7 +31,16 @@ Do not comprehensively lint signals, typefaces, citation ordering, short-form st
 
 - **Focused:** specified footnotes, sources, or quotations.
 - **Standard:** the full draft; default.
-- **Deep:** Standard plus independent review of load-bearing support and all adverse findings.
+- **Deep:** Standard plus independent review of load-bearing checks and all adverse findings; it does not enable the dedicated proposition-support pass.
+
+The dedicated unquoted proposition-support pass is **opt-in**. Enable it when
+asked “check that the sources support what I cite them for,” “check proposition
+support,” or “do the signal cites hold up”; never infer it from “deep.” Add
+`--support` at initialization, and `--support-scope all` only when whole-work
+reading is requested. For a long draft, say once that this reads every pincited
+unquoted cite and costs roughly two to four times a standard run. Overstatement
+is always a low-severity confirm item, never an error or a Needs your attention
+item. The protocol's Proposition support section governs this pass.
 
 ## Run the workflow
 
@@ -57,7 +66,7 @@ Read [references/verification-protocol.md](references/verification-protocol.md) 
 
 Use `prepared-units.jsonl` as context scaffolding. Convert every citation instance—not only every quotation—into `citation-units.jsonl`.
 
-For new schema-v6 runs, reconcile every in-scope footnote in `footnote-coverage.jsonl` and every body paragraph in `body-coverage.jsonl`. Set `status: reviewed` and list the corresponding citation `unit_ids`, or use `no_citations`, an empty list, and a concrete `reason`. Body coverage inventories citations located in the body; citations appearing in footnotes remain in footnote coverage. A focused numbered-footnote run excludes body coverage and custom-marked notes. The initializer leaves coverage rows `pending`; the gate rejects omitted locations. This is a lead-reviewed inventory, not a claim that the extractor parses every citation or finds every quotation.
+For new schema-v6/v7 runs, reconcile every in-scope footnote in `footnote-coverage.jsonl` and every body paragraph in `body-coverage.jsonl`. Set `status: reviewed` and list the corresponding citation `unit_ids`, or use `no_citations`, an empty list, and a concrete `reason`. Body coverage inventories citations located in the body; citations appearing in footnotes remain in footnote coverage. A focused numbered-footnote run excludes body coverage and custom-marked notes. The initializer leaves coverage rows `pending`; the gate rejects omitted locations. This is a lead-reviewed inventory, not a claim that the extractor parses every citation or finds every quotation.
 
 Review styled block quotations and every indented `block_quote_candidates` paragraph. Record `block_quote_review` and `block_quote_reason` in body coverage. For a confirmed indentation candidate, add a prepared unit with the full quotation, `paragraph_number`, and `block_quote: true`; do the same for any other missed block or short quotation. Inspect nested quotes and source attribution. `primary_inferred_from_paragraph: true` is only a suggestion; confirm the source relationship and set the citation unit's `attribution_reviewed: true` before verifying it.
 
@@ -101,7 +110,7 @@ Use `verbatim` and `normalized` as deterministic match evidence. An `altered` re
 
 Explicit page markers use `<<pg. N>>` at the **start** of the page. For markers placed after their page, pass `--marker-follows`. For form-feed text, `--first-page` means the printed number of the first physical text segment, including any cover sheet: remove a nonpaginated cover from the working text copy or use calibrated explicit markers. Check at least one recovered page against a visible or authoritative page before relying on the mapping. Paragraph/section pins are not page numbers; record their direct confirmation in `pincite_verification`, or use `partial` and an unlock path. Review `bracket_map` alongside the complete `match_excerpt`; matching a bracket wildcard does not approve the substitution.
 
-Keep exactly one final verdict per citation unit. A quote found only in a sibling source cannot verify the source assigned to the unit; resolve the attribution or report the discrepancy. For each `partial` or `unverified` verdict, record a concrete `unlock_path`. An unavailable source also needs `reason` (or `retrieval_notes`) and `unlock_path`. List those unit/source IDs and their exact unlock paths in **Couldn't check**, and use `complete_with_limits`.
+Keep exactly one final verdict per citation unit. A quote found only in a sibling source cannot verify the source assigned to the unit; resolve the attribution or report the discrepancy. Except for a read `support_overstated` confirm item, for each `partial` or `unverified` verdict, record a concrete `unlock_path`. An unavailable source also needs `reason` (or `retrieval_notes`) and `unlock_path`. List those unit/source IDs and their exact unlock paths in **Couldn't check**, and use `complete_with_limits`.
 
 For pincites, identify the pagination convention before proposing a correction: printed page, star/header marker preceding text, or footer marker following text. Record `page_delta` as an integer when proposing a page correction. Treat an exact-one-page difference as presumptively ambiguous until independently checked against the visual page; page corrections with no recoverable delta also require an audit.
 
@@ -109,9 +118,21 @@ For pincites, identify the pagination convention before proposing a correction: 
 
 Read [references/case-review.md](references/case-review.md). Check every lower-court case for subsequent history and every case for treatment by both citation graph and caption-phrase routes. Use the history helper and the available companion treatment helper, or record equivalent direct searches. Read material hits and evaluate the draft's actual use. Reconcile one `case-review.jsonl` row per case source, including partial, skipped and unavailable passes. A skipped pass requires `complete_with_limits` and explicit disclosure; the advisory section separates required-history omissions, contradicted history, treatment flags and unchecked cases.
 
+### 4b. Read unquoted proposition support (only when enabled)
+
+Confirm the screening fields in `citation-screening.jsonl` on citation units,
+including signal, pin, proposition parenthetical and disclosed opinion posture.
+Record resolved cross-references and immediate Id. antecedents, and link every
+prepared quotation before building support units. Run
+`scripts/prepare_support_units.py RUN_DIR`. Read in-scope units by source bundle
+using the existing cache and `verify_quotes.py SOURCE.txt --page N`. Apply the
+protocol's signal-relative judgments, budget ladder and support verdict fields.
+Retain out-of-scope whole works; record every unread unit and reason. Do not trade
+independent audits for support coverage.
+
 ### 5. Verify the verifier
 
-Independently reconstruct every critical/high adverse finding, every `not_found_in_sources_checked`, and every exact-one-page pincite correction from:
+Independently reconstruct every support_mismatch (including medium), every support_contradicted, every critical/high adverse finding, every `not_found_in_sources_checked`, and every exact-one-page pincite correction from:
 
 1. the complete footnote and body context;
 2. the verbatim draft citation and find string;
@@ -120,9 +141,20 @@ Independently reconstruct every critical/high adverse finding, every `not_found_
 
 Write `confirmed`, `revised`, or `retracted` to `verifier-audit.jsonl`. When one audit relocates a passage, reconcile sibling units from the same sentence or footnote before reporting.
 
+For adverse support findings, independently re-read the page with the full unit
+and explain all six named artifact classes in audit evidence. Record the initial
+support verdict and retain retracted/revised audit rows after replacing the final
+verdict. Follow the exact protocol dispositions.
+
 ### 6. Write and publish the report
 
 Write the canonical report to `<run-dir>/report.md`. Put genuine findings first; do not put cleared suspicions, near-findings, or internal deliberation in “Needs your attention.” Then include the history/treatment advisory, complete footnote ledger and limitations. State the existence-only share of citation instances using the exact summary sentence in the ledger reference; count instances, not unique sources.
+
+When support is enabled, run `prepare_support_units.py RUN_DIR --refresh-counts`
+and place its exact summary after the existence-only sentence. Follow the
+protocol's report section order, adding Proposition support after history and
+treatment. Otherwise say the dedicated pass did not run because it is opt-in.
+Overstatement belongs only under Confirm: possible overstatement, not errors.
 
 Save `findings.json` beside the hidden `report.md` with:
 
@@ -175,3 +207,4 @@ Before running the gate, set manifest `status` to `ready_for_validation`, set `c
 - If resources tighten, prioritize quotations, load-bearing propositions, broken cross-references, identity, and metadata, and disclose the exact degraded scope.
 - Preserve ledgers so the run can resume; never sacrifice adverse-finding audits.
 - Keep the lead agent responsible for resolution, grouping, severity, conflict resolution, audits, and publication. Delegate only bounded source bundles when parallel work is available and proportionate; do not recursively delegate.
+

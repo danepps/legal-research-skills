@@ -1,5 +1,19 @@
 # Codex plugin changes
 
+## 1.5.0 — 2026-10-25
+
+- Add an opt-in proposition-support pass to cite-check, with schema-v7 support
+  ledgers, deterministic footnote anchors and citation screening, inherited Id.
+  pins, bounded cached-page reading, and exact reconciled coverage counts.
+- Judge each unquoted citation through its signal and disclosed opinion posture.
+  Overstatement is a low-severity confirm item, never an error. Independently
+  re-derive every not-supported and contradicted finding before reporting.
+- Keep default runs on schema v6, including deep runs. Whole-work reading requires
+  explicit scope `all`; unread and unavailable instances remain disclosed.
+- Key support rerun findings by category/source/claim/verdict, preserving absent
+  findings as not rechecked when the pass is disabled or limited.
+- Add offline extraction, screening, page-reader, support-ledger and gate tests.
+
 ## 1.4.0 — 2026-10-19
 
 - Add cite-check subsequent-history and treatment advisories, a bounded RECAP
@@ -67,3 +81,4 @@
 
 - Package the six maintained Codex skills as a native marketplace plugin while
   preserving the manual installation paths.
+

@@ -34,6 +34,8 @@ def main() -> int:
         choices=("matched_pair", "markdown_only", "docx_only"),
         default="markdown_only",
     )
+    parser.add_argument("--support", action="store_true", help="opt in to unquoted proposition-support review")
+    parser.add_argument("--support-scope", choices=("pincited", "all"), default="pincited")
     parser.add_argument("--min-quote-words", type=int, default=8)
     parser.add_argument("--footnotes", nargs="+", help="Focused footnote numbers or inclusive ranges")
     args = parser.parse_args()
@@ -63,6 +65,12 @@ def main() -> int:
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in prepared),
         encoding="utf-8",
     )
+    if args.support:
+        from support_screen import screen_extraction
+        (args.run_dir / "citation-screening.jsonl").write_text(
+            "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in screen_extraction(extraction)
+                    if selected_footnotes is None or row.get("footnote_number") in selected_footnotes), encoding="utf-8")
+        (args.run_dir / "support-units.jsonl").touch()
     now = datetime.now(timezone.utc).isoformat()
     coverage = [
         {"footnote_number": row["number"], "note_id": row.get("note_id"), "status": "pending", "unit_ids": []}
@@ -78,7 +86,8 @@ def main() -> int:
                 if selected_footnotes is None), encoding="utf-8",
     )
     manifest = {
-        "schema_version": 6,
+        "schema_version": 7 if args.support else 6,
+        "support_pass": {"enabled": True, "scope": args.support_scope} if args.support else {"enabled": False},
         "draft_path": str(snapshot.resolve()),
         "original_draft_path": str(args.draft.resolve()),
         "draft_sha256": extraction["input_sha256"],
@@ -103,3 +112,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

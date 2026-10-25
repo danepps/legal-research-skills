@@ -118,7 +118,7 @@ Read the [ledger field reference](ledger-fields.md) before writing rows; it list
 - `report.md`: canonical report; `report.docx` is an optional synchronized derivative.
 - `docx-verification.json`: for a requested DOCX, Markdown and DOCX hashes, OOXML-part and XML-parse results, extracted-text counts, explicit no-office-app status, and the visual-layout limitation.
 
-Use stable IDs and exactly one final verdict per citation unit. Keep evidence structured as strings or arrays. Never omit evidence from an adverse verdict. `partial` and `unverified` verdicts require `unlock_path`; unavailable source rows require `reason` or `retrieval_notes` plus `unlock_path`. List their unit/source IDs and exact unlock paths in the report's **Couldn't check** section. These items require `complete_with_limits`. Record page-correction `page_delta` as an integer (numeric strings are accepted for compatibility); an exact-one-page delta or an unspecified page delta requires an audit.
+Use stable IDs and exactly one final verdict per citation unit. Keep evidence structured as strings or arrays. Never omit evidence from an adverse verdict. `partial` and `unverified` verdicts (except a read v7 `support_overstated` confirm item) require `unlock_path`; unavailable source rows require `reason` or `retrieval_notes` plus `unlock_path`. List their unit/source IDs and exact unlock paths in the report's **Couldn't check** section. These items require `complete_with_limits`. Record page-correction `page_delta` as an integer (numeric strings are accepted for compatibility); an exact-one-page delta or an unspecified page delta requires an audit.
 
 ## 6. Report and completion rules
 
@@ -129,3 +129,133 @@ Order the report: title and provenance; **Since the last report** on re-runs; sc
 A ready schema-v3/v4/v5/v6 run requires every prepared quotation to have a linked quote-check record; every verified quotation to have a deterministic `verbatim`, `normalized`, or reviewed `altered` match in the unit's assigned source; every unit to have exactly one verdict with a valid status and severity; every source to disclose basis; every source/unit reference to resolve; every adverse draft find string to occur in the extraction; every critical/high adverse verdict, `not_found_in_sources_checked`, and exact-one-page or unspecified-page-delta correction to have an audit; no stale draft or cached-source hash; and complete provenance. Schemas v4/v5 also require footnote coverage reconciliation and verbatim full-footnote linkage to extraction. A requested DOCX needs a synchronized, passed structural `docx-verification.json` record that states visual layout was not rendered and no office application was launched; check that derivative separately with `--require-ready --require-docx` after the Markdown gate. Missing or failed DOCX output never blocks audited Markdown, including for legacy `matched_pair` or `docx_only` manifests. Keep status `ready_for_validation` until the validator atomically marks it complete. `complete_with_limits` is required when any items are partially checked or unavailable, and their IDs and unlock paths must be listed. Schema v5 additionally requires body coverage and review of indented block candidates; custom marks retain stable note IDs, and extraction blockers prevent publication. Schema-v2/v3 runs remain readable without the footnote coverage file; they receive the stricter verdict, audit, and limitation checks but cannot claim schema-v4 coverage. Schema-v4 runs remain readable without body coverage. To obtain current coverage, initialize a schema-v6 run from the draft and review both coverage ledgers against its frozen extraction.
 
 Schema v6 adds reconciled case-review coverage, per-instance `identity_confirmed` and `support_read`, the accurate existence-only sentence, actual-speaker fields for misattribution, and a findings snapshot matching the final ledgers. Schemas v2–v5 retain their existing gates; they cannot claim v6 coverage. Initialize v6 for the new checks.
+
+
+## Proposition support (opt-in)
+
+This dedicated pass is off by default, including in `deep` runs. Enable it only
+when the user asks whether sources support what they are cited for, asks to
+“check proposition support,” or asks “do the signal cites hold up.” On a long
+draft, say once that reading every pincited unquoted cite costs roughly two to
+four times a standard run. Initialize with `--support`; whole-work reading also
+requires `--support-scope all`. Quotation matching and its alteration/framing
+review remain unchanged.
+
+### What the draft claims
+
+Use `anchor.sentence`, or `anchor.clause` for a mid-sentence marker. Read the
+preceding sentence and the full footnote. Footnote prose that states the
+proposition (“For the contrary view, see ...”) governs. A proposition
+parenthetical states precisely what that source is cited for: check it. An
+`opinion_note` supplied by the draft is its disclosed posture, not a defect.
+Use the draft's verbatim words and hedges (“arguably”, “has suggested”); never
+substitute a stronger paraphrase and find that unsupported. A missing anchor is
+a disclosed limit; use a real parenthetical or note proposition, or leave the
+unit unverifiable with a concrete unlock path.
+
+### Read the claim through the signal (Bluebook R. 1.2)
+
+- No signal, `see`, `see, e.g.`, `accord`, `e.g.`: directly states or clearly
+  implies the proposition. `e.g.` suggests others do too; check only this source.
+- `see also`: additional support, with the same test.
+- `cf.`: a different, analogous proposition; judge whether the analogy is fair,
+  never whether the page literally states the draft's sentence.
+- `compare ... with`: judge each side against what the comparison implies about it.
+- `see generally`: background; topic coverage at the level claimed suffices.
+  Never reject merely because the page does not state the sentence.
+- `but see`, `but cf.`, `contra`: contrary authority (by analogy for `cf.`).
+  A `but see` source that does not contradict the proposition is `not_supported`
+  because the citation fails its job, never `contradicted`.
+
+### Verdicts and reading discipline
+
+| Support verdict | Status / category / severity | Report placement |
+|---|---|---|
+| supported | verified / verified_support / info | Counts only |
+| supported_qualified | verified / support_qualified / info | Qualified support (posture), advisory |
+| overstated | partial / support_overstated / low | Confirm: possible overstatement |
+| not_supported | mismatch / support_mismatch / medium | Not supported (fix or re-cite) |
+| contradicted | mismatch / support_contradicted / high | Needs your attention |
+| unverifiable | unverified / source_unavailable / info | Couldn't check, with unlock_path |
+
+`overstated` is a confirm item, never an error, never medium or higher, and never
+in **Needs your attention**. Give the actual narrower scope and passage: one court
+for “courts uniformly hold”, “may” for “must”, or a fact-bound holding for a general
+rule. The partial status here describes a judgment of scope, not an unread source;
+it does not by itself require `complete_with_limits` or an unlock path.
+
+`supported_qualified` covers undisclosed dicta, concurrence/dissent, plurality,
+arguendo assumptions, syllabus, a party's argument recited by the court, or an
+author reporting another's view. Name the posture. Honor any disclosed
+`opinion_note`; do not call it undisclosed. Scholarship cited for “scholars argue
+X” can be supported by reporting X; cited for X itself, a merely reported view is
+qualified support.
+
+Read the cited page with `verify_quotes.py SOURCE.txt --page 431-32`, adding
+`--first-page` for form feeds or `--marker-follows` for footers as appropriate.
+Do not infer page placement by eyeballing stars or footers. If no boundaries
+exist, search the text and state that limitation in `locator_read`. For sections,
+paragraphs and URLs, open the exact locator directly. A passage a page or two off
+the pin is `supported` with a locator note, not `not_supported`. This support
+judgment does not certify the original pin: the v7 support object records the
+locator actually read and its difference from the cited pin. The separate
+`pincite_verification` gate remains unchanged for quotations and v6 runs.
+
+`not_supported` requires the pincited page read and a search for the proposition's
+key terms; record `support.source_search: {"terms": [...], "result": "..."}`.
+Say what the page does discuss. `contradicted` requires those same steps, the full
+footnote in view, and the opposite passage verbatim, judged through the signal.
+Every read result records a verbatim source passage of at most 400 characters,
+locator, posture and reason. Never judge from memory. Post-training sources are
+real; paywalls and bot walls yield `unverifiable`, not guesses. Unverifiable
+attempts have `support_read: false` and an unlock path, so they do not inflate the
+read count or bypass the existing full-text gate.
+
+### Source bundles, cost and independent review
+
+After quotation/source bundling and before auditing, prepare support units.
+Reuse the same cached source text; retrieve each new source only once. Keep the
+three-mirror and two-bot-wall limits. Under budget pressure, drop whole-work units
+first (scope `all`), then secondary sources while keeping cases, then the dedicated
+retrieval pass. Still judge units in already-retrieved sources. Record every
+skipped unit with `unread_reason: budget` and disclose each degradation; use
+`agent_failure` for failed workers. Never sacrifice audits to expand coverage.
+
+Every `not_supported` and `contradicted` finding requires an independent second
+derivation from the entire unit and re-read page. Record reviewer identity,
+`independent_rederivation: true`, `page_reread`, and an evidence object explaining
+each of these six artifact classes by its exact key:
+
+- `paraphrased claim`: did the first checker strengthen the draft's hedges/framing?
+- `signal misread`: was analogy, background, contrary authority or comparison
+  incorrectly treated as direct support?
+- `clause vs sentence`: did a mid-sentence marker or the footnote's prose narrow
+  the proposition?
+- `wrong antecedent / wrong page`: correct Id. source and pagination convention?
+- `nearby passage`: is support a page or two away, requiring only a locator note?
+- `posture`: does a different posture mean qualified support, or a narrower
+  holding mean overstatement, rather than contradiction?
+
+Record `initial_support_verdict` in the audit. `confirmed` retains the adverse
+verdict; `retracted` replaces it with supported; `revised` downgrades it to
+`overstated` or `supported_qualified`. Update the single final verdict in place.
+A retraction is counted but not presented as a live finding.
+
+### Report
+
+Order: title/provenance; Since the last report; scope/method; counts; Needs your
+attention; other confirmed corrections; Subsequent history & treatment;
+**Proposition support**; full footnote ledger; Couldn't check; method limits.
+Put the exact support sentence immediately after the unchanged existence-only
+sentence. When disabled, say “The proposition-support pass did not run because
+it is opt-in.” Existing v6 reports retain their validation contract.
+
+Within Proposition support use **Not supported (fix or re-cite)**, **Confirm:
+possible overstatement**, **Qualified support (posture)**, and not-read/unverifiable
+subsections. Give one concise line per item with claim and source passage side by
+side, signal, locator read and posture; phrase overstatement as a question to
+confirm, never an error. Supported items appear only in counts. Contradictions
+appear in Needs your attention. Disclose unread IDs and reasons and unavailable
+unlock paths. State that support verdicts are judgments, that the pass read
+pincited citations (whole works only on scope `all`), and that adverse support
+verdicts were independently re-derived.
