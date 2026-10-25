@@ -108,6 +108,29 @@ def _signal_split(clause):
     return out
 
 
+def _split_compare_with(clause):
+    """Keep both authorities in 'Compare A, with B' as support units.
+
+    Without this split, classify() treats B as an incidental nested case and
+    prepare_support_units.py silently drops it. The connection is recorded as
+    'compare with' on the second authority, not as a direct-support citation.
+    Do not split on 'with' inside a parenthetical.
+    """
+    if not re.match(r"^compare\s+", clause, re.IGNORECASE):
+        return [clause]
+    for m in re.finditer(r"\bwith\s+(?=[A-Z])", clause, re.IGNORECASE):
+        before = clause[:m.start()]
+        if before.count("(") != before.count(")"):
+            continue
+        if before.count('"') % 2:
+            continue
+        left = before.rstrip(" ,")
+        right = clause[m.end():].strip()
+        if left and right:
+            return [left, "compare with " + right]
+    return [clause]
+
+
 def split_clauses(text):
     text = re.sub(r"^\s*\.?\s*", "", text or "")  # Word's leading ". "
     clauses = []
@@ -115,7 +138,7 @@ def split_clauses(text):
         for c in _signal_split(part):
             c = c.strip()
             if c:
-                clauses.append(c)
+                clauses.extend(_split_compare_with(c))
     return clauses
 
 
@@ -164,7 +187,7 @@ def supra_name_keys(outer):
 # claim manufactures a false finding, so the signal is recorded per instance.
 SIGNAL_RE = re.compile(
     r"^(see,?\s+e\.g\.,?|see\s+also|see\s+generally|but\s+see|but\s+cf\.|cf\.|see|"
-    r"compare|accord|contra|e\.g\.,?)(?=[\s,])", re.IGNORECASE)
+    r"compare\s+with|compare|accord|contra|e\.g\.,?)(?=[\s,])", re.IGNORECASE)
 
 
 def signal_of(clause):
