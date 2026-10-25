@@ -299,6 +299,8 @@ rc, out, err = _page("page one\fpage two\fpage three", ["--page", "816", "--firs
 check("form feeds: --first-page maps printed numbers", rc == 0 and "page two" in out and "page one" not in out)
 rc, out, err = _page("page one\fpage two\fpage three", ["--page", "900", "--first-page", "815"])
 check("a page outside the file exits 1 and names the range", rc == 1 and "815" in err and "817" in err)
+rc, out, err = _page("intro text on the first page *431 four thirty-one *432 four thirty-two *433 x", ["--page", "430"])
+check("the text before the first star marker is page first-1, readable with --page", rc == 0 and "intro text" in out and "four thirty-one" not in out)
 rc, out, err = _page("no markers here at all", ["--page", "5"])
 check("no page boundaries -> exit 1 with advice", rc == 1 and "no page boundaries" in err)
 

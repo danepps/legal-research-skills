@@ -272,9 +272,12 @@ VERDICTS (one per unit):
   Requires the FULL footnote in view and the contradicting passage verbatim in sourceText.
 - unverifiable — the source could not be fetched or read; give the unlock path in reason.
 - unread — a unit you deliberately did not read (whole-work scope / budget); say so.
-Per unit, always fill: posture; locator (the page you actually read; if the pincited page does not
-exist or holds nothing relevant, say so); sourceText (verbatim, <= 400 chars) for every verdict
-except unverifiable/unread; reason (one line, claim vs source); basis.
+Per unit, always fill: claim (the proposition you judged, VERBATIM from the unit — never your
+paraphrase) and claimBasis (anchor.sentence / anchor.clause / parenthetical / note_prose); posture;
+locator (the page you actually read; if the pincited page does not exist or holds nothing relevant,
+say so); sourceText (verbatim, <= 400 chars) for every verdict except unverifiable/unread; reason
+(one line, claim vs source); basis; and for not_supported / contradicted, searched (the key terms
+you searched the fetched source for, and what came back).
 
 DISCIPLINE (each rule mirrors a false finding the quote pass once produced):
 - A supporting passage a page or two off the pincite is a pincite NOTE inside a supported verdict
@@ -412,6 +415,9 @@ const SUPPORT_VERDICT_ITEM = {
     locator: { type: 'string', description: 'the page/section you actually read, and any offset from the pincite ("passage at 437, cited 436")' },
     sourceText: { type: 'string', description: 'the source passage, VERBATIM (<= 400 chars) — the evidence for the verdict; required for every verdict except unverifiable/unread' },
     reason: { type: 'string', description: 'one line: what the draft claims (through its signal) vs what the source says' },
+    claim: { type: 'string', description: 'the proposition you actually judged, VERBATIM from the unit (anchor.clause, anchor.sentence, the parenthetical, or the footnote\'s own prose) — never a paraphrase' },
+    claimBasis: { type: 'string', enum: ['anchor.sentence', 'anchor.clause', 'parenthetical', 'note_prose'], description: 'where the claim came from' },
+    searched: { type: 'string', description: 'not_supported / contradicted only: the key terms you searched the fetched source for, and what came back' },
     basis: { type: 'string', enum: ['direct-full-text', 'authoritative-reproduction', 'secondary-corroboration', 'citation-only', 'not-fetched'] },
   },
 }
@@ -439,6 +445,7 @@ const SUPPORT_REVERIFY_SCHEMA = {
     posture: { type: 'string' },
     locator: { type: 'string' },
     sourceText: { type: 'string' },
+    searched: { type: 'string', description: 'the key terms you searched the source for, and what came back' },
     reason: { type: 'string', description: 'why the original stands or was an artifact — name the artifact class (paraphrased-claim / signal-misread / wrong-antecedent / wrong-page / clause-vs-sentence / footnote-prose / posture)' },
   },
 }
@@ -1208,7 +1215,8 @@ for (const sv of supportRaw) {
   const verdict = SUPPORT_VERDICTS.includes(sv.verdict) ? sv.verdict : 'unverifiable'
   supportFindings.push({
     id: sv.id, i: u.i, footnote: u.n, kind: u.k, signal: u.sig, pincite: u.pin, scope: u.scope,
-    source: u.src, claim: u.claim || '', sourceIdentified: sv.sourceIdentified || '',
+    source: u.src, claim: sv.claim || u.claim || '', claimBasis: sv.claimBasis || (u.claim ? 'anchor' : ''),
+    searched: sv.searched || '', sourceIdentified: sv.sourceIdentified || '',
     verdict, posture: sv.posture || '', locator: sv.locator || '', sourceText: sv.sourceText || '',
     reason: sv.reason || '', basis: sv.basis || '', severity: supportSeverity(verdict),
   })
@@ -1347,6 +1355,7 @@ for (const f of supportFindings) {
   if (rv.sourceText) f.sourceText = rv.sourceText
   if (rv.posture) f.posture = rv.posture
   if (rv.locator) f.locator = rv.locator
+  if (rv.searched) f.searched = rv.searched
   f.reverifyReason = rv.reason || ''
 }
 const supportByInstance = new Map(supportFindings.filter((f) => !f.artifact).map((f) => [f.i, f.verdict]))
@@ -1600,8 +1609,9 @@ const fmtFinding = (f) => {
 
 const fmtSupport = (f) => `- n.${f.footnote} [${f.verdict}${f.severity === 'high' ? ', HIGH' : ''}${['contradicted', 'not_supported'].includes(f.verdict) && !f.reverified ? ', SINGLE-CHECKER — not re-verified' : ''}] ` +
   `${f.signal ? f.signal + ' ' : ''}${(f.source || '').slice(0, 120)}${f.pincite ? ' at ' + f.pincite : ''}` +
-  `\n    cited for (draft): "${(f.claim || '').slice(0, 260)}"` +
+  `\n    cited for (draft${f.claimBasis ? ', ' + f.claimBasis : ''}): "${(f.claim || '').slice(0, 260)}"` +
   (f.sourceText ? `\n    source says: "${f.sourceText.slice(0, 400)}"` : '') +
+  (f.searched ? `\n    searched: ${f.searched.slice(0, 200)}` : '') +
   (f.posture ? `\n    posture: ${f.posture}` : '') +
   (f.locator ? `\n    locator: ${f.locator}` : '') +
   (f.reason ? `\n    reason: ${f.reason}` : '') +

@@ -153,6 +153,21 @@ check(cl.proposition_parenthetical("THE FEDERALIST NO. 10 (James Madison) (Jacob
 check(cl.proposition_parenthetical("X, 1 U.S. 2, 3 (2000) (holding that the clause applies to the states).") == "holding that the clause applies to the states", "'holding that' parenthetical still captured")
 check(cl.proposition_parenthetical("X, 1 U.S. 2, 3 (2000) (the rule applies only to federal officers).") == "the rule applies only to federal officers", "a verbless proposition parenthetical of 3+ words still captured")
 
+print("clause splitting after a citation (Codex review, 2026-10-25)")
+cs = cl.split_clauses("See A v. B, 1 U.S. 2 (2000). For the contrary view, see C v. D, 2 U.S. 3 (2001).")
+check(len(cs) == 2 and cl.classify(cs[1])[0] == "case" and cl.signal_of(cs[1]) == "see",
+      "a sentence break after a cite starts a new clause; the prose-prefixed cite keeps its signal (%s)" % [c[:30] for c in cs])
+cs = cl.split_clauses("Doe, supra note 3, at 50. For the contrary view, see Roe, supra note 3, at 52.")
+check(len(cs) == 2 and cl.classify(cs[1])[0] == "supra", "same after a pincite: the second supra is its own instance")
+cs = cl.split_clauses("Smith v. Jones, 1 U.S. 2 (2000). This case is important. Id. at 5.")
+check([cl.classify(c)[0] for c in cs] == ["case", "text", "id"], "prose between cites becomes a text clause (%s)" % [cl.classify(c)[0] for c in cs])
+check(len(cl.split_clauses("McCulloch v. Maryland, 17 U.S. (4 Wheat.) 316, 431 (1819).")) == 1, "a parallel-reporter parenthetical does not split")
+check(len(cl.split_clauses("Smith v. Jones, 1 U.S. 2, 3 (2000) (holding that X. The court said so).")) == 1, "a sentence break inside a parenthetical does not split")
+print("rule and code locators")
+for c, want in (("Fed. R. Civ. P. 12(b)(6).", "12(b)(6)"), ("See Fed. R. Evid. 403.", "403"), ("Sup. Ct. R. 10(a).", "10(a)"), ("42 U.S.C. 1983.", "1983"), ("42 U.S.C. § 1983(a).", "§ 1983(a)")):
+    k = cl.classify(c)[0]
+    check(k == "statute" and cl.locate(c, k) == want, "%r -> statute at %r (got %s, %r)" % (c, want, k, cl.locate(c, k)))
+
 print("support dispositions (reference implementation)")
 L2 = json.loads(json.dumps(L))
 case_ex = {"17 U.S. 316": {"exists": True}, "5 U.S. 137": {"exists": True}, "3 U.S. 171": {"exists": True}}

@@ -50,6 +50,11 @@ from extract_cites import (MIN_QUOTE_WORDS, QUOTE_PAT, REPORTER_ANY, SIGNAL_PREF
 _SIGNAL_AFTER_PERIOD = re.compile(
     r"(?<!\bcf)(?<!\be\.g)\.\s+(?=(?:See|Cf\.|But\s+(?:see|cf\.)|Compare|Accord|Contra|"
     r"E\.g\.,|Id\.)[\s,])")
+# A sentence break right after a citation (a closing parenthetical or a page number,
+# then ". " and a capital) also ends the clause: "See A, 1 U.S. 2 (2000). For the contrary
+# view, see B ..." used to stay one clause, which made B a nested cite and dropped it from
+# the support units (Codex review, 2026-10-25).
+_SENTENCE_AFTER_CITE = re.compile(r"(?<=[)\d])\.\s+(?=[A-Z])")
 
 # SIGNAL_PREFIX (a Bluebook signal that may sit in front of "id.") is shared
 # with extract_cites.py's leading_id so the two never disagree.
@@ -64,7 +69,7 @@ INTERNAL = re.compile(
     re.IGNORECASE)
 PLACEHOLDER = re.compile(r"(?:^|\s)_{1,3}(?:\s|\.|,|$)")
 SHORT_CASE = re.compile(r"\b(\d{1,4})\s+(%s)\s+at\s+\d{1,4}\b" % REPORTER_ANY)
-STATUTE = re.compile(r"U\.\s?S\.\s?C\.|C\.\s?F\.\s?R\.|\bStat\.\s+\d|§|U\.S\.\s+Const\.|Fed\.\s+R\.")
+STATUTE = re.compile(r"U\.\s?S\.\s?C\.|C\.\s?F\.\s?R\.|\bStat\.\s+\d|§|U\.S\.\s+Const\.|Fed\.\s+R\.|\bR\.\s+\d")
 URL = re.compile(r"https?://|www\.")
 # "110 Harv. L. Rev. 815" — volume, abbreviated journal (must contain a period), page.
 JOURNAL = re.compile(r"\b(\d{1,4})\s+((?:[A-Z][A-Za-z'&]*\.?\s+){1,7}?)(\d{1,5})\b")
@@ -97,13 +102,18 @@ def _depth_split(text, sep=";"):
 
 
 def _signal_split(clause):
-    """Split at ". See ..." style breaks that sit outside parentheses."""
+    """Split at ". See ..." style breaks, and at a sentence break that follows a
+    citation, when they sit outside parentheses."""
     out, start = [], 0
-    for m in _SIGNAL_AFTER_PERIOD.finditer(clause):
-        if clause[:m.start()].count("(") > clause[:m.start()].count(")"):
+    breaks = sorted({(m.start(), m.end()) for pat in (_SIGNAL_AFTER_PERIOD, _SENTENCE_AFTER_CITE)
+                     for m in pat.finditer(clause)})
+    for b0, b1 in breaks:
+        if b0 < start:
+            continue
+        if clause[:b0].count("(") > clause[:b0].count(")"):
             continue  # inside a parenthetical
-        out.append(clause[start:m.start() + 1])
-        start = m.end()
+        out.append(clause[start:b0 + 1])
+        start = b1
     out.append(clause[start:])
     return out
 
@@ -218,6 +228,10 @@ AT_PIN = re.compile(r"(?:(?<=[,.])|^)\s*at\s+" + _PIN_TAIL)
 CASE_PIN = re.compile(r"\b\d{1,4}\s+(?:%s)\s+(?:\([^)]{1,24}\)\s+)?\d{1,4},\s*" % REPORTER_ANY
                       + _PIN_TAIL)
 SECTION_PIN = re.compile(r"§§?\s*[\w.\-–]+(?:\([\w]+\))*")
+# a rule number ("Fed. R. Civ. P. 12(b)(6)", "Fed. R. Evid. 403", "Sup. Ct. R. 10(a)") and
+# an unsectioned code cite ("42 U.S.C. 1983") are locators too
+RULE_PIN = re.compile(r"\bR\.\s+(?:[A-Z][a-z]*\.\s+)*(\d+[A-Za-z]?(?:\([\w]+\))*)")
+USC_PIN = re.compile(r"U\.\s?S\.\s?C\.\s+(\d+[A-Za-z]?(?:[\-–]\d+)?(?:\([\w]+\))*)")
 PARA_PIN = re.compile(r"¶¶?\s*\d+(?:\s*[–-]\s*\d+)?")
 # a page right before the year/edition parenthetical ("Finance 45 (2d ed. 2010)") — never a
 # docket or volume number ("No. 19-123 (S.D.N.Y. 2020)", "Vol. 3 (1990)")
@@ -238,7 +252,11 @@ def locate(clause, kind):
             return _clean(m.group(1))
     if kind == "statute":
         m = SECTION_PIN.search(clause)
-        return _clean(m.group(0)) if m else ""
+        if m:
+            return _clean(m.group(0))
+        # on the clause itself: the subsection parentheticals "(b)(6)" are part of the locator
+        m = RULE_PIN.search(clause) or USC_PIN.search(clause)
+        return _clean(m.group(1)) if m else ""
     m = PARA_PIN.search(outer)
     if m:
         return _clean(m.group(0))
