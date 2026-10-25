@@ -247,8 +247,9 @@ READ THE CLAIM THROUGH THE SIGNAL (Bluebook R. 1.2) — the verdict is relative 
 - see also — additional support; same test.
 - cf. — the source supports a DIFFERENT proposition that is analogous; the question is whether
   the analogy is fair, never whether the source says the sentence.
-- compare ... with — a comparison; the question is whether each side says what the comparison
-  implies about it.
+- compare ... with — a comparison; each side is its own unit (signal "compare" for the first
+  authority, "compare with" for the second); the question is whether that side says what the
+  comparison implies about it, read with the other side in view (same footnote).
 - see generally — background; supported if the source treats the topic at the level the draft
   suggests. NEVER not_supported merely because the page does not state the sentence.
 - but see / but cf. / contra — cited as CONTRARY authority; the test is whether it actually

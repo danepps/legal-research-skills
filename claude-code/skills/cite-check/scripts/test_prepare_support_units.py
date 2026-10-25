@@ -86,7 +86,9 @@ check(by_note[4][0]["signal"] == "cf." and by_note[4][0]["pincite"] == "§ 1983"
 check(by_note[4][1]["signal"] == "see generally" and by_note[4][1]["pincite"] == "822", "'see generally Doe, supra note 3, at 822' -> see generally, own pincite 822")
 check([x["kind"] for x in by_note[6]] == ["text", "supra"], "n.6 splits into prose / Roe supra (%s)" % [x["kind"] for x in by_note[6]])
 check(by_note[6][1]["opinion_note"] == "Thomas, J., concurring" and by_note[6][1]["pincite"] == "50", "separate-opinion note + page captured on the Roe supra")
-check(by_note[8][0]["signal"] == "compare" and by_note[8][0]["pincite"] == "821", "'Compare ... at 821, with ...' -> compare, first pincite")
+check([x["signal"] for x in by_note[8]] == ["compare", "compare with"], "'Compare A, with B' splits into two instances with signals compare / compare with (%s)" % [x["signal"] for x in by_note[8]])
+check(by_note[8][0]["pincite"] == "821" and by_note[8][1]["pincite"] == "52", "each side of the comparison keeps its own pincite")
+check(by_note[8][1]["xref_status"] == "resolved" and inst[by_note[8][1]["xref_final"]]["text"].startswith("but see John Roe"), "'compare with Roe, supra note 3' resolves to the Roe book (signal words stripped from the name key)")
 ck = cl.compact(L)[2]
 check(ck["s"] == "see also" and ck["pin"] == "177" and ck["par"] is True, "compact form carries s / pin / par")
 
@@ -113,6 +115,8 @@ check(n6u[0]["note_prose"] == ["Scholars disagree."], "the footnote's own prose 
 check(U[7][0]["scope"] == "whole-work" and U[7][0]["pincite"] == "" and U[7][0]["source"].startswith("but see John Roe"),
       "'Roe, supra note 3' with no page -> whole-work scope; never inherits note 3's page 45")
 check(U[8][0]["anchor"]["block_quote"] is True, "block-quote anchor reaches the unit")
+check(len(U[8]) == 2 and U[8][1]["signal"] == "compare with" and U[8][1]["source"].startswith("but see John Roe") and U[8][1]["pincite"] == "52",
+      "both sides of 'Compare A, with B' are support units; the second is Roe at 52 with signal compare with")
 check(all(u["note_text"] for u in units), "every unit carries the full footnote text")
 check([u["id"] for u in units] == list(range(len(units))), "unit ids are dense from 0")
 check(compact[0]["claim"] == "The Court reaffirmed the principle two decades later." and compact[0]["key"] == "17 u s 316",
