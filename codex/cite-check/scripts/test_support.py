@@ -69,7 +69,7 @@ class ExtractionTests(unittest.TestCase):
             self.assertIsNone(note['number'])
             self.assertTrue(note['anchor']['block_quote'])
             self.assertEqual(note['anchor']['previous'], 'Before.')
-            self.assertIsNone(data['footnotes'][1]['anchor'])
+            self.assertIsNone(data['unreferenced_footnotes'][0]['anchor'])
             self.assertTrue(any('no body anchor' in w for w in data['warnings']))
 
     def test_signals(self):
@@ -209,13 +209,13 @@ class SupportTests(unittest.TestCase):
         self.assertTrue(any('Needs your attention' in e for e in self.validate(a)))
 
     def test_unread_and_unverifiable(self):
-        a = list(support_fixture()); a[4][0]['unread_reason'] = 'budget'; a[5][0].pop('support'); a[5][0]['support_read'] = False
+        a = list(support_fixture()); a[4][0]['unread_reason'] = 'budget'; a[5][0].pop('support'); a[5][0]['support_read'] = False; a[5][0]['category'] = 'verified_identity'
         a[0]['completion_target'] = 'complete_with_limits'; a[0]['counts']['support'] = support_counts(a[4], a[5], a[6])
-        a[-1] = 'Existence-only: fixture\n'+support_sentence(a[0]['counts']['support'])+'\n## Proposition support\nU1 budget\n'
+        a[-1] = 'Existence-only: fixture\n'+support_sentence(a[0]['counts']['support'])+'\n## Needs your attention\nNone\n## Proposition support\nU1 budget\n'
         self.assertEqual(self.validate(a), [])
         a = list(support_fixture()); a[5][0].update(status='unverified', support_read=False, unlock_path='Supply source PDF.')
         a[5][0]['support'].update(verdict='unverifiable'); a[0]['counts']['support'] = support_counts(a[4], a[5], a[6])
-        a[-1] = 'Existence-only: fixture\n'+support_sentence(a[0]['counts']['support'])+'\n## Proposition support\n'
+        a[-1] = 'Existence-only: fixture\n'+support_sentence(a[0]['counts']['support'])+'\n## Needs your attention\nNone\n## Proposition support\n'
         self.assertEqual(self.validate(a), [])
         self.assertEqual(a[0]['counts']['support']['read'], 3)
 
@@ -227,7 +227,7 @@ class SupportTests(unittest.TestCase):
             v['support']['verdict'] = result
             a[6][0]['audit_status'] = status
             a[0]['counts']['support'] = support_counts(a[4], a[5], a[6])
-            a[-1] = 'Existence-only: fixture\n'+support_sentence(a[0]['counts']['support'])+'\n## Proposition support\n'
+            a[-1] = 'Existence-only: fixture\n'+support_sentence(a[0]['counts']['support'])+'\n## Needs your attention\nNone\n## Proposition support\n'
             self.assertEqual(self.validate(a), [])
             self.assertEqual(a[0]['counts']['support']['audits_retracted'], int(status == 'retracted'))
 
@@ -318,6 +318,16 @@ class SupportTests(unittest.TestCase):
                 self.assertEqual(result.returncode,0,result.stderr)
                 return command('validate_run.py',run,'--require-ready')
             result = validate(); self.assertEqual(result.returncode,0,result.stderr)
+            # Review #1: a quoted unit cannot use the support-only partial exemption.
+            original = dict(verdicts[6])
+            verdicts[6].update(status='partial', category='support_overstated')
+            write(run/'verdicts.jsonl', verdicts)
+            error = validate().stderr
+            self.assertIn('support category requires', error)
+            self.assertIn('lacks unlock_path', error)
+            self.assertIn('complete_with_limits', error)
+            verdicts[6] = original
+            write(run/'verdicts.jsonl', verdicts)
             verdicts[2]['severity'] = 'medium'; write(run/'verdicts.jsonl',verdicts)
             self.assertIn('invalid disposition',validate().stderr)
             verdicts[2]['severity'] = 'low'; write(run/'verdicts.jsonl',verdicts)

@@ -642,6 +642,8 @@ def read_pages(raw: str, request: str, first_page: int | None = None,
             pages.append((number, raw[start:left]))
             start = right
     else:
+        if raw[:spans[0][0]].strip():
+            pages.append((spans[0][2] - 1, raw[:spans[0][0]]))
         for index, (_, right, number) in enumerate(spans):
             end = spans[index + 1][0] if index + 1 < len(spans) else len(raw)
             pages.append((number, raw[right:end]))

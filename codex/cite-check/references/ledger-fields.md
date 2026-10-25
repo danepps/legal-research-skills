@@ -202,11 +202,15 @@ implied by `deep`.
 Extraction adds an `anchor` to every footnote, including custom-marked notes:
 `paragraph_number` (one-based), `sentence`, `previous`, `position`
 (`sentence-end` or `mid-sentence`), `clause` (empty except mid-sentence),
-`paragraph_end`, `block_quote`. Missing anchors are null with a warning.
+`paragraph_end`, `block_quote`. Missing anchors are null with a warning. DOCX notes with no body reference are
+kept separately in `extraction.unreferenced_footnotes` with `unreferenced: true`
+and `anchor: null`; they do not enter numbering, citation coverage, or supra checks.
 `citation-screening.jsonl` contains deterministic clause/signal/locator hints;
 it is not a final segmentation ledger. Confirm `signal`, `pincite`,
 `parenthetical`, and `opinion_note` as strings on every external citation unit.
-Retain the exact extracted wording of parentheticals and notes. Split and assign
+Retain the exact extracted wording of parentheticals and notes. A comparison
+is split into verbatim `Compare A` and `with B` clauses; the second signal is
+normalized to `compare with`, without adding words to `draft_citation_text`. Split and assign
 nested quoting citations separately with `nested: true`. Mark internal/prose
 units with `unit_kind: internal_reference` / `prose`. For resolved Id./supra
 units set `xref_status: resolved`; unresolved ones use `unresolved`. On each Id.
@@ -229,11 +233,12 @@ location fields, `signal`, `draft_citation_text`, `resolved_source_label`,
 `full_footnote`, `note_prose` (ordered prose clauses), and `siblings`.
 
 An own pin wins. Bare Id. inherits through its antecedent chain; bare supra and
-full citations never inherit. A pin, proposition parenthetical, statute section,
+full citations never inherit. A pin, proposition parenthetical, statute/rule citation,
 or URL is `pincited`; otherwise it is `whole-work`. Default-scope whole works
 remain in the ledger with `unread_reason: out_of_scope`. In-scope unread rows
 must say `budget` or `agent_failure`, with `support_read: false` and no `support`
-object on the verdict. They require `complete_with_limits` and report disclosure.
+object on the verdict. They require `complete_with_limits` and report disclosure naming the exact unit
+ID and its unread reason on the same line; a generic budget note is insufficient.
 
 Read units retain one final verdict per citation unit, `support_read: true`, and
 a full-text verification basis on both source and verdict. Add:
@@ -249,8 +254,13 @@ a full-text verification basis on both source and verdict. Add:
 }}
 ```
 
-`claim_basis` is exactly one of `anchor.sentence`, `anchor.clause`,
-`parenthetical`, `note_prose`; claim must be verbatim in that field. The source
+`claim_basis` is one of `anchor.sentence`, `anchor.clause`, `parenthetical`, or
+`note_prose`; claim must equal the complete selected field (one complete prose
+clause for `note_prose`), not an arbitrary substring. For a body citation in its
+own citation sentence, the support unit has `body_citation_sentence: true`, the
+anchor position is `citation-sentence`, and `anchor.previous` is also allowed.
+That preceding sentence may be in the previous paragraph. Inline body citations
+and footnotes cannot use this exception. Body `siblings` counts are per paragraph. The source
 passage is at most 400 characters. Dispositions, adverse-search evidence and
 six-class independent audit records are specified in the verification protocol.
 Unverifiable attempts use `support.verdict: unverifiable`, `status: unverified`,
@@ -273,5 +283,9 @@ unit cannot improve coverage. Existence-only retains its v6 identity-confirmed,
 not-read meaning. `support_overstated` is low/partial, never a medium-or-higher
 error or a Needs your attention item. Its partial status alone is not an unchecked
 source. Support diff keys use category, resolved source label, claim and verdict,
-never footnote numbers. Disabled or limited reruns cannot resolve absent support
-findings; retain them as not rechecked.
+never footnote numbers. Snapshots include `support_coverage` for each instance: source, signal, candidate
+claims, the actual checked claim, and whether it was read. A complete rerun may
+resolve an absent finding only when its source/claim was read in all matching
+occurrences; unrelated whole-work exclusions do not block that. Disabled, focused
+or limited reruns, missing coverage records, and unread duplicates retain absent
+findings as not rechecked.

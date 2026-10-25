@@ -56,7 +56,9 @@ python3 <skill-dir>/scripts/init_run.py <draft> --run-dir <hidden-run-dir> --sco
 
 For a focused pass, add `--scope focused --footnotes 45-80` (or explicit numbers). The run directory itself must not already exist; create its parent, then pass a new run-id child. The initializer freezes a source snapshot inside the run and writes the manifest, extraction, scope-filtered prepared quote units, and empty ledgers. Review only that snapshot; report its hash and disclose later changes to the live draft without invalidating the snapshot review. If tracked changes exist, disclose that extraction includes visible insertions/move destinations and excludes deletions/move origins, including changes inside footnotes; do not silently accept or reject changes.
 
-Inspect `blocking_issues` before continuing. Referenced endnotes, missing note text, and unsupported numbering/restarts block completion. A separately normalized copy can be used only when its text and note mapping to the supplied draft are verified; disclose the transformation and initialize a new run. Otherwise disclose that the requested review could not be completed. Never alter the supplied draft. Custom-marked author notes have `number: null`, a stable `note_id`, and a `custom_mark` display label; preserve those IDs instead of assigning a footnote number.
+Inspect `blocking_issues` before continuing. Referenced endnotes, missing note text, and unsupported numbering/restarts block completion. A separately normalized copy can be used only when its text and note mapping to the supplied draft are verified; disclose the transformation and initialize a new run. Otherwise disclose that the requested review could not be completed. Never alter the supplied draft. Unreferenced DOCX notes are preserved separately as warning-only extraction
+records and are excluded from citation coverage; they are not custom author notes.
+Custom-marked author notes have `number: null`, a stable `note_id`, and a `custom_mark` display label; preserve those IDs instead of assigning a footnote number.
 
 ### 2. Read the protocol
 
@@ -122,7 +124,9 @@ Read [references/case-review.md](references/case-review.md). Check every lower-c
 
 Confirm the screening fields in `citation-screening.jsonl` on citation units,
 including signal, pin, proposition parenthetical and disclosed opinion posture.
-Record resolved cross-references and immediate Id. antecedents, and link every
+Preserve both comparison clauses, including the normalized `compare with` signal.
+A standalone body citation may use its preceding sentence as the complete claim;
+keep that context distinct from an inline citation. Record resolved cross-references and immediate Id. antecedents, and link every
 prepared quotation before building support units. Run
 `scripts/prepare_support_units.py RUN_DIR`. Read in-scope units by source bundle
 using the existing cache and `verify_quotes.py SOURCE.txt --page N`. Apply the

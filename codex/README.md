@@ -99,7 +99,9 @@ drafts it costs roughly two to four times a standard run. Every not-supported
 or contradicted finding receives an independent second derivation. Possible
 overstatement is a low-severity **confirm item**, never an error. Reports disclose
 read, unavailable and deliberately unread instances; ordinary v6 runs retain their
-existing behavior.
+existing behavior. Review hardening preserves both sides of comparison citations,
+handles standalone body citations and rule locators, and resolves rerun findings
+only from matching source/claim coverage.
 
 ## Requirements
 

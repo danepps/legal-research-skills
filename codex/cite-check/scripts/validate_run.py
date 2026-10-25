@@ -548,6 +548,12 @@ def main() -> int:
         unit_by_id_for_basis = {row.get("unit_id"): row for row in units}
         source_by_id = {row.get("source_id"): row for row in sources}
         unchecked_units = []
+        support_eligible_ids = set()
+        if support_enabled:
+            from prepare_support_units import build_support_units
+            from support_validation import read_overstatement
+            support_eligible_ids = {row['unit_id'] for row in build_support_units(
+                extraction, units, quote_checks, manifest['support_pass'].get('scope', 'pincited'))}
         for verdict in verdicts:
             unit = unit_by_id_for_basis.get(verdict.get("unit_id"), {})
             source = source_by_id.get(unit.get("source_id"), {})
@@ -594,7 +600,7 @@ def main() -> int:
             # An unavailable sibling-source check does not erase a successful
             # assigned-source match. Unavailable assigned-source checks do.
             unavailable_assigned = any(c.get("unit_id") == unit.get("unit_id") and c.get("source_id") == unit.get("source_id") and c.get("status") == "unavailable" for c in quote_checks)
-            if (status in {"unverified", "partial"} and not (support_enabled and verdict.get("category") == "support_overstated")) or verdict.get("verification_basis") == "unavailable" or unavailable_source or unavailable_assigned:
+            if (status in {"unverified", "partial"} and not (support_enabled and read_overstatement(verdict, support_eligible_ids))) or verdict.get("verification_basis") == "unavailable" or unavailable_source or unavailable_assigned:
                 unchecked_units.append(verdict)
         unavailable_sources = [row for row in sources if row.get("status") == "unavailable" or row.get("verification_basis") == "unavailable"]
         if (unchecked_units or unavailable_sources) and final_status != "complete_with_limits":

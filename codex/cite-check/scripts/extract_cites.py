@@ -322,16 +322,18 @@ def parse_docx(path: Path, include_deleted: bool) -> dict[str, object]:
         footnotes.append(row)
     # Unreferenced notes have no defensible printed number. Preserve their stable
     # IDs and content so an absent body anchor is visible rather than dropping it.
+    unreferenced = []
     all_reference_ids = {n.get(W + "id") for n in document_root.iter(W + "footnoteReference")}
     for xml_id, node in notes_by_id.items():
         if xml_id in all_reference_ids or node.get(W + "type") in {"separator", "continuationSeparator", "continuationNotice"} or xml_id in {"-1", "0"}:
             continue
         text = normalize(" ".join(element_text(n, include_deleted) for n in visible_nodes(node, include_deleted) if n.tag == W + "p"))
-        footnotes.append({"number": None, "note_id": f"fn:{xml_id}", "xml_id": xml_id,
-                          "text": text, **cross_reference_metadata(text)})
+        unreferenced.append({"number": None, "note_id": f"fn:{xml_id}", "xml_id": xml_id,
+                             "text": text, "unreferenced": True, "anchor": None})
+        warnings.append(f"Footnote fn:{xml_id} has no body anchor (unreferenced); excluded from citation coverage.")
     tracked_roots = [root for name, root in roots.items() if name in {"word/document.xml", "word/footnotes.xml", "word/endnotes.xml"}]
     return {
-        "paragraphs": paragraphs, "footnotes": footnotes,
+        "paragraphs": paragraphs, "footnotes": footnotes, "unreferenced_footnotes": unreferenced,
         "block_quote_paragraphs": blocks, "block_quote_candidates": block_candidates,
         "blocking_issues": issues, "warnings": warnings,
         "tracked_changes": {
@@ -470,6 +472,7 @@ def extract_document(path: Path, min_quote_words: int = 8, include_deleted: bool
         "block_quote_candidates": parsed.get("block_quote_candidates", []),
         "paragraphs": paragraphs,
         "footnotes": parsed["footnotes"],
+        "unreferenced_footnotes": parsed.get("unreferenced_footnotes", []),
         "body_quotes": body_quotes,
         "footnote_quotes": footnote_quotes,
         "unique_case_cites": unique_case_cites,

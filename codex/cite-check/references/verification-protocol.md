@@ -143,7 +143,10 @@ review remain unchanged.
 
 ### What the draft claims
 
-Use `anchor.sentence`, or `anchor.clause` for a mid-sentence marker. Read the
+Use the complete `anchor.sentence`, or complete `anchor.clause` for a mid-sentence
+marker. For a standalone body citation sentence, `body_citation_sentence: true`
+permits `anchor.previous` as the claim basis. This does not permit a footnote or
+inline cite to substitute an unrelated preceding sentence. Read the
 preceding sentence and the full footnote. Footnote prose that states the
 proposition (“For the contrary view, see ...”) governs. A proposition
 parenthetical states precisely what that source is cited for: check it. An
@@ -160,7 +163,7 @@ unit unverifiable with a concrete unlock path.
 - `see also`: additional support, with the same test.
 - `cf.`: a different, analogous proposition; judge whether the analogy is fair,
   never whether the page literally states the draft's sentence.
-- `compare ... with`: judge each side against what the comparison implies about it.
+- `compare ... with` (including normalized `compare with` on the second unit): judge each side against what the comparison implies about it.
 - `see generally`: background; topic coverage at the level claimed suffices.
   Never reject merely because the page does not state the sentence.
 - `but see`, `but cf.`, `contra`: contrary authority (by analogy for `cf.`).
@@ -236,7 +239,8 @@ each of these six artifact classes by its exact key:
 - `posture`: does a different posture mean qualified support, or a narrower
   holding mean overstatement, rather than contradiction?
 
-Record `initial_support_verdict` in the audit. `confirmed` retains the adverse
+Record `initial_support_verdict` in the audit. A `confirmed` audit must match
+the final support verdict exactly. `confirmed` retains the adverse
 verdict; `retracted` replaces it with supported; `revised` downgrades it to
 `overstated` or `supported_qualified`. Update the single final verdict in place.
 A retraction is counted but not presented as a live finding.

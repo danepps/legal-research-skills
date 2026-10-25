@@ -1,7 +1,7 @@
 """Schema-v7 support gates. Structural evidence checks, never semantic guarantees."""
 import json
 import re
-from prepare_support_units import build_support_units
+from prepare_support_units import build_support_units, claim_bases
 from support_screen import kind_of
 
 DISPOSITIONS = {
@@ -15,7 +15,7 @@ COUNT_VERDICTS = dict(zip(DISPOSITIONS, ('supported', 'qualified', 'overstated',
 ARTIFACTS = ('paraphrased claim', 'signal misread', 'clause vs sentence',
              'wrong antecedent / wrong page', 'nearby passage', 'posture')
 FULL_TEXT = {'primary_full_text', 'authoritative_reproduction', 'repository_full_text', 'local_library_full_text'}
-SIGNALS = {'', 'see', 'see, e.g.', 'see also', 'see generally', 'cf.', 'but see', 'but cf.', 'compare', 'accord', 'contra', 'e.g.'}
+SIGNALS = {'', 'see', 'see, e.g.', 'see also', 'see generally', 'cf.', 'but see', 'but cf.', 'compare', 'compare with', 'accord', 'contra', 'e.g.'}
 
 
 def support_counts(rows, verdicts, audits):
@@ -51,12 +51,49 @@ def support_sentence(c):
             f"{c['out_of_scope']} whole-work cites were not read (out of scope).")
 
 
+REPORT_SECTIONS = {"needs your attention", "proposition support", "subsequent history & treatment",
+                   "other confirmed corrections", "full footnote ledger", "footnote ledger",
+                   "couldn't check", "couldn’t check", "method limits", "scope/method", "counts"}
+
+
+def report_heading(line):
+    text = line.strip()
+    markdown = re.match(r'^(#{1,6})\s+(.+?)(?:\s+#+)?$', text)
+    level = len(markdown[1]) if markdown else None
+    if markdown: text = markdown[2].strip()
+    if text.startswith('**') and text.endswith('**'): text = text[2:-2].strip()
+    text = text.rstrip(':').casefold()
+    if markdown or text in REPORT_SECTIONS:
+        return text, level
+    return None
+
+
 def attention_section(report):
-    match = re.search(r'^ *(#{1,6}) +Needs your attention[^\n]*\n', report, re.M | re.I)
-    if not match: return ''
-    tail = report[match.end():]
-    end = re.search(r'^ *#{1,' + str(len(match[1])) + r'} +', tail, re.M)
-    return tail[:end.start()] if end else tail
+    active, level, content = False, None, []
+    for line in report.splitlines():
+        heading = report_heading(line)
+        if heading and heading[0] == 'needs your attention':
+            active, level = True, heading[1]
+            continue
+        if active and heading and (heading[0] in REPORT_SECTIONS or
+                                   (level is not None and heading[1] is not None and heading[1] <= level)):
+            active = False
+        if active: content.append(line)
+    return '\n'.join(content)
+
+
+def read_overstatement(verdict, eligible_ids):
+    support = verdict.get('support')
+    return (verdict.get('unit_id') in eligible_ids and isinstance(support, dict)
+            and support.get('verdict') == 'overstated' and verdict.get('category') == 'support_overstated'
+            and verdict.get('status') == 'partial' and verdict.get('severity') == 'low'
+            and verdict.get('support_read') is True and verdict.get('verification_basis') in FULL_TEXT)
+
+
+def disclosed_unread(report, uid, reason):
+    unit_pattern = r'(?<![\w-])' + re.escape(uid) + r'(?![\w-])'
+    reason_pattern = r'(?<![\w-])' + re.escape(reason) + r'(?![\w-])'
+    return any(re.search(unit_pattern, line) and re.search(reason_pattern, line) for line in report.splitlines())
 
 
 def validate_support(manifest, extraction, units, quote_checks, rows, verdicts, audits, sources, report, errors):
@@ -125,7 +162,7 @@ def validate_support(manifest, extraction, units, quote_checks, rows, verdicts, 
             if reason in {'budget', 'agent_failure'}:
                 if manifest.get('completion_target', manifest.get('status')) != 'complete_with_limits':
                     errors.append('unread support units require complete_with_limits')
-                if uid not in report or reason not in report:
+                if not disclosed_unread(report, uid, reason):
                     errors.append(f'report must disclose unread support unit {uid} and {reason}')
             continue
         if not isinstance(support, dict):
@@ -139,12 +176,10 @@ def validate_support(manifest, extraction, units, quote_checks, rows, verdicts, 
             if not isinstance(support.get(field), str) or not support[field].strip():
                 errors.append(f'support unit {uid}: missing support.{field}')
         if support.get('signal') != row.get('signal'): errors.append(f'support unit {uid}: signal mismatch')
-        anchor = canonical.get('anchor') or {}
-        bases = {'anchor.sentence': [anchor.get('sentence', '')], 'anchor.clause': [anchor.get('clause', '')],
-                 'parenthetical': [canonical.get('parenthetical', '')], 'note_prose': canonical.get('note_prose', [])}
+        bases = claim_bases(canonical)
         claim = support.get('claim')
-        if not claim or not any(claim in text for text in bases.get(support.get('claim_basis'), [])):
-            errors.append(f'support unit {uid}: claim not verbatim in declared extraction context')
+        if not claim or claim not in bases.get(support.get('claim_basis'), []):
+            errors.append(f'support unit {uid}: claim not verbatim as a complete declared extraction field')
         if result == 'unverifiable':
             if verdict.get('status') != 'unverified' or not verdict.get('unlock_path') or verdict.get('support_read') is not False:
                 errors.append(f'support unit {uid}: unverifiable requires unverified, unlock_path, support_read false')
@@ -171,6 +206,8 @@ def validate_support(manifest, extraction, units, quote_checks, rows, verdicts, 
                 errors.append(f'support unit {uid}: audit evidence must address all six artifact classes')
             if audit.get('independent_rederivation') is not True or not audit.get('reviewer') or not audit.get('page_reread'):
                 errors.append(f'support unit {uid}: audit needs independent_rederivation, reviewer, page_reread')
+            if audit.get('audit_status') == 'confirmed' and audit.get('initial_support_verdict') != result:
+                errors.append(f'support unit {uid}: confirmed audit must preserve initial_support_verdict')
             if audit.get('audit_status') == 'retracted' and result != 'supported':
                 errors.append(f'support unit {uid}: retracted finding must end supported')
             if audit.get('audit_status') == 'revised' and result not in {'overstated', 'supported_qualified'}:
@@ -189,7 +226,10 @@ def validate_support(manifest, extraction, units, quote_checks, rows, verdicts, 
                              (unit.get('draft_citation_text'), unit.get('resolved_source_label')))
             if unit_named or (cite_named and support.get('claim') in section):
                 errors.append(f'support unit {uid}: overstatement cannot appear in Needs your attention')
+    categories = {value[1] for value in DISPOSITIONS.values()}
     for verdict in verdicts:
+        if verdict.get('category') in categories and (verdict.get('unit_id') not in expected_by_id or not isinstance(verdict.get('support'), dict)):
+            errors.append('support category requires an eligible unquoted unit and complete support object')
         if verdict.get('support') and verdict.get('unit_id') not in expected_by_id:
             errors.append('support verdict on excluded or unknown citation unit')
     counts = support_counts(rows, verdicts, audits)
@@ -198,4 +238,6 @@ def validate_support(manifest, extraction, units, quote_checks, rows, verdicts, 
     if sentence not in report: errors.append('report.md lacks accurate support summary: ' + sentence)
     elif not re.search(r'Existence-only:[^\n]*\n\s*' + re.escape(sentence), report):
         errors.append('support summary must immediately follow existence-only sentence')
+    if not any(report_heading(line) and report_heading(line)[0] == 'needs your attention' for line in report.splitlines()):
+        errors.append('support report requires a Needs your attention heading')
     if 'Proposition support' not in report: errors.append('report.md lacks Proposition support section')

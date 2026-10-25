@@ -2,6 +2,14 @@
 
 ## 1.5.0 — 2026-10-25
 
+- Address Claude's fourteen review findings: close the support-only partial gate,
+  preserve comparison clauses and signals, reject nonproposition parentheticals
+  and false pins, locate rules, and retain prose after citations. Add standalone
+  body-cite claim context and prefix-page reading. Keep orphan DOCX notes out of
+  v6 coverage. Reconcile reruns per source/claim occurrence, recognize supported
+  report heading forms, require item-specific unread reasons and complete claims,
+  validate confirmed audit transitions, and count body siblings per paragraph.
+
 - Add an opt-in proposition-support pass to cite-check, with schema-v7 support
   ledgers, deterministic footnote anchors and citation screening, inherited Id.
   pins, bounded cached-page reading, and exact reconciled coverage counts.

@@ -9,7 +9,7 @@ import argparse
 import json
 import re
 from pathlib import Path
-from extract_cites import note_key, footnote_anchors
+from extract_cites import note_key, footnote_anchors, FN_MARKER
 from support_screen import kind_of, screen_clause, split_clauses, prose_clauses
 
 
@@ -24,6 +24,24 @@ def eligible(unit, quoted):
             and unit.get('xref_status') != 'unresolved'
             and not (kind_of(unit.get('draft_citation_text', '')) in {'id', 'supra'}
                      and unit.get('xref_status') != 'resolved'))
+
+
+def location_key(unit):
+    if unit.get('location') == 'body':
+        return ('body', unit.get('paragraph_number'))
+    return ('footnote', note_key(unit))
+
+
+def claim_bases(row):
+    """Complete deterministic claim fields; never accept an arbitrary substring."""
+    anchor = row.get('anchor') or {}
+    bases = {'anchor.sentence': [anchor.get('sentence', '')],
+             'anchor.clause': [anchor.get('clause', '')],
+             'parenthetical': [row.get('parenthetical', '')],
+             'note_prose': row.get('note_prose', [])}
+    if row.get('body_citation_sentence'):
+        bases['anchor.previous'] = [anchor.get('previous', '')]
+    return bases
 
 
 def build_support_units(extraction, units, quote_checks=(), scope='pincited'):
@@ -50,9 +68,10 @@ def build_support_units(extraction, units, quote_checks=(), scope='pincited'):
         screening = screen_clause(text, u.get('source_type'))
         parenthetical = u.get('parenthetical', screening['parenthetical'])
         kind = u.get('source_type')
-        located = bool(pin or parenthetical or (kind == 'statute' and '§' in text)
+        located = bool(pin or parenthetical or kind in {'statute', 'rule'}
                        or kind in {'internet', 'url', 'web', 'website'} or 'http' in text)
         anchor = home.get('anchor')
+        citation_sentence = False
         if u.get('location') == 'body':
             paragraph_number = u.get('paragraph_number')
             paragraphs = extraction.get('paragraphs', [])
@@ -61,8 +80,19 @@ def build_support_units(extraction, units, quote_checks=(), scope='pincited'):
                 offset = context.find(text)
                 if text and offset >= 0:
                     marked = context[:offset] + '[[FN:support]]' + context[offset:]
-                    anchor = footnote_anchors([marked]).get('support')
-                    if anchor: anchor['paragraph_number'] = paragraph_number
+                    context_paragraphs = paragraphs[:paragraph_number - 1] + [marked]
+                    anchor = footnote_anchors(context_paragraphs).get('support')
+                    if anchor:
+                        remaining = anchor['sentence']
+                        for sibling in units:
+                            if location_key(sibling) == location_key(u):
+                                cite = sibling.get('draft_citation_text', '')
+                                if cite: remaining = remaining.replace(cite, '')
+                        remaining = FN_MARKER.sub('', remaining)
+                        remaining = re.sub(r'\b(?:see|also|generally|cf|but|compare|with|accord|contra)\b', '', remaining, flags=re.I)
+                        citation_sentence = not re.search(r'\w', remaining)
+                        if citation_sentence:
+                            anchor = dict(anchor, position='citation-sentence', clause='')
         row = {k: u.get(k) for k in ('unit_id', 'source_id', 'footnote_number', 'note_id', 'paragraph_number',
                                     'draft_citation_text', 'resolved_source_label')}
         row.update(support_unit_id='SUP-' + u['unit_id'], signal=u.get('signal', screening['signal']),
@@ -71,9 +101,10 @@ def build_support_units(extraction, units, quote_checks=(), scope='pincited'):
                    scope='pincited' if located else 'whole-work', anchor=anchor,
                    full_footnote=home.get('text', u.get('body_context', '')),
                    note_prose=prose_clauses(home.get('text', '')),
-                   siblings=sum(1 for sibling in units if note_key(sibling) == note_key(u)
+                   siblings=sum(1 for sibling in units if location_key(sibling) == location_key(u)
                                 and sibling.get('unit_kind') not in {'internal_reference', 'prose', 'nested_citation'}
                                 and not sibling.get('nested')))
+        if u.get('location') == 'body': row['body_citation_sentence'] = citation_sentence
         if not located and scope != 'all': row['unread_reason'] = 'out_of_scope'
         rows.append(row)
     return rows
