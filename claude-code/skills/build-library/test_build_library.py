@@ -110,6 +110,10 @@ with tempfile.TemporaryDirectory() as td:
     check(lib["type"] == "group" and lib["id"] == "99", "--server picks the named entry")
     lib = ap.resolve_library(environ={"ZOTERO_MCP_SERVER": "zotero-group"}, claude_json=cj)
     check(lib["type"] == "group" and lib["id"] == "99", "ZOTERO_MCP_SERVER picks the entry")
+    lib = ap.resolve_library(library="group:77", environ={"ZOTERO_API_KEY": "k"},
+                             claude_json=os.path.join(td, "missing.json"))
+    check(lib["type"] == "group" and lib["id"] == "77" and lib["key"] == "k",
+          "--library plus an API key needs no library id and no config file (Codex review, 2026-10-25)")
     lib = ap.resolve_library(library="group:55", environ={}, claude_json=cj)
     check(lib["type"] == "group" and lib["id"] == "55" and lib["key"] == "cfgkey",
           "--library group:<ID> overrides the destination, key still from config")

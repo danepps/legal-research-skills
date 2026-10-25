@@ -76,6 +76,17 @@ def resolve_library(library=None, server=None, environ=None, claude_json=None):
         source.append("key from env ZOTERO_API_KEY")
     if lib:
         source.append(f"library from env ({typ}:{lib})")
+    # An explicit --library settles the destination BEFORE deciding whether a configuration
+    # file is needed; it used to be applied afterwards, so a caller with an API key and
+    # --library group:77 but no ZOTERO_LIBRARY_ID failed for lack of a config file that it
+    # did not need (found by the Codex review, 2026-10-25).
+    if library:
+        if ":" not in library:
+            raise ConfigError("--library must be user:<ID> or group:<ID>")
+        typ, lib = library.split(":", 1)
+        typ = typ.strip().lower()
+        lib = lib.strip()
+        source.append(f"library from --library ({typ}:{lib})")
 
     if not (key and lib):
         name = server or env.get("ZOTERO_MCP_SERVER") or DEFAULT_SERVER
@@ -105,13 +116,6 @@ def resolve_library(library=None, server=None, environ=None, claude_json=None):
             typ = (entry.get("ZOTERO_LIBRARY_TYPE") or "user").strip().lower()
             source.append(f"library from {path} mcpServers[{name!r}] ({typ}:{lib})")
 
-    if library:
-        if ":" not in library:
-            raise ConfigError("--library must be user:<ID> or group:<ID>")
-        typ, lib = library.split(":", 1)
-        typ = typ.strip().lower()
-        lib = lib.strip()
-        source.append(f"library from --library ({typ}:{lib})")
     if typ not in ("user", "group"):
         raise ConfigError(f"library type must be user or group, not {typ!r}")
     if not str(lib).isdigit():
