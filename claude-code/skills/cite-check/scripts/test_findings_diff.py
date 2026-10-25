@@ -56,5 +56,22 @@ check("render has the three sections", all(h in md for h in ("### New since last
 check("render counts line", "1 new, 2 still open, 2 resolved" in md)
 check("render uses the current footnote for a moved finding", "- n.14 [quote: mismatch]" in md)
 check("empty section says none", "- none" in fd.render(pm, cm, {"new": [], "still_open": [], "resolved": [], "renumbered": []}))
+print("support findings on re-runs (2026-10-25)")
+sp = {"kind": "support", "footnote": 3, "verdict": "not_supported", "source": "Doe", "claim": "X", "label": "l"}
+sc_ = {"kind": "support-confirm", "footnote": 4, "verdict": "overstated", "source": "Roe", "claim": "Y", "label": "m"}
+P = {fd.key_of(i): dict(i, key=fd.key_of(i)) for i in (sp, sc_, q1)}
+C = {fd.key_of(q1): dict(q1, key=fd.key_of(q1))}
+d_off = fd.diff(P, C, {"support": {"ran": True, "scope": "pincited"}}, {"support": {"ran": False}})
+check("support pass off this run -> support items not rechecked, not resolved", len(d_off["resolved"]) == 0 and len(d_off["not_rechecked"]) == 2)
+d_on = fd.diff(P, C, {"support": {"ran": True, "scope": "pincited"}}, {"support": {"ran": True, "scope": "pincited"}})
+check("support pass ran at the same scope -> absent support items resolved", len(d_on["resolved"]) == 2 and not d_on["not_rechecked"])
+d_scope = fd.diff(P, C, {"support": {"ran": True, "scope": "all"}}, {"support": {"ran": True, "scope": "pincited"}})
+check("scope narrowed -> not rechecked", len(d_scope["not_rechecked"]) == 2)
+d_first = fd.diff(P, C, {}, {"support": {"ran": True, "scope": "pincited"}})
+check("previous file without support meta -> resolved when this run ran the pass", len(d_first["resolved"]) == 2)
+md2 = fd.render({"date": "a"}, {"date": "b"}, d_off)
+check("render lists the not-rechecked section", "### Not rechecked" in md2 and "NOT rechecked" in md2)
+check("quote item absent with pass off is still resolved", all(i["kind"] != "quote" for i in d_off["not_rechecked"]))
+
 print("\n%d failure(s)" % fails)
 sys.exit(1 if fails else 0)

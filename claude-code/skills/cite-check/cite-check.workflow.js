@@ -1847,6 +1847,6 @@ return {
   secondaryExistence,
   history: historyResults,        // per-case subsequent-history / treatment results (section G)
   support: supportFindings,       // per-unit proposition-support verdicts (section H; opt-in)
-  findings: { items: findingItems }, // for scripts/findings_diff.py — SKILL.md adds snapshotSha256 + date and saves it next to the report
+  findings: { items: findingItems, support: { on: SUPPORT_ON, ran: supportRan, scope: SUPPORT_SCOPE } }, // for scripts/findings_diff.py — SKILL.md adds snapshotSha256 + date and saves it next to the report; `support` lets a later diff tell "resolved" from "not rechecked"
   report: report.report,
 }

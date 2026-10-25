@@ -340,8 +340,10 @@ support, findings, … }`.
   `"snapshotSha256"` (from step 2b) and `"date"` (local date). Then
   `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/findings_diff.py "<previous findings.json>" "<scratch>/findings_new.json"`
   prints a "Since the last report" block (new / still open / resolved, keyed by content so a
-  renumbered draft does not reset the count). Insert that block into the report immediately
-  after the TL;DR, before section A. Lead the deliver message with its three counts.
+  renumbered draft does not reset the count; support findings from a previous run are listed as
+  "not rechecked", never resolved, when this run's support pass did not run or ran at a
+  different scope). Insert that block into the report immediately after the TL;DR, before
+  section A. Lead the deliver message with its three counts.
 - Write **`report`** to `<draft's directory>/<draftName> — Cite Check.md` (next to the draft).
 - Write the findings file for next time: `<draft's directory>/<draftName> — Cite Check findings.json`
   (the same object, with `snapshotSha256` and `date`; overwrite the previous one — the diff has

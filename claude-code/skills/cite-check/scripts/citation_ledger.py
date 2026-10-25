@@ -185,13 +185,25 @@ def supra_name_keys(outer):
 # "see generally" = background; "compare ... with" = comparison; "but see"/"contra"
 # = CONTRARY authority. A support checker that reads a "but see" cite as a support
 # claim manufactures a false finding, so the signal is recorded per instance.
-SIGNAL_RE = re.compile(
-    r"^(see,?\s+e\.g\.,?|see\s+also|see\s+generally|but\s+see|but\s+cf\.|cf\.|see|"
-    r"compare\s+with|compare|accord|contra|e\.g\.,?)(?=[\s,])", re.IGNORECASE)
+_SIGNAL_ALT = (r"see,?\s+e\.g\.,?|see\s+also|see\s+generally|but\s+see|but\s+cf\.|cf\.|see|"
+               r"compare\s+with|compare|accord|contra|e\.g\.,?")
+SIGNAL_RE = re.compile(r"^(" + _SIGNAL_ALT + r")(?=[\s,])", re.IGNORECASE)
+# A signal after introductory prose ("For a contrary view, cf. Smith"): the prefix must
+# itself carry no citation (no digit), so a signal word inside a cite never counts.
+_SIGNAL_INNER = re.compile(r"(?:^|[,;:.]\s+)(" + _SIGNAL_ALT + r")(?=[\s,])", re.IGNORECASE)
 
 
 def signal_of(clause):
-    m = SIGNAL_RE.match((clause or "").strip())
+    c = (clause or "").strip()
+    # markdown drafts italicize signals ("*See*", "_Cf._"); the marks are not text
+    c = re.sub(r"[*_]", "", c[:40]) + c[40:]
+    c = c.lstrip()
+    m = SIGNAL_RE.match(c)
+    if not m:
+        for im in _SIGNAL_INNER.finditer(c):
+            if not re.search(r"\d", c[:im.start(1)]):
+                m = im
+                break
     if not m:
         return ""
     sig = re.sub(r"\s+", " ", m.group(1).lower()).rstrip(",")
@@ -200,12 +212,16 @@ def signal_of(clause):
 
 _PIN_TAIL = (r"(\d{1,4}(?:\s*[–-]\s*\d{1,4})?(?:\s*(?:&|,)\s*\d{1,4}(?:\s*[–-]\s*\d{1,4})?)*"
              r"(?:\s*(?:&\s*)?nn?\.\s*\d+(?:\s*[–-]\s*\d+)?)?)")
-AT_PIN = re.compile(r"\bat\s+" + _PIN_TAIL)
+# "at N" counts only after a comma or a period ("Id. at 5", "Doe, supra note 3, at 50",
+# "17 U.S. at 400"), so a title such as "Brown at 50: The Legacy" is not a pincite.
+AT_PIN = re.compile(r"(?:(?<=[,.])|^)\s*at\s+" + _PIN_TAIL)
 CASE_PIN = re.compile(r"\b\d{1,4}\s+(?:%s)\s+(?:\([^)]{1,24}\)\s+)?\d{1,4},\s*" % REPORTER_ANY
                       + _PIN_TAIL)
 SECTION_PIN = re.compile(r"§§?\s*[\w.\-–]+(?:\([\w]+\))*")
 PARA_PIN = re.compile(r"¶¶?\s*\d+(?:\s*[–-]\s*\d+)?")
-BOOK_PIN = re.compile(r"\s" + _PIN_TAIL + r"\s*\((?=[^()]*\d{4}\))")
+# a page right before the year/edition parenthetical ("Finance 45 (2d ed. 2010)") — never a
+# docket or volume number ("No. 19-123 (S.D.N.Y. 2020)", "Vol. 3 (1990)")
+BOOK_PIN = re.compile(r"(?<!No\.)(?<!Vol\.)(?<!vol\.)\s" + _PIN_TAIL + r"\s*\((?=[^()]*\d{4}\))")
 
 
 def locate(clause, kind):
@@ -255,15 +271,35 @@ def parentheticals(clause):
     return out
 
 
-# Parentheticals that are not a proposition: year/court, edition, quoting/citing,
-# emphasis/alteration notes, and separate-opinion labels.
+# Parentheticals that are not a proposition: quoting/citing, emphasis/alteration notes,
+# edition/editor/translator, file and access notes, docket numbers, and anything that
+# ENDS in a year (court/date "(S.D.N.Y. Mar. 3, 2020)", "(last visited Jan. 5, 2020)",
+# "(Jacob E. Cooke ed., 1961)"). A proposition parenthetical starts with a verb.
 _NON_PROP = re.compile(
-    r"^(?:quoting|citing|cited|emphasis|alterations?|internal|footnotes?|citations?|en banc|"
-    r"per curiam|plurality|\d{4}\b|[A-Z0-9][\w.'’&\s]*\d{4}$|\d+(?:st|d|th)?\s+ed\.|"
-    r"[A-Z][\w.'’\s]*,\s*(?:C\.?J|J|JJ)\.,?\s*(?:concurring|dissenting)|"
-    r"(?:[A-Z]\.\s*)*[A-Z][\w.'’\s]*ed\.?,?\s+\d{4})", re.IGNORECASE)
-_OPINION_NOTE = re.compile(r"\b(concurring|dissenting|plurality opinion|per curiam|statement of)\b",
-                           re.IGNORECASE)
+    r"^(?:quoting|citing|cited|emphasis|alterations?|internal|footnotes?|citations?|en\s+banc|"
+    r"per\s+curiam|plurality|hereinafter|on\s+file|available|archived|codified|as\s+amended|"
+    r"repealed|superseded|reprinted|forthcoming|unpublished|manuscript|draft|"
+    r"last\s+(?:visited|updated|modified)|accessed|testimony|No\.\s*\d|\d{4}\b|"
+    r"\d+(?:st|d|th)?\s+ed\.|(?:[A-Z]\.\s*)*[A-Z][\w.'’\s]*(?:ed|eds|trans)\.?,?\s+\d{4})",
+    re.IGNORECASE)
+_YEAR_END = re.compile(r"\b(?:1[5-9]|20)\d{2}\.?$")
+_PROP_START = re.compile(
+    r"^(?:holding|noting|finding|concluding|explaining|arguing|observing|stating|describing|"
+    r"rejecting|recognizing|applying|reasoning|suggesting|discussing|adopting|declining|"
+    r"affirming|reversing|upholding|striking|interpreting|construing|reading|treating|assuming|"
+    r"acknowledging|emphasizing|ruling|deciding|reaffirming|distinguishing|limiting|extending|"
+    r"requiring|permitting|allowing|announcing|establishing|defining|listing|surveying|"
+    r"reviewing|summarizing|tracing|questioning|criticizing|defending|proposing|contending|"
+    r"asserting|claiming|concluding|invalidating|sustaining|remanding|dismissing|denying|"
+    r"granting|overruling|abrogating|adopting|endorsing|characterizing|identifying)\b",
+    re.IGNORECASE)
+# The separate-opinion shapes the draft itself supplies: "(Thomas, J., concurring)",
+# "(Roberts, C.J., dissenting)", "(Kagan & Sotomayor, JJ., dissenting)", "(opinion of
+# Roberts, C.J.)", "(plurality opinion)", "(per curiam)", "(statement of Sotomayor, J.)".
+# Anchored at the start, so "(rejecting the dissenting view ...)" is a proposition.
+_OPINION_SHAPE = re.compile(
+    r"^(?:opinion\s+of\b|statement\s+of\b|plurality\s+opinion|per\s+curiam|en\s+banc|"
+    r"[A-Z][^()]{0,60}?,\s*(?:C\.?\s?J|J|JJ)\.,?\s*(?:concurring|dissenting))", re.IGNORECASE)
 
 
 def proposition_parenthetical(clause):
@@ -271,7 +307,13 @@ def proposition_parenthetical(clause):
     ("holding that ...", "noting the ..."), or ""."""
     for p in parentheticals(clause):
         t = _clean(p)
-        if len(t.split()) >= 3 and not _NON_PROP.match(t):
+        if _NON_PROP.match(t) or _OPINION_SHAPE.match(t):
+            continue
+        if _PROP_START.match(t):
+            return t
+        if _YEAR_END.search(t):
+            continue
+        if len(t.split()) >= 3:
             return t
     return ""
 
@@ -280,8 +322,9 @@ def opinion_note(clause):
     """A separate-opinion parenthetical ("Thomas, J., concurring") the draft itself
     supplies — posture the support checker must honor, not flag."""
     for p in parentheticals(clause):
-        if _OPINION_NOTE.search(p):
-            return _clean(p)
+        t = _clean(p)
+        if _OPINION_SHAPE.match(t):
+            return t
     return ""
 
 

@@ -123,6 +123,36 @@ check(compact[0]["claim"] == "The Court reaffirmed the principle two decades lat
       "compact form carries claim + source key")
 check(sorted(picked) == [u["id"] for u in units if u["note"] in (2, 3)], "--footnotes 2-3 picks the right unit ids")
 
+print("screener regressions (Codex review, 2026-10-25)")
+sc = lambda c: (cl.classify(c)[0], cl.signal_of(c), cl.locate(c, cl.classify(c)[0]), cl.proposition_parenthetical(c), cl.opinion_note(c))
+k, sig, pin, par, op = sc("See Smith v. Jones, No. 19-123 (S.D.N.Y. Mar. 3, 2020).")
+check(pin == "" and par == "", "docket number is not a book page; court/date parenthetical is not a proposition (%r, %r)" % (pin, par))
+k, sig, pin, par, op = sc("Smith v. Jones, No. 19-123, slip op. at 4 (S.D.N.Y. Mar. 3, 2020).")
+check(pin == "4" and par == "", "'slip op. at 4' still a pincite; date parenthetical still ignored")
+k, sig, pin, par, op = sc("Jack Balkin, Brown at 50: The Legacy, 90 Va. L. Rev. 1537 (2004).")
+check(pin == "", "'Brown at 50' in a title is not a pincite (%r)" % pin)
+check(cl.locate("Id. at 436", "id") == "436" and cl.locate("Doe, supra note 3, at 50", "supra") == "50" and cl.locate("McCulloch, 17 U.S. at 400", "case-short") == "400",
+      "'at N' after a period or comma still locates")
+k, sig, pin, par, op = sc("Doe v. Roe, 1 U.S. 2, 3 (2000) (rejecting the dissenting view that the rule is absolute).")
+check(par.startswith("rejecting the dissenting") and op == "", "'rejecting the dissenting view' is a proposition, not a posture note (%r / %r)" % (par[:20], op))
+for c, want in (("X, 1 U.S. 2 (2000) (Thomas, J., concurring).", "Thomas, J., concurring"),
+                ("X, 1 U.S. 2 (2000) (Roberts, C.J., dissenting).", "Roberts, C.J., dissenting"),
+                ("X, 1 U.S. 2 (2000) (Kagan & Sotomayor, JJ., dissenting).", "Kagan & Sotomayor, JJ., dissenting"),
+                ("X, 1 U.S. 2 (2000) (opinion of Roberts, C.J.).", "opinion of Roberts, C.J."),
+                ("X, 1 U.S. 2 (2000) (plurality opinion).", "plurality opinion"),
+                ("X, 1 U.S. 2 (2000) (Breyer, J., concurring in part and dissenting in part).", "Breyer, J., concurring in part and dissenting in part")):
+    check(cl.opinion_note(c) == want and cl.proposition_parenthetical(c) == "", "posture note %r captured, not a proposition" % want)
+check(sc("For a contrary view, cf. Smith v. Jones, 100 F.3d 200, 205 (2d Cir. 1996).")[1] == "cf.", "signal after introductory prose is read (cf.)")
+check(sc("*See* Smith v. Jones, 100 F.3d 200, 205 (2d Cir. 1996).")[1] == "see", "markdown-italicized signal is read")
+check(sc("_But see_ Smith v. Jones, 100 F.3d 200 (2d Cir. 1996).")[1] == "but see", "underscore-italicized signal is read")
+check(sc("Smith v. Jones, 100 F.3d 200, 205 (2d Cir. 1996) (see also the dissent).")[1] == "", "a signal word inside a parenthetical after a cite is not the clause's signal")
+k, sig, pin, par, op = sc("Jane Doe, Title, 1 J. 5 (2020), https://example.org/x (last visited Jan. 5, 2020).")
+check(par == "", "'last visited' parenthetical is not a proposition")
+check(cl.proposition_parenthetical("Memo (on file with author).") == "", "'on file with author' is not a proposition")
+check(cl.proposition_parenthetical("THE FEDERALIST NO. 10 (James Madison) (Jacob E. Cooke ed., 1961).") == "", "author and editor parentheticals are not propositions")
+check(cl.proposition_parenthetical("X, 1 U.S. 2, 3 (2000) (holding that the clause applies to the states).") == "holding that the clause applies to the states", "'holding that' parenthetical still captured")
+check(cl.proposition_parenthetical("X, 1 U.S. 2, 3 (2000) (the rule applies only to federal officers).") == "the rule applies only to federal officers", "a verbless proposition parenthetical of 3+ words still captured")
+
 print("support dispositions (reference implementation)")
 L2 = json.loads(json.dumps(L))
 case_ex = {"17 U.S. 316": {"exists": True}, "5 U.S. 137": {"exists": True}, "3 U.S. 171": {"exists": True}}
