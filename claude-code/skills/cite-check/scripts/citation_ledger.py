@@ -76,6 +76,10 @@ URL = re.compile(r"https?://|www\.")
 # one-period token used here before 2026-10-26 missed every Yale L.J. cite, which then fell
 # through to the book rule and took its FIRST page as a pincite (Codex smoke test on a real draft).
 JOURNAL = re.compile(r"\b(\d{1,4})\s+((?:[A-Z][A-Za-z'&]*(?:\.[A-Za-z'&]+)*\.?\s+){1,7}?)(\d{1,5})\b")
+# An unabbreviated journal ("61 Parliamentary Affairs 681 (2008)") has no period at all; it
+# is still an article when the volume follows a title comma and the name is two or more
+# capitalized words — never a book page ("Finance 45 (2010)" has no volume before the name).
+_BARE_JOURNAL_WORDS = 2
 BOOK = re.compile(r"\([^()]*\b\d{4}\)")  # any parenthetical ending in a year (checked after article)
 YEAR = re.compile(r"\(\d{4}\)")
 _PAREN = re.compile(r"\([^()]*\)")
@@ -354,6 +358,19 @@ def opinion_note(clause):
 
 
 # ---- classification ----------------------------------------------------------
+_CITE_TOKEN = re.compile(r"\b(?:supra|infra|hereinafter|eds?\.|trans\.|rev\.\s+ed\.)", re.IGNORECASE)
+
+
+def _bare_journal(outer, jm):
+    """'61 Parliamentary Affairs 681 (2008)': a volume-name-page run with no period in
+    the name counts as a journal only after a title comma and with a multi-word
+    capitalized name (the caller also requires a year parenthetical on the clause)."""
+    words = jm.group(2).split()
+    return (len(words) >= _BARE_JOURNAL_WORDS
+            and all(w[:1].isupper() for w in words)
+            and re.search(r",\s*$", outer[:jm.start()]) is not None)
+
+
 def classify(clause):
     """-> (kind, primary_case_cite_or_None, nested_case_cites, supra_note_or_None,
            supra_name_or_None)"""
@@ -382,12 +399,21 @@ def classify(clause):
     if URL.search(outer):
         return "internet", None, nested, None, None
     jm = JOURNAL.search(outer)
-    if jm and "." in jm.group(2):
+    # (the year parenthetical is checked on the clause: _strip_parens has removed it from outer)
+    if jm and ("." in jm.group(2) or (_bare_journal(outer, jm) and BOOK.search(clause))):
         return "article", None, nested, None, None
     if BOOK.search(clause):
         return "book", None, nested, None, None
     words = outer.split()
-    if re.search(r"\d", outer) or ("," in outer and len(words) <= 25):
+    if re.search(r"\d", outer):
+        return "other", None, nested, None, None
+    # A short comma-bearing clause with NO digit is a citation only when it carries a
+    # citation token (a signal, supra/infra, hereinafter, an editor/translator note);
+    # otherwise it is footnote prose ("Levinson treats 'exit' as a distinct third
+    # mechanism, separate from rights or votes." was inventoried as a cite and reported
+    # as unverifiable in the 2026-10-26 sample run).
+    if ("," in outer and len(words) <= 25
+            and (signal_of(outer) or _CITE_TOKEN.search(outer))):
         return "other", None, nested, None, None
     return "text", None, nested, None, None
 

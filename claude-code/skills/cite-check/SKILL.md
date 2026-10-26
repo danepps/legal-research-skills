@@ -229,7 +229,10 @@ For a **partial pass**, resolve the footnote range to unit ids:
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/prepare_units.py "<scratch>/extract.json" --footnotes 45-80
 ```
 
-(prints `unit_ids` — pass them as `unitIds`).
+(prints `unit_ids` — pass them as `unitIds`). The report then titles itself "partial pass —
+footnotes 45–80 of N" and its counts describe that range only; say the same in the deliver
+message, and label the report file for the range if a whole-draft report already sits next to
+the draft (a partial findings file would otherwise overwrite it and reset the re-run diff).
 
 ### 4. Launch the workflow
 

@@ -1695,15 +1695,27 @@ const metaFindingsSoft = metaFindingsFlat.filter((m) => !EVIDENCED.test(m))
 const urlFindings = verifyResults.map((v) => v.urlFinding).filter(Boolean)
 const supraReport = SUPRA_PROBLEMS.map((s) => `- n.${s.footnote}: "${s.claims}, supra note ${s.supra_note}" — target note ${s.supra_note} does not name ${s.claims} (holds: "${(s.target_excerpt || '').slice(0, 90)}…")`).join('\n')
 
+// A partial pass (SKILL.md resolved a footnote range to unitIds and filtered supportUnits) must
+// say so in the title and TL;DR: the 2026-10-26 sample run of footnotes 1–30 came back headed
+// "293 footnotes swept", which reads as a whole-draft check.
+const partialNotes = UNIT_IDS
+  ? [...new Set(UNIT_IDS.map((i) => UNIT_NOTES.get(Number(i))).filter((n) => n != null))].sort((a, b) => a - b)
+  : []
+const supportNotes = SUPPORT_ON ? [...new Set(SUPPORT_UNITS.map((u) => u.n).filter((n) => n != null))].sort((a, b) => a - b) : []
+const partialRange = (ns) => (ns.length ? (ns.length === ns[ns.length - 1] - ns[0] + 1 ? `${ns[0]}–${ns[ns.length - 1]}` : ns.join(', ')) : '')
+const partialNote = UNIT_IDS
+  ? `PARTIAL PASS. This run checked ONLY the quote units for footnotes ${partialRange(partialNotes)}${supportNotes.length ? ` (support units for footnotes ${partialRange(supportNotes)})` : ''} of the draft's ${FOOTNOTE_COUNT} footnotes. The title must read "partial pass — footnotes ${partialRange(partialNotes)} of ${FOOTNOTE_COUNT}" instead of "${FOOTNOTE_COUNT} footnotes swept", the TL;DR must open by saying the same, and every count below describes that range only. Never imply the rest of the draft was checked.`
+  : ''
+
 const report = await must('Report', () => agent(
   `You are assembling the final cite-check report for a law professor's article draft ("${DRAFT_NAME}",
-${FOOTNOTE_COUNT} footnotes). Write it in Markdown, in the professor's own report style: a decisive
+${FOOTNOTE_COUNT} footnotes). ${partialNote} Write it in Markdown, in the professor's own report style: a decisive
 TL;DR line with counts, then findings ordered by how much they would hurt IN PRINT, each with the
 draft's text and the source's actual text side by side, keyed to footnote numbers. Be direct and
 substantive; this reader is sophisticated. Do NOT invent anything — use only the findings below.
 
 REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sections):
-- Title + TL;DR: "${FOOTNOTE_COUNT} footnotes swept" and the counts (verbatim / marked-alteration /
+- Title + TL;DR: ${UNIT_IDS ? `"partial pass — footnotes ${partialRange(partialNotes)} of ${FOOTNOTE_COUNT}"` : `"${FOOTNOTE_COUNT} footnotes swept"`} and the counts (verbatim / marked-alteration /
   mismatch / unverifiable; case cites checked; broken supras; pincite/metadata issues; missing
   subsequent history and treatment flags). The TL;DR MUST also carry one plain sentence with the
   ledger figure for citations that were confirmed to exist but NOT read for whether they support

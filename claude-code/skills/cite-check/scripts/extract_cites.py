@@ -218,6 +218,12 @@ _ABBR = [
     "ed.", "eds.", "vs.", "v.",
 ]
 _INITIAL = re.compile(r"\b([A-Z])\.")  # single-letter initials, e.g. "A. Scalia"
+# Each abbreviation is protected only as a whole token: a plain substring replace turned
+# every sentence ending in "-ed." / "-id." / "-ch." / "-art." ("underprivileged. Daryl",
+# "was paid. The", "such. Which") into "ed." / "id." / "ch." / "art." and glued the next
+# sentence on (found in the 2026-10-26 sample run — n.23's anchor carried two sentences).
+_ABBR_RE = re.compile(r"(?<![A-Za-z'])(?:" + "|".join(re.escape(a) for a in
+                      sorted(_ABBR, key=len, reverse=True)) + r")")
 # A sentence may end ".”[[FN:12]] " — the footnote marker(s) belong to the
 # sentence they follow and must not block the split (they did: every quoted
 # sentence came back with its neighbors attached).
@@ -226,9 +232,7 @@ _SENT_SPLIT = re.compile(r"(?<=[.!?])([\)\"”]?(?:\[\[FN:[^\]]+\]\])*)\s+(?=[\"
 
 def sentence_spans(text):
     """Return (start, end) spans of sentences in text, abbreviation-aware."""
-    protected = text
-    for a in _ABBR:
-        protected = protected.replace(a, a.replace(".", "\x00"))
+    protected = _ABBR_RE.sub(lambda m: m.group(0).replace(".", "\x00"), text)
     protected = _INITIAL.sub(lambda m: m.group(1) + "\x00", protected)
     spans = []
     start = 0

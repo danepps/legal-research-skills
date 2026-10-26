@@ -205,5 +205,18 @@ check({x["i"]: x["disposition"] for x in L3["instances"]}[by_note[3][0]["i"]] ==
 check(cl.support_disposition("unread") is None and cl.support_disposition("overstated") == "support-confirm",
       "support_disposition map: unread -> none, overstated -> confirm")
 
+print("regression 2026-10-26: a bare law-journal cite is the whole work, not 'at <first page>'")
+B = psu.build_units({"footnotes": {
+    "1": {"number": 1, "text": "Daryl J. Levinson, Rights and Votes, 121 Yale L.J. 1286 (2012).",
+          "anchor": {"sentence": "Levinson explained the two strategies.", "clause": "", "position": "end"}},
+    "2": {"number": 2, "text": "Levinson, supra note 1, at 1292.",
+          "anchor": {"sentence": "Rights are one of them.", "clause": "", "position": "end"}},
+}, "body_quotes": []})
+bn = {u["note"]: u for u in B}
+check(bn[1]["kind"] == "article" and bn[1]["scope"] == "whole-work" and bn[1]["pincite"] == "",
+      "'121 Yale L.J. 1286 (2012)' -> article, whole-work scope, no pincite (got %s / %s / %r)" % (bn[1]["kind"], bn[1]["scope"], bn[1]["pincite"]))
+check(bn[2]["scope"] == "pincited" and bn[2]["pincite"] == "1292" and bn[2]["key"] == bn[1]["key"],
+      "'Levinson, supra note 1, at 1292' -> pincited at 1292 on the same source")
+
 print("\n%s" % ("all tests passed" if not fails else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)

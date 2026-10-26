@@ -315,6 +315,15 @@ check("'Wu, supra note 1' (two-letter surname) is checked and flagged (n.1 is Mc
 check("'Doe, supra note 2' is NOT flagged (n.2 is Doe)", not any(c[0] == 5 for c in claims))
 check("supra candidates carry the full target text", all("target_text" in s for s in data["supra_problem_candidates"]))
 
+print("sentence segmentation (regression 2026-10-26: abbreviations protected as whole tokens only)")
+_txt = ("The defendants had been convicted. Daryl Levinson, Rights and Votes, 121 Yale L.J. 1286 (2012), "
+        "is such. Which approach? See id. at 5. Mr. Smith paid. The U.S. Supreme Court agreed.")
+_sents = [_txt[s:e] for s, e in ec.sentence_spans(_txt)]
+check("'-ed.' / '-ch.' sentence ends split; 'L.J.', 'id.', 'Mr.', 'U.S.' still do not (%d sentences)" % len(_sents),
+      _sents == ["The defendants had been convicted.",
+                 "Daryl Levinson, Rights and Votes, 121 Yale L.J. 1286 (2012), is such.",
+                 "Which approach?", "See id. at 5.", "Mr. Smith paid.", "The U.S. Supreme Court agreed."])
+
 print()
 if failures:
     print("%d FAILURES" % failures)
