@@ -144,7 +144,19 @@ review remain unchanged.
 ### What the draft claims
 
 Use the complete `anchor.sentence`, or complete `anchor.clause` for a mid-sentence
-marker. For a standalone body citation sentence, `body_citation_sentence: true`
+marker when that prefix expresses a proposition. A marker immediately after an
+authority's name may leave only a title in `anchor.clause`. Do not count confirming
+that name as proposition support. For a mid-sentence anchor claim, record
+`support.claim_scope_review` with boolean `prefix_is_proposition` and a `reason`
+explaining the citation's scope. If true, use `anchor.clause`. If false, use the
+complete `anchor.sentence` only after confirming the citation is responsible for
+that whole claim; the reason must explain that choice. If the sentence joins
+claims assigned to different sources or the citation's responsibility remains
+unclear, use an applicable parenthetical/note proposition or leave support
+unverifiable with an unlock path. Do not invent a shorter claim or strengthen the
+draft's wording.
+
+For a standalone body citation sentence, `body_citation_sentence: true`
 permits `anchor.previous` as the claim basis. This does not permit a footnote or
 inline cite to substitute an unrelated preceding sentence. Read the
 preceding sentence and the full footnote. Footnote prose that states the
@@ -164,7 +176,8 @@ unit unverifiable with a concrete unlock path.
 - `cf.`: a different, analogous proposition; judge whether the analogy is fair,
   never whether the page literally states the draft's sentence.
 - `compare ... with` (including normalized `compare with` on the second unit): judge each side against what the comparison implies about it.
-- `see generally`: background; topic coverage at the level claimed suffices.
+- `see generally` (including `see also generally`, normalized to `see generally`):
+  background; topic coverage at the level claimed suffices.
   Never reject merely because the page does not state the sentence.
 - `but see`, `but cf.`, `contra`: contrary authority (by analogy for `cf.`).
   A `but see` source that does not contradict the proposition is `not_supported`

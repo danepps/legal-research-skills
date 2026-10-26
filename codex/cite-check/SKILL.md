@@ -124,6 +124,10 @@ Read [references/case-review.md](references/case-review.md). Check every lower-c
 
 Confirm the screening fields in `citation-screening.jsonl` on citation units,
 including signal, pin, proposition parenthetical and disclosed opinion posture.
+Preserve background meaning when normalizing `see also generally`. A journal's
+opening page is not a pincite; confirm article classification before accepting
+book-style page hints. Review mid-sentence anchor scope under the protocol before
+counting a title or fragment as a proposition.
 Preserve both comparison clauses, including the normalized `compare with` signal.
 A standalone body citation may use its preceding sentence as the complete claim;
 keep that context distinct from an inline citation. Record resolved cross-references and immediate Id. antecedents, and link every

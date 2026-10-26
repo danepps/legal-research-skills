@@ -2,6 +2,12 @@
 
 ## 1.5.0 — 2026-10-25
 
+- Fix focused sample-run findings: preserve background meaning in `see also
+  generally`, recognize dotted journal abbreviations without mistaking opening
+  pages for pincites, and require reviewed claim scope for mid-sentence anchors.
+  Authority-name prefixes can use the complete sentence after scope review;
+  title confirmation alone cannot count as proposition support.
+
 - Address Claude's fourteen review findings: close the support-only partial gate,
   preserve comparison clauses and signals, reject nonproposition parentheticals
   and false pins, locate rules, and retain prose after citations. Add standalone

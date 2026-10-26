@@ -2,7 +2,7 @@
 import json
 import re
 from prepare_support_units import build_support_units, claim_bases
-from support_screen import kind_of
+from support_screen import kind_of, signal_of
 
 DISPOSITIONS = {
     'supported': ('verified', 'verified_support', 'info'),
@@ -149,6 +149,9 @@ def validate_support(manifest, extraction, units, quote_checks, rows, verdicts, 
         for field in ('signal', 'pincite', 'parenthetical', 'opinion_note'):
             if not isinstance(unit.get(field), str): errors.append(f'support unit {uid}: lead must confirm {field} on citation unit')
         if row.get('signal') not in SIGNALS: errors.append(f'support unit {uid}: invalid signal')
+        if (signal_of(unit.get('draft_citation_text', '')) == 'see generally'
+                and row.get('signal') != 'see generally'):
+            errors.append(f'support unit {uid}: preserve the background meaning of generally')
         verdict = by_unit.get(uid, {})
         support = verdict.get('support')
         reason = row.get('unread_reason')
@@ -184,6 +187,18 @@ def validate_support(manifest, extraction, units, quote_checks, rows, verdicts, 
             if verdict.get('status') != 'unverified' or not verdict.get('unlock_path') or verdict.get('support_read') is not False:
                 errors.append(f'support unit {uid}: unverifiable requires unverified, unlock_path, support_read false')
             continue
+        anchor = canonical.get('anchor') or {}
+        if (anchor.get('position') == 'mid-sentence'
+                and support.get('claim_basis') in {'anchor.clause', 'anchor.sentence'}):
+            review = support.get('claim_scope_review')
+            if (not isinstance(review, dict)
+                    or not isinstance(review.get('prefix_is_proposition'), bool)
+                    or not isinstance(review.get('reason'), str) or not review['reason'].strip()):
+                errors.append(f'support unit {uid}: mid-sentence claim requires claim_scope_review')
+            else:
+                basis = 'anchor.clause' if review['prefix_is_proposition'] else 'anchor.sentence'
+                if support.get('claim_basis') != basis:
+                    errors.append(f'support unit {uid}: claim basis conflicts with reviewed prefix scope')
         if (verdict.get('status'), verdict.get('category'), verdict.get('severity')) != DISPOSITIONS[result]:
             errors.append(f'support unit {uid}: invalid disposition for {result}')
         source = source_by_id.get(row.get('source_id'), {})

@@ -18,7 +18,9 @@ _SIGNAL_AFTER_PERIOD = re.compile(
 _SENTENCE_AFTER_CITE = re.compile(r"(?<=[)\d])\.\s+(?=[A-Z*_])")
 
 _PAREN = re.compile(r"\([^()]*\)")
-JOURNAL = re.compile(r"\b(\d{1,4})\s+((?:[A-Z][A-Za-z'&]*\.?\s+){1,7}?)(\d{1,5})\b")
+# A journal token may carry several periods ("L.J.", "B.C."); see the Claude-side
+# citation_ledger.py note (2026-10-26) — the one-period token missed every Yale L.J. cite.
+JOURNAL = re.compile(r"\b(\d{1,4})\s+((?:[A-Z][A-Za-z'&]*(?:\.[A-Za-z'&]+)*\.?\s+){1,7}?)(\d{1,5})\b")
 
 def outside(text, end):
     depth, quote = 0, []
@@ -97,7 +99,7 @@ def _strip_parens(s):
     return s
 
 
-SIGNAL_PATTERN = (r"see,?\s+e\.g\.,?|see\s+also|see\s+generally|but\s+see|but\s+cf\.|"
+SIGNAL_PATTERN = (r"see,?\s+e\.g\.,?|see\s+also\s+generally|see\s+also|see\s+generally|but\s+see|but\s+cf\.|"
                   r"cf\.|see|compare\s+with|compare|with|accord|contra|e\.g\.,?")
 SIGNAL_RE = re.compile(r"^(" + SIGNAL_PATTERN + r")(?=[\s,])", re.I)
 SIGNAL_INNER = re.compile(r"\b(" + SIGNAL_PATTERN + r")(?=[\s,])", re.I)
@@ -113,6 +115,7 @@ def signal_of(clause):
         return ""
     signal = re.sub(r"\s+", " ", match.group(1).lower()).rstrip(",")
     if signal == "with": return "compare with"
+    if signal == "see also generally": return "see generally"
     return "see, e.g." if signal.replace(",", "") == "see e.g." else signal
 
 
@@ -149,12 +152,11 @@ def locate(clause, kind):
     m = PARA_PIN.search(outer)
     if m:
         return _clean(m.group(0))
-    if kind == "article":
+    if kind in {"article", "book"}:
         jm = JOURNAL.search(outer)
         if jm:
             m = re.compile(r",\s*" + _PIN_TAIL).match(outer, jm.end())
-            if m:
-                return _clean(m.group(1))
+            return _clean(m.group(1)) if m else ""
     if kind == "book":
         m = BOOK_PIN.search(clause)
         if m:

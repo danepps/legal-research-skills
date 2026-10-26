@@ -256,8 +256,28 @@ a full-text verification basis on both source and verdict. Add:
 
 `claim_basis` is one of `anchor.sentence`, `anchor.clause`, `parenthetical`, or
 `note_prose`; claim must equal the complete selected field (one complete prose
-clause for `note_prose`), not an arbitrary substring. For a body citation in its
-own citation sentence, the support unit has `body_citation_sentence: true`, the
+clause for `note_prose`), not an arbitrary substring. Normalize `see also generally`
+to `see generally` while preserving the original citation text; its background
+meaning must not become direct support.
+
+A read verdict using a mid-sentence `anchor.clause` or `anchor.sentence` also
+requires `support.claim_scope_review`, for example:
+
+```json
+{"prefix_is_proposition": false,
+ "reason": "The marker follows only the statute's name; the cited section governs the entire sentence's operative claim."}
+```
+
+This review describes the prefix, not whether the source supports the claim.
+Use `anchor.clause` when `prefix_is_proposition` is true; otherwise use the
+complete `anchor.sentence` only after reviewing the citation's responsibility
+for the whole sentence. A nonassertive prefix cannot earn support credit. If no
+claim can be assigned safely, use `unverifiable`, `support_read: false`, and an
+unlock path. Parenthetical/note-prose claims retain their own scope and do not
+require this anchor review.
+
+For a body citation in its own citation sentence, the support unit has
+`body_citation_sentence: true`, the
 anchor position is `citation-sentence`, and `anchor.previous` is also allowed.
 That preceding sentence may be in the previous paragraph. Inline body citations
 and footnotes cannot use this exception. Body `siblings` counts are per paragraph. The source
