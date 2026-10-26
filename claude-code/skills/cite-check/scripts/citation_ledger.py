@@ -72,7 +72,10 @@ SHORT_CASE = re.compile(r"\b(\d{1,4})\s+(%s)\s+at\s+\d{1,4}\b" % REPORTER_ANY)
 STATUTE = re.compile(r"U\.\s?S\.\s?C\.|C\.\s?F\.\s?R\.|\bStat\.\s+\d|§|U\.S\.\s+Const\.|Fed\.\s+R\.|\bR\.\s+\d")
 URL = re.compile(r"https?://|www\.")
 # "110 Harv. L. Rev. 815" — volume, abbreviated journal (must contain a period), page.
-JOURNAL = re.compile(r"\b(\d{1,4})\s+((?:[A-Z][A-Za-z'&]*\.?\s+){1,7}?)(\d{1,5})\b")
+# A journal token may carry several periods with no space ("L.J.", "B.C.", "N.Y.U."); the
+# one-period token used here before 2026-10-26 missed every Yale L.J. cite, which then fell
+# through to the book rule and took its FIRST page as a pincite (Codex smoke test on a real draft).
+JOURNAL = re.compile(r"\b(\d{1,4})\s+((?:[A-Z][A-Za-z'&]*(?:\.[A-Za-z'&]+)*\.?\s+){1,7}?)(\d{1,5})\b")
 BOOK = re.compile(r"\([^()]*\b\d{4}\)")  # any parenthetical ending in a year (checked after article)
 YEAR = re.compile(r"\(\d{4}\)")
 _PAREN = re.compile(r"\([^()]*\)")
@@ -195,7 +198,7 @@ def supra_name_keys(outer):
 # "see generally" = background; "compare ... with" = comparison; "but see"/"contra"
 # = CONTRARY authority. A support checker that reads a "but see" cite as a support
 # claim manufactures a false finding, so the signal is recorded per instance.
-_SIGNAL_ALT = (r"see,?\s+e\.g\.,?|see\s+also|see\s+generally|but\s+see|but\s+cf\.|cf\.|see|"
+_SIGNAL_ALT = (r"see,?\s+e\.g\.,?|see\s+also\s+generally|see\s+also|see\s+generally|but\s+see|but\s+cf\.|cf\.|see|"
                r"compare\s+with|compare|accord|contra|e\.g\.,?")
 SIGNAL_RE = re.compile(r"^(" + _SIGNAL_ALT + r")(?=[\s,])", re.IGNORECASE)
 # A signal after introductory prose ("For a contrary view, cf. Smith"): the prefix must
@@ -217,6 +220,8 @@ def signal_of(clause):
     if not m:
         return ""
     sig = re.sub(r"\s+", " ", m.group(1).lower()).rstrip(",")
+    if sig == "see also generally":  # the "generally" carries the meaning: background, not support
+        return "see generally"
     return "see, e.g." if sig.replace(",", "") == "see e.g." else sig
 
 
@@ -267,6 +272,8 @@ def locate(clause, kind):
             if m:
                 return _clean(m.group(1))
     if kind == "book":
+        if JOURNAL.search(outer):  # a journal cite misclassified as a book: its first page is not a pin
+            return ""
         m = BOOK_PIN.search(clause)
         if m:
             return _clean(m.group(1))

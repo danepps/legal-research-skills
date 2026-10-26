@@ -235,8 +235,14 @@ each was violated once and produced a FALSE accusation against the draft):
 // apply different tests. "Overstated" is a CONFIRM item by the author's decision.
 const SUPPORT_RULES = `WHAT THE DRAFT CLAIMS. Each unit carries the body sentence its footnote marker sits in
 (anchor.sentence); when the marker is MID-SENTENCE, anchor.clause (the text before the marker)
-is the claim, not the whole sentence. If the footnote's OWN prose states the proposition ("For the
-contrary view, see ..."; note_prose), that governs. A proposition parenthetical ("holding that
+is usually the claim, not the whole sentence — but decide, and say so in claimBasis: when the
+clause is only an authority's name or a framing phrase ("As Smith argued,", "In Roe,", "Under
+the Act,"), the marker attributes the whole sentence and the claim is anchor.sentence; when the
+sentence joins claims cited to different sources and this cite's share is unclear, use the
+parenthetical or the footnote's prose, or report unverifiable with the unlock path — never
+invent a shorter claim or strengthen the draft's wording. Confirming that a source exists or
+has the title the draft gives is NOT proposition support. If the footnote's OWN prose states
+the proposition ("For the contrary view, see ..."; note_prose), that governs. A proposition parenthetical ("holding that
 ...") says precisely what the source is cited for — check that. An opinion_note the draft itself
 supplies ("Thomas, J., concurring") is the posture the draft claims: judge against that opinion.
 Judge the claim in the DRAFT'S words, with its own hedges ("arguably", "has suggested"); never
@@ -251,8 +257,9 @@ READ THE CLAIM THROUGH THE SIGNAL (Bluebook R. 1.2) — the verdict is relative 
 - compare ... with — a comparison; each side is its own unit (signal "compare" for the first
   authority, "compare with" for the second); the question is whether that side says what the
   comparison implies about it, read with the other side in view (same footnote).
-- see generally — background; supported if the source treats the topic at the level the draft
-  suggests. NEVER not_supported merely because the page does not state the sentence.
+- see generally (and "see also generally", normalized to see generally) — background; supported if
+  the source treats the topic at the level the draft suggests. NEVER not_supported merely because
+  the page does not state the sentence.
 - but see / but cf. / contra — cited as CONTRARY authority; the test is whether it actually
   contradicts (cf.: is contrary by analogy to) the proposition. A "but see" source that does NOT
   contradict the sentence is not_supported (the cite fails its job) — never "contradicted".

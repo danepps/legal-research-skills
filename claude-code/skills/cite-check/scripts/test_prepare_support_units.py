@@ -163,6 +163,16 @@ cs = cl.split_clauses("Smith v. Jones, 1 U.S. 2 (2000). This case is important. 
 check([cl.classify(c)[0] for c in cs] == ["case", "text", "id"], "prose between cites becomes a text clause (%s)" % [cl.classify(c)[0] for c in cs])
 check(len(cl.split_clauses("McCulloch v. Maryland, 17 U.S. (4 Wheat.) 316, 431 (1819).")) == 1, "a parallel-reporter parenthetical does not split")
 check(len(cl.split_clauses("Smith v. Jones, 1 U.S. 2, 3 (2000) (holding that X. The court said so).")) == 1, "a sentence break inside a parenthetical does not split")
+print("journal abbreviations with several periods (Codex smoke test, 2026-10-26)")
+for c, pin in (("See generally Author, Title, 121 Yale L.J. 1286 (2012).", ""), ("Author, Title, 121 Yale L.J. 1286, 1290–92 (2012).", "1290–92"),
+               ("Author, Title, 66 B.C. L. Rev. 1679 (2025).", ""), ("Author, Title, 91 N.Y.U. L. Rev. 762, 780 (2016).", "780"),
+               ("Author, Title, 31 Fordham Urb. L.J. 1507, 1532 (2004).", "1532")):
+    k = cl.classify(c)[0]
+    check(k == "article" and cl.locate(c, k) == pin, "%r -> article, pin %r (got %s, %r)" % (c[:45], pin, k, cl.locate(c, k)))
+check(cl.locate("Author, Title, 121 Yale L.J. 1286 (2012).", "book") == "", "a journal cite handed to the book rule does not take its first page as a pin")
+check(cl.locate("RICHARD POSNER, ECONOMIC ANALYSIS OF LAW 45 (9th ed. 2014).", "book") == "45", "a real book page still locates")
+check(cl.signal_of("See also generally Author, Title, 1 J. 5 (2020).") == "see generally", "'see also generally' keeps the background meaning")
+check(cl.signal_of("*See also generally* Author, Title, 1 J. 5 (2020).") == "see generally", "italicized 'see also generally' too")
 print("rule and code locators")
 for c, want in (("Fed. R. Civ. P. 12(b)(6).", "12(b)(6)"), ("See Fed. R. Evid. 403.", "403"), ("Sup. Ct. R. 10(a).", "10(a)"), ("42 U.S.C. 1983.", "1983"), ("42 U.S.C. § 1983(a).", "§ 1983(a)")):
     k = cl.classify(c)[0]
