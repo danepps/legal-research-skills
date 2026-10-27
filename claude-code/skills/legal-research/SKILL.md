@@ -101,8 +101,10 @@ phenomenon-targeted search AND a both-directions citation-chase actually ran —
 is scoped to "in the sources reviewed" and the un-run search is flagged. Fan-out is organized around
 coverage cells, and the agent cap is a ceiling, not a quota — nonoverlapping lanes beat many
 overlapping generalist searches. Pipeline: survey vectors → dedup → **≤8 unique full reads total** (not per-vector;
-readers fall back to open-access mirrors — digital commons, author pages, CourtListener/LII —
-before giving up, route PDFs through a hard size-capped fetcher, `fetch_page.py`, and extract
+readers fall back to open-access mirrors — the journal's own site, author pages, CourtListener/LII —
+before giving up, test every candidate URL in one deterministic call first (`probe_sources.py`:
+HTTP status, known-host rules for SSRN/bepress/Hein/sign-in walls, Wayback snapshot), route PDFs
+through a hard size-capped fetcher, `fetch_page.py`, and extract
 posture/limitation/separate-opinions/significance alongside the proposition and quote) → one
 session-model draft (guided by the method brief) → a bounded gap-fill (≤3
 targeted retrievals plus one retry wave, only if the draft flags missing authorities) → chunked

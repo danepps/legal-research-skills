@@ -15,6 +15,8 @@
 //                     for an out-of-scope id, and one with an invented claim
 //   downgrade         unit 0 contradicted; the reviewer corrects it to supported_qualified
 //   retracted         unit 0 contradicted; the reviewer retracts it (supported) with evidence
+//   budget-wave       every support agent is charged 900k tokens; with args.maxWave = 1 the first
+//                     support wave exhausts the soft cap and the second job is never launched
 import fs from 'node:fs'
 const [,, wfPath, argsPath, scenario = 'baseline'] = process.argv
 const src = fs.readFileSync(wfPath, 'utf8').replace(/^export const meta/m, 'const meta')
@@ -54,7 +56,7 @@ const supportVerdict = (id) => {
   return { id, verdict: v, ...evidence(v === 'supported' ? {} : { searched: 'searched "tax", "destroy": only the general rule appears' }) }
 }
 async function agent(prompt, opts) {
-  spent += 3000
+  spent += (scenario === 'budget-wave' && (opts.label || '').startsWith('support')) ? 900_000 : 3000
   labels.push(opts.label || opts.phase)
   const L = opts.label || ''
   if (L.startsWith('segment')) {
@@ -109,5 +111,6 @@ const result = {
   findings: out.support.map((f) => ({ id: f.id, verdict: f.verdict, first: f.firstVerdict, artifact: !!f.artifact, unaudited: !!f.unaudited, rejected: !!f.rejected, reverified: !!f.reverified, claim: f.claim, claimBasis: f.claimBasis, claimNote: f.claimNote || '' })),
   items: out.findings.items.filter((i) => i.kind.startsWith('support')).map((i) => [i.kind, i.verdict, i.footnote]),
   exported: out.findings.support,
+  spend: out.spend,
 }
 console.log(JSON.stringify(result))

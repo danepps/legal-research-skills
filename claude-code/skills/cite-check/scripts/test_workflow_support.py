@@ -12,7 +12,11 @@ scenarios and checks what reaches the findings, the ledger, the counts and the e
   * a reviewer's downgrade to supported_qualified stays reported and counted as qualified;
     a retraction ends as supported in the ledger;
   * the findings export lists what was read, so a later diff can tell resolved from not
-    rechecked per item.
+    rechecked per item;
+  * (2026-10-27) the run measures itself — agents and budget.spent() tokens per phase come
+    back as `spend` — and a fan-out launches in budget-sized waves, so a phase whose agents
+    cost more than the gate assumed stops launching and discloses what it never read instead
+    of overshooting the cap.
 
 Needs node (the workflow is JavaScript). Skips, with exit 0, when node is absent.
 """
@@ -78,8 +82,13 @@ with tempfile.TemporaryDirectory() as td:
     ap = os.path.join(td, "args.json")
     json.dump(args, open(ap, "w"))
 
-    def run(scenario):
-        p = subprocess.run([node, HARNESS, WORKFLOW, ap, scenario], capture_output=True, text=True)
+    def run(scenario, extra=None):
+        path = ap
+        if extra:
+            a2 = dict(args, **extra)
+            path = os.path.join(td, "args-%s.json" % scenario)
+            json.dump(a2, open(path, "w"))
+        p = subprocess.run([node, HARNESS, WORKFLOW, path, scenario], capture_output=True, text=True)
         if p.returncode != 0:
             print(p.stderr[-2000:])
             raise SystemExit("harness failed for scenario %s" % scenario)
@@ -96,6 +105,11 @@ with tempfile.TemporaryDirectory() as td:
     check(s["unitsChecked"] == 6 and s["supported"] == 6 and s["rejected"] == 0 and s["unauditedAdverse"] == 0, "all six in-scope units read and supported (%s)" % s)
     check(all(v == "supported" for k, v in r["ledger"].items() if k.split(":")[0] in ("2", "3", "4")) , "ledger: the unquoted instances in n.2-4 are 'supported' (%s)" % r["ledger"])
     check(len(r["exported"]["read"]) == 6 and r["exported"]["complete"] is True, "export lists the six read units and is complete")
+    sp = r["spend"]
+    check(sp["agents"] == len(r["agents"]) and sp["measured"] == 3000 * len(r["agents"]), "spend: agents and tokens measured for the run (%s)" % {k: sp[k] for k in ("agents", "measured", "perAgent")})
+    check(sp["byPhase"].get("Support", {}).get("agents") == 2 and sp["byPhase"].get("Verify", {}).get("agents") == 1, "spend: per-phase agent counts (%s)" % {k: v["agents"] for k, v in sp["byPhase"].items()})
+    check(sum(v["tokens"] for v in sp["byPhase"].values()) == sp["measured"], "spend: per-phase tokens sum to the run total")
+    check(sp["softCap"] == 1_000_000 and sp["hardCeiling"] is False, "spend: soft cap 650k + 350k for support, no hard ceiling")
 
     print("adverse, audited")
     r = run("adverse")
@@ -151,6 +165,16 @@ with tempfile.TemporaryDirectory() as td:
     check(f0["artifact"] and f0["verdict"] == "supported", "retraction is an artifact with final verdict supported")
     check(s["artifactsCaught"] == 1 and s["supported"] == 6 and r["ledger"]["2:1"] == "supported", "retracted finding counted and recorded as supported in the ledger")
     check(any(e["claim"] == f0["claim"] for e in r["exported"]["read"]), "a retracted finding's unit still counts as read in the export")
+
+    print("budget runs out mid-phase (2026-10-27 wave gate)")
+    r = run("budget-wave", {"maxWave": 1})
+    s = r["support"]
+    check(r["spend"]["byPhase"]["Support"]["agents"] == 1, "only the first support wave launched (%d agent)" % r["spend"]["byPhase"]["Support"]["agents"])
+    check(any("ran out mid-phase" in d and d.startswith("support:") for d in r["degradation"]), "degradation names the mid-phase stop (%s)" % r["degradation"])
+    check(s["unitsChecked"] == 3 and s["unread"] >= 3, "the dropped bundle's three units are unread, not checked (%s)" % {k: s[k] for k in ("unitsChecked", "unread", "supported")})
+    check(r["exported"]["complete"] is False, "export is not complete when units were skipped for budget")
+    check(r["exitState"] == "complete_with_limits", "exit state discloses the limit")
+    check(not any("agent failure" in d for d in r["degradation"]), "budget skips are never reported as agent failures")
 
 print("\n%s" % ("all tests passed" if not fails else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)

@@ -98,3 +98,43 @@ verify-the-verifier pass as high-severity quote findings; default scope is pinci
 a bare whole-work cite is the expensive, artifact-prone read. The calibration run on a real draft
 is the step that settles whether these verdicts are trustworthy; the first such run should be
 read the way the 2026-07-12 practice run was, with every finding checked against the source.
+
+## Addendum 2026-10-27 — cost, measured
+
+The first live run of the support pass (2026-10-26, footnotes 1–30 of a 293-note draft; the
+report is in `Sample/`) reported 1,989,264 subagent tokens across 34 agents: about 58k per agent,
+against the 9k per verify source and 10k per support source the budget ladder had assumed since
+July. Every gate therefore passed, nothing degraded, and the run finished at twice its 1,000,000
+soft cap with "0 dropped for budget." The report's own "couldn't check" section showed where the
+tokens went: 17 of roughly 30 sources ended unverifiable, each after an agent had guessed and
+fetched repository URLs one at a time, reasoning between the 403s and 404s. Sources that Zotero
+held were cheap; sources that produced nothing were the expensive ones. Lesson 6 of the July run
+(the WAF reality) had named the problem; capping attempts at three did not contain it, because
+the cost was in finding and testing the candidates, not in the three fetches.
+
+Three changes, all on the Claude Code side:
+
+1. **Probe before fetch.** `legal-research/probe_sources.py` tests every candidate URL for a
+   source in one call — HTTP status, a table of hosts with known behaviour (subscription-only
+   services are marked without a request; SSRN, Justia and bepress repositories are expected to
+   403; openYLS is a sign-in page), and a Wayback snapshot for anything unreachable. Agents fetch
+   only what the probe marks fetchable. The failures that dominated the bill now cost no model
+   tokens.
+2. **The run measures itself.** Agents and `budget.spent()` tokens per phase are logged at each
+   phase boundary and returned as `spend`; the gates' per-agent estimates are floors that the
+   run's measured mean replaces once agents report. The report footer prints the workflow's own
+   figure next to the completion notification's, because the two have not been reconciled: the
+   gates in the 2026-10-26 run saw less than half the notification's number, or the Re-verify and
+   Form phases could not have run.
+3. **Waves, not a single launch.** The verify and support fan-outs go out in waves sized to the
+   budget left (`gatedFanout`), so a phase can no longer overshoot the cap once its gate opens.
+   What a wave never launches is disclosed by source as NOT CHECKED (budget), with the `+Nk`
+   budget that lifts the cap.
+
+What this does not do: lower the caps' meaning. A default run on a long draft will now degrade
+honestly where it used to overspend silently, and SKILL.md step 3c has the orchestrator say the
+expected cost and the cap before launching so the user can choose a `+Nk` budget instead. Not
+built, by decision: splitting support agents into a low-effort fetch half and a medium-effort
+judgment half. With the probe in place the fetch half is cheap, and the split would add a file
+handoff between agents for a gain that cannot be measured until the next live run reports its
+`spend`.

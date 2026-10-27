@@ -58,10 +58,14 @@ goes through the same independent second derivation as a high-severity quote fin
 reaches the report; the report shows the draft's claim and the source's passage side by side.
 Default scope is **pincited** instances (a page, section, URL or parenthetical to read); bare
 whole-work cites are listed as not read unless `supportScope:"all"`. Quoted instances are not
-support units (the quote path, with its fragment-framing judgment, covers them). **Cost:** this
-pass fetches sources the quote pass never touched and reads for substance, so a run with
-`support:true` is typically two to four times the verify-stage cost; the soft cap rises by
-350k when it is on. Say so when the user asks for it on a long draft.
+support units (the quote path, with its fragment-framing judgment, covers them). **Cost (measured,
+2026-10-26):** the first live run with the pass spent 1,989,264 subagent tokens on footnotes 1–30
+of a 293-note draft — 34 agents, about 58k per agent, most of it on sources that ended
+unverifiable after agents tried URL after URL. That is six times the per-agent figure the budget
+ladder had assumed, so the ladder never engaged. The soft cap rises by 350k when the pass is on;
+the run itself now measures its spend per phase (returned as `spend`) and launches its fan-outs
+in budget-sized waves, so a run that outgrows the cap stops and discloses what it did not read
+instead of overshooting. Step 3a says how to state the expected cost before launching.
 
 **Plus the obvious FORM problems (scope lock lifted by the user, 2026-08-10 — "undo the lock insofar as
 it's stopping you from checking obvious stuff").** A `Form` phase reports what is decidable from the
@@ -98,8 +102,7 @@ prose, cite-check verifies the authorities** — they now happen to share the ci
   proposition support", "do the signal cites hold up", "support pass"). Never infer it from
   "deep" or "thorough" — deep buys care per quote, support buys a different check with a
   different cost (see above); when the user asks for support on a long draft, say in one
-  sentence that it reads every pincited unquoted cite and costs roughly two to four times a
-  standard run. `supportScope:"all"` additionally reads bare whole-work cites; only when the
+  sentence that it reads every pincited unquoted cite and give the step 3a estimate. `supportScope:"all"` additionally reads bare whole-work cites; only when the
   user asks for that explicitly.
 - If the draft has tracked changes, say so and ask whether to accept-all before checking (the parser
   reads the current/accepted text and skips tracked deletions, but a heavily-marked draft is worth a
@@ -234,6 +237,23 @@ footnotes 45–80 of N" and its counts describe that range only; say the same in
 message, and label the report file for the range if a whole-draft report already sits next to
 the draft (a partial findings file would otherwise overwrite it and reset the re-run diff).
 
+### 3a. Say what it will cost before launching (2026-10-27)
+
+The only live measurement so far is about **58k subagent tokens per agent** (standard tier,
+support on, Sonnet agents): one agent per unique source that has to be fetched, plus one per
+batch of 12 secondary sources for the existence pass, one per 30 case cites, one per 8 cases
+for history, and a few for segmentation, re-verification, form and the report. Before step 4,
+add it up from the counts the scripts printed — `unit_count` (quotes; the unique sources behind
+them are fewer, often by half), `unique_secondary_cites`, `unique_case_cite_count`, and with
+`support:true` the support `unique_sources` — and tell the user in one sentence roughly how many
+agents and tokens to expect against the soft cap (650k standard / 900k deep, +350k with
+support). If the estimate exceeds the cap, say so plainly: the run will stop launching agents
+when the cap is reached and list what it never read as NOT CHECKED (budget), and a `+Nk`
+budget written in their request (for example `+3000k`) lifts the cap to a hard ceiling of that
+size. Do not launch a run you expect to degrade without having said so; do not pad the estimate
+either — the report footer will show the real figure, and a re-run on a cached `resumeFromRunId`
+replays the cheap phases.
+
 ### 4. Launch the workflow
 
 ```
@@ -337,7 +357,7 @@ degradation ladder armed; it runs in the background and notifies on completion.
 
 ### 5. Deliver
 The workflow returns `{ report, counts, exitState, degradation, artifactsCaught, ledger, history,
-support, findings, … }`.
+support, findings, spend, … }`.
 - **Re-run diff first (when step 2a found a previous findings file).** Save the result's
   `findings` object to `<scratch>/findings_new.json` with two fields added at the top level:
   `"snapshotSha256"` (from step 2b) and `"date"` (local date). Then
@@ -366,7 +386,12 @@ support, findings, … }`.
   progress entries — don't assume the model map), the wall-clock duration, and the token
   count — from the workflow completion notification's `<usage>` block (`duration_ms`,
   `subagent_tokens`, `agent_count`), labeled subagent output tokens (orchestrator
-  overhead not included) — **plus the snapshot's SHA-256** (recorded in step 2b), which
+  overhead not included) — **and the workflow's own measurement** from the result's `spend`
+  object (`measured`, the `budget.spent()` tokens this workflow consumed; `agents`; the
+  per-phase `byPhase` breakdown; and `softCap`). Print both figures: they have not yet been
+  reconciled (the 2026-10-26 run's gates saw less than half the notification's figure), and
+  seeing them side by side on every report is how that gets settled — **plus the snapshot's
+  SHA-256** (recorded in step 2b), which
   ties the report to the exact bytes checked. At deliver time also hash the live draft;
   if it no longer matches the snapshot, say so in the deliver message and in the footer
   ("draft edited since snapshot") — the report covers the snapshot, not the new text.
@@ -380,7 +405,9 @@ support, findings, … }`.
   ```
   ---
   Production details: Claude Code /cite-check; 21m 7s; 2,397,252 subagent output
-    tokens across 53 agents (workflow agents Claude Sonnet 5 + Claude Opus 4.8 report).
+    tokens across 53 agents (workflow agents Claude Sonnet 5 + Claude Opus 4.8 report);
+    workflow-measured 1,104,300 tokens of a 1,000,000 soft cap (Verify 612k / Support
+    388k / other 104k).
     Draft checked: test draft.docx, SHA-256 3f2a…e91b (report is stale if the hash no
     longer matches the draft).
   ```
@@ -402,7 +429,10 @@ support, findings, … }`.
   it's a sign the guardrail is working (not something to hide).
 - Surface `exitState`: `complete` → deliver; `complete_with_limits` → deliver, noting the
   unverifiable items and any degradation; if the budget guard degraded coverage, say which sources
-  were batched/skipped and offer a targeted re-run. If `counts.quotesNotChecked` is non-zero, an
+  were batched/skipped and offer a targeted re-run. A degradation line saying the budget "ran out
+  mid-phase" means the wave gate stopped launching agents: the sources it never fetched are named
+  in section I as NOT CHECKED (budget), and the offer is a re-run with a `+Nk` budget and
+  `resumeFromRunId`, which replays everything already done from cache. If `counts.quotesNotChecked` is non-zero, an
   agent failed mid-run and those quotes were never verified — say so and offer a targeted re-run
   of their footnotes; if `counts.highSeveritySingleChecker` is non-zero, say those findings rest on
   one checker.

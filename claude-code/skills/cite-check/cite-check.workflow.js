@@ -81,6 +81,7 @@ const FETCH_PAGE = `${SKILLS}/legal-research/fetch_page.py`
 const VERIFY_QUOTES = `${SKILLS}/cite-check/scripts/verify_quotes.py`
 const PREPARE_SUPPORT = `${SKILLS}/cite-check/scripts/prepare_support_units.py`
 const CL_TOOLS = `${SKILLS}/legal-research/cl_case_tools.py`
+const PROBE = `${SKILLS}/legal-research/probe_sources.py`
 
 // ---- knobs -------------------------------------------------------------------
 const SEGMENT_CHUNK = 28   // quote-units per resolver agent
@@ -89,7 +90,6 @@ const SECONDARY_BATCH = 12 // unique secondary sources per existence/metadata ag
 const HISTORY_BATCH = 8    // case cites per subsequent-history / treatment agent
 const VERIFY_CHUNK = 8     // small/quoteless sources bundled per verify agent
 const SUPPORT_TAIL = 5     // single-unit support sources bundled per agent under budget pressure
-const PER_SUPPORT_SOURCE = 10_000 // budget estimate per dedicated support agent
 const MIRROR_CAP = 3       // max fetch attempts per source before "unverifiable"
 
 // Model map (house convention): mechanical/mid-volume work on Sonnet; the final
@@ -101,10 +101,25 @@ const REVERIFY_MODEL = 'sonnet'
 
 // Budget: always-armed soft cap + graceful degradation (ported from
 // legal-research). The practice run burned ~2.2M without unique-source
-// bundling and Id./supra pre-resolution; with them the target is 400-700k.
+// bundling and Id./supra pre-resolution; with them the target was 400-700k.
+// The first live run with the support pass (2026-10-26: 30 footnotes, 34
+// agents) reported ~58k subagent tokens PER AGENT against the 9-10k per source
+// these gates assumed, so no gate ever closed and the run spent twice the cap
+// with "0 dropped for budget". Two fixes below: the per-agent estimates are
+// floors that this run's own measured mean replaces as soon as agents report,
+// and the big fan-outs launch in budget-sized waves (gatedFanout) instead of
+// all at once, so a phase can no longer overshoot the cap after its gate opens.
 const RESERVE_REPORT = 60_000
 const RESERVE_REVERIFY = 40_000
 const RESERVE_SUPPORT_AUDIT = 30_000 // kept back from the support pass so its adverse verdicts can be re-derived
+// Per-agent floors (output tokens). Used only until this run has measured its own agents.
+const PER_EXIST = 8_000            // existence / secondary-existence batch agent
+const PER_HISTORY = 8_000          // subsequent-history batch agent
+const PER_SOURCE = 25_000          // verify agent for one unique source (was 9k; see above)
+const PER_SUPPORT_SOURCE = 30_000  // dedicated support agent (was 10k; a medium-effort read)
+const PER_REVERIFY = 10_000        // second-derivation agent
+const PER_FORM = 15_000            // case-name typeface agent
+const MAX_WAVE = Number(A.maxWave) || 12 // agents per wave in gatedFanout (near the concurrency cap, so the barrier is cheap)
 let SOFT_CAP = DEEP ? 900_000 : 650_000  // +100k (2026-09-06) for the secondary-source existence pass
 if (SUPPORT_ON) SOFT_CAP += 350_000       // the support pass reads sources the quote pass never fetched
 // budget.spent() is TURN-GLOBAL (main loop + every workflow this turn). Baseline
@@ -112,9 +127,58 @@ if (SUPPORT_ON) SOFT_CAP += 350_000       // the support pass reads sources the 
 // invoking the skill late in a busy session spuriously degrades from agent one.
 // A user "+Nk" budget (budget.total) is a real hard ceiling, so honor it directly.
 const SPENT0 = budget.spent()
-const remaining = () => budget.total ? budget.remaining() : Math.max(0, SOFT_CAP - (budget.spent() - SPENT0))
+const spentHere = () => budget.spent() - SPENT0
+const remaining = () => budget.total ? budget.remaining() : Math.max(0, SOFT_CAP - spentHere())
 const tight = (need) => remaining() < need
 const degradation = []
+
+// ---- spend instrumentation (2026-10-27) -------------------------------------
+// Every agent goes through spawn() so the run can measure itself: agents and
+// budget.spent() tokens per phase, logged at each phase boundary and returned as
+// `spend`. est(floor) is the per-agent estimate the gates use: the stage floor
+// above, or this run's measured mean per agent once that is higher — the same
+// units the gates compare against, which the static constants never were.
+let agentsSoFar = 0
+let currentPhase = 'Setup'
+let phaseStart = 0
+const spendByPhase = {}
+const phaseRec = (t) => spendByPhase[t] || (spendByPhase[t] = { agents: 0, tokens: 0 })
+const mark = (title) => {
+  const now = spentHere()
+  const rec = phaseRec(currentPhase)
+  rec.tokens += now - phaseStart
+  if (rec.agents || rec.tokens) log(`Spend — ${currentPhase}: ${rec.agents} agent(s), ${rec.tokens.toLocaleString()} tokens; run so far ${now.toLocaleString()} of ${(budget.total || SOFT_CAP).toLocaleString()}.`)
+  phaseStart = now
+  currentPhase = title
+  if (title !== 'Done') phase(title)
+}
+const spawn = (prompt, opts) => {
+  agentsSoFar++
+  phaseRec((opts && opts.phase) || currentPhase).agents++
+  return agent(prompt, opts)
+}
+const perAgentMeasured = () => (agentsSoFar ? Math.round(spentHere() / agentsSoFar) : 0)
+const est = (floor) => Math.max(floor, perAgentMeasured())
+// Launch `jobs` (thunks) in waves sized to the budget left after `reserve`, re-measuring
+// between waves. Results align with jobs (null where a job was never launched); `dropped`
+// lists the indexes that were not launched. A wave always holds at least one job while any
+// budget beyond the reserve remains, so a phase that passed its gate is never dropped whole.
+async function gatedFanout(jobs, perJob, reserve) {
+  const results = new Array(jobs.length).fill(null)
+  const dropped = []
+  let i = 0
+  while (i < jobs.length) {
+    const room = remaining() - reserve
+    let wave = Math.floor(room / est(perJob))
+    if (wave < 1 && room > 0) wave = 1
+    wave = Math.min(wave, MAX_WAVE, jobs.length - i)
+    if (wave < 1) { for (let j = i; j < jobs.length; j++) dropped.push(j); break }
+    const outs = await parallel(jobs.slice(i, i + wave))
+    outs.forEach((o, k) => { results[i + k] = o })
+    i += wave
+  }
+  return { results, dropped }
+}
 
 const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 
@@ -140,14 +204,26 @@ const SOURCES = `FREE / OPEN-WEB SOURCES ONLY (no Westlaw/Lexis):
     fetcher script, NEVER raw WebFetch). Authoritative, and — CRITICAL — the ONLY free source that
     carries the SYLLABUS and front matter; CourtListener/CAP opinion text does NOT.
 - Statutes/rules: uscode.house.gov, Cornell LII, official state legislature sites.
-- Scholarship: the user's Zotero library FIRST (see per-agent instructions), then SSRN, Google
-  Scholar, law-school digital-commons repositories, HeinOnline open content, journal sites, author
-  faculty pages, Google Books / archive.org snippet search for book quotes.
-- KNOWN FETCH BLOCKS: Justia and SSRN often return HTTP 403 to scripted fetches; bepress/
-  digital-commons and some university repositories block too. Mirror chain that works: journal's own
-  site → non-bepress repository → Wayback Machine → Google Books snippet. Cap attempts per source at
-  ${MIRROR_CAP}; then mark the item unverifiable with the unlock path (Hein/JSTOR pull), do NOT burn
-  retries.
+- Scholarship: the user's Zotero library FIRST (see per-agent instructions), then the journal's
+  own website, the author's faculty page, the Wayback Machine, Google Books / archive.org snippet
+  search for book quotes.
+- KNOWN FETCH BLOCKS (every one confirmed in live runs): HeinOnline, JSTOR, Westlaw and Lexis are
+  subscription-only — never fetchable. SSRN, Justia and every bepress Digital Commons repository
+  (digitalcommons.*, scholarship.law.*, ir.lawnet.fordham.edu, repository.law.umich.edu and the
+  like) return 403 to scripted fetches; openYLS is a Yale sign-in page. Do not search for copies on
+  those hosts and never try URL variants on them; a bot-blocked URL is "presumptively live", not
+  dead. Cap attempts per source at ${MIRROR_CAP}; then mark the item unverifiable with the unlock
+  path, do NOT burn retries.
+- PROBE BEFORE YOU FETCH (2026-10-27 — most of a run's cost was agents fetching URLs one at a
+  time and reasoning between 403s and 404s on sources that ended unverifiable anyway). Gather every
+  candidate URL for a source first, then test them ALL in ONE Bash call:
+    python3 "${PROBE}" "<url1>" "<url2>" ...
+  It returns, per URL, fetchable true/false, the HTTP status, the host rule that applies, and a
+  Wayback Machine snapshot URL when one exists for an unreachable page. Fetch ONLY the URLs it
+  marks fetchable (or the snapshot it returns), through the capped fetcher below. Every URL it
+  marks not fetchable counts as one of your ${MIRROR_CAP} attempts without a fetch; nothing it
+  marks blocked, not-found or subscription is fetched or retried with a variant. No fetchable
+  candidate and no snapshot = unverifiable: report the probe's unlock path and stop.
 - PDFs: never WebFetch a PDF and never \`open\`/GUI-view one. Run the capped fetcher via Bash
   (load Bash with ToolSearch "select:Bash" if needed): python3 "${FETCH_PAGE}" "<url>"
 TOOLS: WebSearch and WebFetch. If not callable, first run ToolSearch query "select:WebSearch,WebFetch".`
@@ -491,7 +567,7 @@ async function must(label, fn) {
 // ===========================================================================
 // Phase 1 — SEGMENT & RESOLVE (highest-care stage)
 // ===========================================================================
-phase('Segment')
+mark('Segment')
 // Chunk the work as contiguous id ranges (full draft) or explicit id picks
 // (partial pass). Each chunk is [loadArg, ids] where loadArg is the exact
 // prepare_units flags the agent runs.
@@ -560,7 +636,7 @@ do NOT judge accuracy — only resolve WHICH source and WHERE. Never invent a ci
 source is genuinely unresolvable from the context given, set source to the verbatim draft text
 and kind "unknown".`
 
-const segAgent = (ch) => agent(segPrompt(ch), {
+const segAgent = (ch) => spawn(segPrompt(ch), {
   label: `segment:${ch.label}`,
   phase: 'Segment',
   schema: SEGMENT_SCHEMA,
@@ -590,7 +666,7 @@ log(`Resolved ${resolutions.length}/${segTarget} quotes to their specific source
 // ===========================================================================
 // Phase 2 — CASE EXISTENCE (deterministic CourtListener + web escalation)
 // ===========================================================================
-phase('Existence')
+mark('Existence')
 const existBatches = []
 for (let i = 0; i < CASE_CITES.length; i += EXIST_BATCH) existBatches.push(CASE_CITES.slice(i, i + EXIST_BATCH))
 
@@ -683,15 +759,15 @@ from an opencasebook.org URL slug; the Stanford Law Review's own page showed the
 - Author ORDER specifically is never a finding without the source's own title page or landing page.
 ${SOURCES}`
 
-const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + (existBatches.length + secBatches.length) * 4000)
+const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + (existBatches.length + secBatches.length) * est(PER_EXIST))
 const casePassRan = !CASE_CITES.length || existGate
 const secondaryPassRan = !SECONDARY_CITES.length || existGate
 if (!secondaryPassRan) degradation.push(`secondary-source existence pass skipped for ${SECONDARY_CITES.length} sources (budget) — they are UNCHECKED in the ledger`)
 const existJobs = []
 if (casePassRan) for (const b of existBatches) existJobs.push(() =>
-  agent(existPrompt(b), { label: `exist:${b.length}`, phase: 'Existence', schema: EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' }))
+  spawn(existPrompt(b), { label: `exist:${b.length}`, phase: 'Existence', schema: EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' }))
 if (secondaryPassRan) for (const b of secBatches) existJobs.push(() =>
-  agent(secPrompt(b), { label: `exist-secondary:${b.length}`, phase: 'Existence', schema: SECONDARY_EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' })
+  spawn(secPrompt(b), { label: `exist-secondary:${b.length}`, phase: 'Existence', schema: SECONDARY_EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' })
     .then((o) => o && o.sources ? { _secondary: o.sources } : o))
 const existRaw = existJobs.length ? await parallel(existJobs) : []
 const existence = []
@@ -731,7 +807,7 @@ log(`Case existence: ${existence.length} checked, ${existBad.length} unconfirmed
 // two-route citing probe (graph + name phrase) flags adverse treatment. Advisory: findings go in
 // their own report section, never in "Needs your attention", and never enter the ledger.
 // ===========================================================================
-phase('History')
+mark('History')
 const HISTORY_RE = /\b(aff'd|affirmed|rev'd|reversed|vacated|cert\.?\s*(denied|granted|dismissed)|overruled|abrogated|superseded|modified|reh'g|rehearing|en banc|withdrawn|amended|substituted|remanded|appeal (dismissed|docketed|filed)|petition for cert)/i
 const SCOTUS_RE = /\b\d+\s+(U\.?\s?S\.?|S\.?\s?Ct\.?|L\.?\s?Ed\.?(\s?2d)?)\s+\d+/i
 const existByCite = new Map(existence.map((e) => [norm(e.citation), e]))
@@ -840,9 +916,9 @@ const historyTargets = HISTORY_ON ? historyCases.filter((c) => c.exists) : []
 for (let i = 0; i < historyTargets.length; i += HISTORY_BATCH) historyBatches.push(historyTargets.slice(i, i + HISTORY_BATCH))
 let historyResults = []
 let historyRan = false
-if (historyBatches.length && !tight(RESERVE_REPORT + RESERVE_REVERIFY + historyBatches.length * 5000)) {
+if (historyBatches.length && !tight(RESERVE_REPORT + RESERVE_REVERIFY + historyBatches.length * est(PER_HISTORY))) {
   historyRan = true
-  const hAgent = (b, i) => agent(historyPrompt(b), { label: `history:${i * HISTORY_BATCH}-${i * HISTORY_BATCH + b.length}`, phase: 'History', schema: HISTORY_SCHEMA, model: VERIFY_MODEL, effort: DEEP ? 'medium' : 'low' })
+  const hAgent = (b, i) => spawn(historyPrompt(b), { label: `history:${i * HISTORY_BATCH}-${i * HISTORY_BATCH + b.length}`, phase: 'History', schema: HISTORY_SCHEMA, model: VERIFY_MODEL, effort: DEEP ? 'medium' : 'low' })
   const outs = await parallel(historyBatches.map((b, i) => async () => {
     let r = await hAgent(b, i)
     if (!r) { log(`history batch ${i} died — retrying once`); r = await hAgent(b, i) }
@@ -892,9 +968,8 @@ log(`Collapsed ${resolutions.length} quotes onto ${bundleList.length} unique sou
 
 // Budget degradation: if a full verify won't fit, verify multi-quote sources
 // individually and batch the single-quote long tail; never drop a source silently.
-const PER_SOURCE = 9_000
 let verifyBundles = bundleList
-if (bundleList.length && tight(RESERVE_REPORT + RESERVE_REVERIFY + bundleList.length * PER_SOURCE)) {
+if (bundleList.length && tight(RESERVE_REPORT + RESERVE_REVERIFY + bundleList.length * est(PER_SOURCE))) {
   const heavy = bundleList.filter((b) => b.quotes.length >= 2)
   const light = bundleList.filter((b) => b.quotes.length < 2)
   degradation.push(`verify degraded: ${light.length} single-quote sources batched, ${heavy.length} read individually (budget)`)
@@ -940,7 +1015,7 @@ ${SUPPORT_RULES}
 // ===========================================================================
 // Phase 3 — VERIFY (one agent per unique source; path per kind)
 // ===========================================================================
-phase('Verify')
+mark('Verify')
 const zoteroHint = ZOTERO_OK
   ? `SCHOLARSHIP (article/book): try the user's Zotero library FIRST. This project's library is
   served by the "${ZOTERO_SERVER}" MCP server. Load with
@@ -1055,7 +1130,7 @@ ${DETERMINISTIC_CHECK}
 ${CALIBRATION}
 ${SOURCES}`
 
-const verifyAgent = (b) => agent(verifyPrompt(b), {
+const verifyAgent = (b) => spawn(verifyPrompt(b), {
   label: `verify:${(b.source || b.key).slice(0, 44)}`,
   phase: 'Verify',
   schema: VERIFY_SCHEMA,
@@ -1068,11 +1143,13 @@ const verifyJobs = verifyBundles.map((b) => async () => {
   if (!r) { log(`verify:${b.key} died — retrying once`); r = await verifyAgent(b) }
   return r
 })
+const verifyJobKeys = verifyBundles.map((b) => [b.key]) // job index -> source keys, for budget accounting
 // Degraded long-tail: chunk single-quote sources VERIFY_CHUNK at a time.
 const light = verifyBundles._light || []
 for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
   const chunk = light.slice(i, i + VERIFY_CHUNK)
-  verifyJobs.push(() => agent(tailPrompt(chunk), {
+  verifyJobKeys.push(chunk.map((b) => b.key))
+  verifyJobs.push(() => spawn(tailPrompt(chunk), {
     label: `verify-tail:${i}`,
     phase: 'Verify',
     // the tail schema is the same shape but one object per source; ask for an array wrapper
@@ -1082,7 +1159,11 @@ for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
   }).then((o) => o && o.sources ? { _multi: o.sources } : o))
 }
 
-const verifyRaw = await parallel(verifyJobs)
+// Waves sized to the budget: a verify phase can no longer launch every source at once and
+// overshoot the cap. Sources never launched are disclosed, by name, as NOT CHECKED (budget).
+const { results: verifyRaw, dropped: verifyDropped } = await gatedFanout(verifyJobs, PER_SOURCE, RESERVE_REPORT + RESERVE_REVERIFY)
+const budgetDroppedKeys = new Set(verifyDropped.flatMap((j) => verifyJobKeys[j]))
+if (budgetDroppedKeys.size) degradation.push(`verify: ${budgetDroppedKeys.size} source(s) never fetched — the budget ran out mid-phase (ask for a "+Nk" budget to lift the cap); their quotes are listed as NOT CHECKED`)
 // Flatten (tail batches return {_multi:[...]}).
 const verifyResults = []
 for (const v of verifyRaw.filter(Boolean)) {
@@ -1092,7 +1173,7 @@ for (const v of verifyRaw.filter(Boolean)) {
 
 // Support verdicts the verify agents returned for folded-in units (the source was on disk).
 const supportRaw = []
-const foldedKeys = new Set(verifyBundles.filter((b) => supportByKey.has(b.key)).map((b) => b.key))
+const foldedKeys = new Set(verifyBundles.filter((b) => supportByKey.has(b.key) && !budgetDroppedKeys.has(b.key)).map((b) => b.key))
 for (const v of verifyResults) {
   if (!foldedKeys.has(v.sourceKey)) continue
   for (const sv of (v.supportVerdicts || [])) supportRaw.push({ ...sv, sourceKey: v.sourceKey, sourceIdentified: v.sourceIdentified || '', basis: sv.basis || v.fetchBasis || '' })
@@ -1129,13 +1210,15 @@ const highSev = findings.filter((f) => f.severity === 'high')
 // verdict list that skipped ids). Disclosed in the report as NOT CHECKED, never dropped.
 const verdictIds = new Set(findings.map((f) => f.id))
 const unverifiedUnits = resolutions.filter((r) => !verdictIds.has(r.id))
-if (unverifiedUnits.length) degradation.push(`${unverifiedUnits.length} resolved quote(s) got no verdict from the verify pass (agent failure or skipped ids) — listed as NOT CHECKED`)
+const budgetUnits = new Set(unverifiedUnits.filter((r) => budgetDroppedKeys.has(sourceKey(r.source, r.kind))).map((r) => r.id))
+const lostUnits = unverifiedUnits.length - budgetUnits.size
+if (lostUnits) degradation.push(`${lostUnits} resolved quote(s) got no verdict from the verify pass (agent failure or skipped ids) — listed as NOT CHECKED`)
 log(`Verified ${findings.length} quotes across ${verifyResults.length} sources; ${highSev.length} high-severity findings to re-verify${unverifiedUnits.length ? `; ${unverifiedUnits.length} quotes got no verdict` : ''}.`)
 
 // ===========================================================================
 // Phase 3b — SUPPORT (opt-in; dedicated agents for sources no verify agent fetched)
 // ===========================================================================
-phase('Support')
+mark('Support')
 const supportPrompt = (bundles) => `You are checking whether sources a law-review draft cites WITHOUT quoting them
 actually SUPPORT the propositions they are cited for (the opt-in proposition-support pass). This is a
 judgment call, so the discipline below matters more than speed. ${bundles.length === 1 ? 'ONE source; fetch it once.' : `${bundles.length} sources, one unit each; fetch each once.`}
@@ -1172,7 +1255,7 @@ let supportRan = false
 const supportSkippedUnits = []
 if (SUPPORT_ON && supportDedicated.length) {
   // Budget ladder: whole-work units first (if 'all'), then secondary sources, then skip.
-  const need = () => RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT + supportDedicated.length * PER_SUPPORT_SOURCE
+  const need = () => RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT + supportDedicated.length * est(PER_SUPPORT_SOURCE)
   if (tight(need()) && SUPPORT_SCOPE === 'all') {
     const dropped = supportDedicated.filter((b) => b.units.every((u) => u.scope === 'whole-work'))
     supportDedicated = supportDedicated.filter((b) => !b.units.every((u) => u.scope === 'whole-work'))
@@ -1196,19 +1279,28 @@ if (SUPPORT_ON && (supportDedicated.length || foldedKeys.size)) {
   // Multi-unit sources get their own agent; single-unit sources ride SUPPORT_TAIL per agent.
   const heavy = supportDedicated.filter((b) => b.units.length >= 2)
   const light = supportDedicated.filter((b) => b.units.length < 2)
-  const jobs = heavy.map((b) => () => agent(supportPrompt([b]), {
+  const jobUnits = heavy.map((b) => b.units) // job index -> units, for budget accounting
+  const jobs = heavy.map((b) => () => spawn(supportPrompt([b]), {
     label: `support:${(b.source || b.key).slice(0, 44)}`, phase: 'Support', schema: SUPPORT_SCHEMA,
     model: VERIFY_MODEL, effort: 'medium', // a judgment, not a string match: never low
   }))
   for (let i = 0; i < light.length; i += SUPPORT_TAIL) {
     const chunk = light.slice(i, i + SUPPORT_TAIL)
-    jobs.push(() => agent(supportPrompt(chunk), {
+    jobUnits.push(chunk.flatMap((b) => b.units))
+    jobs.push(() => spawn(supportPrompt(chunk), {
       label: `support-tail:${i}`, phase: 'Support',
       schema: { type: 'object', required: ['sources'], properties: { sources: { type: 'array', items: SUPPORT_SCHEMA } } },
       model: VERIFY_MODEL, effort: 'medium',
     }).then((o) => o && o.sources ? { _multi: o.sources } : o))
   }
-  const outs = jobs.length ? await parallel(jobs) : []
+  const { results: outs, dropped: supportDropped } = jobs.length
+    ? await gatedFanout(jobs, PER_SUPPORT_SOURCE, RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT)
+    : { results: [], dropped: [] }
+  if (supportDropped.length) {
+    const units = supportDropped.flatMap((j) => jobUnits[j])
+    supportSkippedUnits.push(...units)
+    degradation.push(`support: ${units.length} unit(s) on ${supportDropped.length} source bundle(s) not read — the budget ran out mid-phase (ask for a "+Nk" budget to lift the cap)`)
+  }
   for (const o of outs.filter(Boolean)) {
     const list = o._multi ? o._multi : [o]
     for (const v of list) for (const sv of (v.supportVerdicts || [])) supportRaw.push({ ...sv, sourceKey: v.sourceKey, sourceIdentified: v.sourceIdentified || '', basis: sv.basis || v.fetchBasis || '' })
@@ -1282,7 +1374,7 @@ if (SUPPORT_ON) log(`Support: ${supportFindings.length} verdicts — ${supportFi
 // ===========================================================================
 // Phase 4 — VERIFY-THE-VERIFIER (mandatory; the anti-artifact gate)
 // ===========================================================================
-phase('Re-verify')
+mark('Re-verify')
 const reverifyPrompt = (f) => `You are the SECOND, independent check on a HIGH-SEVERITY cite-check
 finding. Five of the six gravest findings in the practice run were checker ARTIFACTS, not draft
 errors — your job is to catch that before it reaches the report. Re-derive the verdict from the FULL
@@ -1317,9 +1409,9 @@ ${CALIBRATION}
 ${SOURCES}`
 
 let reverified = new Map()
-if (highSev.length && !tight(highSev.length * 6000)) {
+if (highSev.length && !tight(highSev.length * est(PER_REVERIFY))) {
   const outs = await parallel(highSev.map((f) => () =>
-    agent(reverifyPrompt(f), {
+    spawn(reverifyPrompt(f), {
       label: `re-verify:n.${f.footnote ?? '?'}#${f.id}`,
       phase: 'Re-verify',
       schema: REVERIFY_SCHEMA,
@@ -1385,9 +1477,9 @@ ${SUPPORT_RULES}
 ${SOURCES}`
 const supportToReverify = supportFindings.filter((f) => f.verdict === 'contradicted' || f.verdict === 'not_supported')
 const supportReverified = new Map()
-if (supportToReverify.length && !tight(supportToReverify.length * 6000)) {
+if (supportToReverify.length && !tight(supportToReverify.length * est(PER_REVERIFY))) {
   const outs = await parallel(supportToReverify.map((f) => () =>
-    agent(supportReverifyPrompt(f), { label: `re-verify-support:n.${f.footnote}#${f.id}`, phase: 'Re-verify', schema: SUPPORT_REVERIFY_SCHEMA, model: REVERIFY_MODEL, effort: 'medium' })))
+    spawn(supportReverifyPrompt(f), { label: `re-verify-support:n.${f.footnote}#${f.id}`, phase: 'Re-verify', schema: SUPPORT_REVERIFY_SCHEMA, model: REVERIFY_MODEL, effort: 'medium' })))
   for (const o of outs.filter(Boolean)) supportReverified.set(o.id, o)
   const lost = supportToReverify.filter((f) => !supportReverified.has(f.id)).length
   if (lost) degradation.push(`${lost} adverse support verdict(s) got no re-verify result (agent failure) — listed as not re-derived, not as findings`)
@@ -1511,7 +1603,7 @@ log(`Ledger: ${LEDGER.length} citation instances — ${JSON.stringify(ledgerCoun
 // this phase spends ONE agent, and only when there is a formatting layer and a
 // case-name judgment to make. Everything else ships as-is. Runs after re-verify
 // so it never competes with the verification stages for budget.
-phase('Form')
+mark('Form')
 const FORM_SCHEMA = {
   type: 'object',
   required: ['findings'],
@@ -1545,8 +1637,8 @@ const FORM_SCHEMA = {
 }
 let formAgentFindings = []
 let formAgentConventions = []
-if (FORM_FMT_OK && FORM_CANDIDATES.length && !tight(RESERVE_REPORT + 15_000)) {
-  const fr = await agent(
+if (FORM_FMT_OK && FORM_CANDIDATES.length && !tight(RESERVE_REPORT + est(PER_FORM))) {
+  const fr = await spawn(
     `You are settling CASE-NAME TYPEFACE questions in the law review draft "${DRAFT_NAME}".
 
 Bluebook R. 2.1(a) for law review FOOTNOTES (not the Bluepages practitioner rule, which
@@ -1604,7 +1696,7 @@ log(`form: ${formAll.length} findings (${formAll.filter((f) => f.kind === 'short
 // ===========================================================================
 // Phase 5 — REPORT (session model; assembles the graded report)
 // ===========================================================================
-phase('Report')
+mark('Report')
 const bySeverity = (s) => findings.filter((f) => f.severity === s && !f.artifact)
 const counts = {
   quotesChecked: findings.length,
@@ -1707,7 +1799,7 @@ const partialNote = UNIT_IDS
   ? `PARTIAL PASS. This run checked ONLY the quote units for footnotes ${partialRange(partialNotes)}${supportNotes.length ? ` (support units for footnotes ${partialRange(supportNotes)})` : ''} of the draft's ${FOOTNOTE_COUNT} footnotes. The title must read "partial pass — footnotes ${partialRange(partialNotes)} of ${FOOTNOTE_COUNT}" instead of "${FOOTNOTE_COUNT} footnotes swept", the TL;DR must open by saying the same, and every count below describes that range only. Never imply the rest of the draft was checked.`
   : ''
 
-const report = await must('Report', () => agent(
+const report = await must('Report', () => spawn(
   `You are assembling the final cite-check report for a law professor's article draft ("${DRAFT_NAME}",
 ${FOOTNOTE_COUNT} footnotes). ${partialNote} Write it in Markdown, in the professor's own report style: a decisive
 TL;DR line with counts, then findings ordered by how much they would hurt IN PRINT, each with the
@@ -1858,7 +1950,7 @@ ${supportNoVerdict.map((u) => `- n.${u.n} support unit ${u.id} — no verdict: $
 ${findings.filter((f) => f.verdict === 'unverifiable').map(fmtFinding).join('\n') || '(none)'}
 
 === QUOTES NOT CHECKED — agent failure, not a finding (section I; list by footnote) ===
-${[...unresolvedIds.map((i) => `- n.${UNIT_NOTES.get(i) ?? '?'} unit ${i} — no source resolution`), ...unverifiedUnits.map((r) => `- n.${r.footnote ?? '?'} unit ${r.id} — no verdict: "${(r.quote || '').slice(0, 120)}"`)].join('\n') || '(none)'}
+${[...unresolvedIds.map((i) => `- n.${UNIT_NOTES.get(i) ?? '?'} unit ${i} — no source resolution`), ...unverifiedUnits.map((r) => `- n.${r.footnote ?? '?'} unit ${r.id} — ${budgetUnits.has(r.id) ? 'source never fetched (budget)' : 'no verdict'}: "${(r.quote || '').slice(0, 120)}"`)].join('\n') || '(none)'}
 
 === SECONDARY-SOURCE EXISTENCE (sections E/G) ===
 ${secondaryExistence.length}/${SECONDARY_CITES.length} unique unquoted secondary sources existence-checked${secondaryPassRan ? '' : ' — PASS SKIPPED (budget); list them as UNCHECKED in section H'}.
@@ -1930,11 +2022,25 @@ const findingItems = [
   ...treatmentFlags.map((h) => ({ kind: 'treatment', cite: h.cite, label: h.treatment.slice(0, 200) })),
 ]
 
+mark('Done')
+// What this run spent, in the units the gates use (budget.spent(), output tokens this workflow).
+// SKILL.md puts it in the report footer beside the completion notification's subagent_tokens so
+// the two figures can be compared run over run.
+const spend = {
+  measured: spentHere(),
+  agents: agentsSoFar,
+  perAgent: perAgentMeasured(),
+  softCap: budget.total || SOFT_CAP,
+  hardCeiling: !!budget.total,
+  byPhase: Object.fromEntries(Object.entries(spendByPhase).filter(([, v]) => v.agents || v.tokens)),
+}
+
 return {
   draftName: DRAFT_NAME,
   exitState,
   degradation,
   counts,
+  spend,
   artifactsCaught: findings.filter((f) => f.artifact).map((f) => ({ id: f.id, footnote: f.footnote, reason: f.reverifyReason })),
   formFindings: formAll,
   formConventions,
