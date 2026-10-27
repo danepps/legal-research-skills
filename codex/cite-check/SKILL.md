@@ -37,8 +37,9 @@ The dedicated unquoted proposition-support pass is **opt-in**. Enable it when
 asked “check that the sources support what I cite them for,” “check proposition
 support,” or “do the signal cites hold up”; never infer it from “deep.” Add
 `--support` at initialization, and `--support-scope all` only when whole-work
-reading is requested. For a long draft, say once that this reads every pincited
-unquoted cite and costs roughly two to four times a standard run. Overstatement
+reading is requested. For a long draft, explain that reading every pincited
+unquoted cite adds source work; estimate the extra work from unique uncached
+sources rather than a fixed token multiplier. Overstatement
 is always a low-severity confirm item, never an error or a Needs your attention
 item. The protocol's Proposition support section governs this pass.
 
@@ -89,6 +90,12 @@ Use the exact keys in the protocol's [ledger field reference](references/ledger-
 ### 4. Retrieve and verify by source bundle
 
 Prefer user-provided sources and the project’s connected scholarly library, then official/primary sources, authoritative reproductions, repositories, and the open web. Use current web research for external sources and record direct URLs or local identifiers.
+
+Before delegating or estimating a long run, read [references/resource-controls.md](references/resource-controls.md).
+Prepare source-specific packets with `scripts/prepare_source_bundle.py`; use a
+fresh worker context (`fork_turns="none"` when supported), complete relevant draft
+context and cache paths. Reuse library lookups and source files across quote,
+support and audit work. Keep full source text on disk and read targeted excerpts.
 
 Optionally screen case identities with:
 
@@ -215,4 +222,8 @@ Before running the gate, set manifest `status` to `ready_for_validation`, set `c
 - If resources tighten, prioritize quotations, load-bearing propositions, broken cross-references, identity, and metadata, and disclose the exact degraded scope.
 - Preserve ledgers so the run can resume; never sacrifice adverse-finding audits.
 - Keep the lead agent responsible for resolution, grouping, severity, conflict resolution, audits, and publication. Delegate only bounded source bundles when parallel work is available and proportionate; do not recursively delegate.
+- Measure the lead and worker sessions over the run's own interval. When runtime
+  logs are available, `scripts/usage_report.py` produces a hidden usage summary;
+  cached input and reasoning are subsets, not extra tokens to add to the total.
+  Follow the resource-controls reference for missing counters and explicit budgets.
 

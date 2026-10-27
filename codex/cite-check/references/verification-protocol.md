@@ -136,8 +136,9 @@ Schema v6 adds reconciled case-review coverage, per-instance `identity_confirmed
 This dedicated pass is off by default, including in `deep` runs. Enable it only
 when the user asks whether sources support what they are cited for, asks to
 “check proposition support,” or asks “do the signal cites hold up.” On a long
-draft, say once that reading every pincited unquoted cite costs roughly two to
-four times a standard run. Initialize with `--support`; whole-work reading also
+draft, explain that reading every pincited unquoted cite adds source work and
+estimate it from unique uncached sources. Follow [resource controls](resource-controls.md)
+for fresh-context packets, shared retrieval and correctly scoped usage. Initialize with `--support`; whole-work reading also
 requires `--support-scope all`. Quotation matching and its alteration/framing
 review remain unchanged.
 

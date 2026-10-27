@@ -2,6 +2,13 @@
 
 ## 1.5.0 — 2026-10-25
 
+- Reduce cite-check context overhead: prepare bounded source packets with full
+  relevant draft context and cache references, use fresh worker contexts, and
+  share retrieval records across quote, support and audit work. Add a usage
+  reporter for explicitly selected Codex sessions and time windows; subtract
+  cumulative counters and keep cached input/reasoning as subsets. Replace the
+  unsupported fixed support-cost multiplier with estimates of actual source work.
+
 - Fix focused sample-run findings: preserve background meaning in `see also
   generally`, recognize dotted journal abbreviations without mistaking opening
   pages for pincites, and require reviewed claim scope for mid-sentence anchors.
