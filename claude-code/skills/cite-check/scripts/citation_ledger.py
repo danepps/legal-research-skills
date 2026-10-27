@@ -695,7 +695,7 @@ def compact(ledger):
 
 
 def render(instances, anchors=None):
-    """Markdown table for the companion '<draft> — Citation Ledger.md' file. Accepts the
+    """Markdown table for the companion '<draft> — Citation Ledger (Claude).md' file. Accepts the
     workflow's returned ledger (compact form with `d`) or the full form with `disposition`.
     `anchors` ({note number: anchor dict}, from extract.json's footnotes) adds the body
     sentence each note hangs on, so an existence-only row can be audited by eye."""

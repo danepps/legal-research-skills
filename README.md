@@ -91,7 +91,7 @@ When you finish, show me the report and explain how to open it.
 
 Claude may ask permission to run its checks or divide the work among several AI assistants. Read the request and approve it to continue.
 
-When it finishes, the report is saved beside your draft as a file whose name ends in `Cite Check.md`, and Claude's reply says where it is. If you cannot open it from the reply, ask Claude to show you the report. Read the **needs your attention** section first. The report should distinguish confirmed problems from items it could not verify. Use the quoted words and footnote numbers to locate each issue in Word.
+When it finishes, the report is saved beside your draft as a file whose name ends in `Cite Check (Claude).md` (the Codex version of the skill saves its report as `Cite Check.md`, so the two never overwrite each other), and Claude's reply says where it is. If you cannot open it from the reply, ask Claude to show you the report. Read the **needs your attention** section first. The report should distinguish confirmed problems from items it could not verify. Use the quoted words and footnote numbers to locate each issue in Word.
 
 For future work, choose the relevant folder and ask in ordinary English. You do not need to repeat installation.
 

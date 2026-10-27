@@ -2,7 +2,7 @@
 """Diff two cite-check runs of the same draft so a re-run after edits leads with what changed.
 
 The workflow returns a structured `findings` block alongside the report; SKILL.md saves it as
-`<draft> — Cite Check findings.json` next to the report. On the next run, this script compares
+`<draft> — Cite Check (Claude) findings.json` next to the report. On the next run, this script compares
 the previous file with the new one and prints a Markdown "Since the last report" block:
 findings that are NEW, findings STILL OPEN (unchanged), and findings RESOLVED (no longer
 reported). Dispositions carry forward by a stable key built from the finding's own content
