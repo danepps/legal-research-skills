@@ -8,15 +8,20 @@
 // Scenarios (what the stubbed agents do; everything else is the same deterministic baseline):
 //   baseline          every support unit supported, with full evidence
 //   adverse           units 0 and 1 not_supported/contradicted; reviewer upholds both with evidence
-//   budget-tight      as "adverse", but the budget runs out before the support re-verify
+//   budget-tight      as "adverse", but the budget runs out before the support re-verify (the test
+//                     passes args.costModel.reverify above the cap)
 //   lost-reviewer     as "adverse", but the reviewer returns nothing
 //   bad-results       the verify agent returns a verdict under a wrong source key; a dedicated
 //                     agent returns one without a passage, one with a citation-only basis, one
 //                     for an out-of-scope id, and one with an invented claim
 //   downgrade         unit 0 contradicted; the reviewer corrects it to supported_qualified
 //   retracted         unit 0 contradicted; the reviewer retracts it (supported) with evidence
-//   budget-wave       every support agent is charged 900k tokens; with args.maxWave = 1 the first
-//                     support wave exhausts the soft cap and the second job is never launched
+//   budget-wave       the test passes args.costModel with support agents projected near the cap
+//                     and args.maxWave = 1: the first support wave reaches the cap and the second
+//                     job is never launched (2026-10-27: gates project by cost model, not spent())
+//   zotero            as "baseline" with args.zoteroHits / zoteroLookupPath set: the matched
+//                     secondary source never reaches an existence agent, the verify and support
+//                     prompts carry its text path, and no agent prompt tells anyone to search Zotero
 import fs from 'node:fs'
 const [,, wfPath, argsPath, scenario = 'baseline'] = process.argv
 const src = fs.readFileSync(wfPath, 'utf8').replace(/^export const meta/m, 'const meta')
@@ -24,16 +29,14 @@ const fn = new Function('args', 'budget', 'agent', 'parallel', 'phase', 'log', '
 const args = JSON.parse(fs.readFileSync(argsPath, 'utf8'))
 let spent = 0
 let currentPhase = ''
+// budget.spent() is output tokens (what the runtime exposes); the workflow's gates no longer
+// read it, they project by cost model, so every scenario leaves it uncapped here.
 const budget = {
   spent: () => spent,
   total: 0,
   remaining: () => 1e9,
 }
-if (scenario === 'budget-tight') {
-  // a hard user ceiling that is exhausted once the Re-verify phase starts
-  budget.total = 1
-  budget.remaining = () => (currentPhase === 'Re-verify' ? 0 : 1e9)
-}
+const prompts = []
 const phases = []
 const phase = (t) => { phases.push(t); currentPhase = t }
 const logs = []
@@ -56,8 +59,9 @@ const supportVerdict = (id) => {
   return { id, verdict: v, ...evidence(v === 'supported' ? {} : { searched: 'searched "tax", "destroy": only the general rule appears' }) }
 }
 async function agent(prompt, opts) {
-  spent += (scenario === 'budget-wave' && (opts.label || '').startsWith('support')) ? 900_000 : 3000
+  spent += 3000
   labels.push(opts.label || opts.phase)
+  prompts.push({ label: opts.label || opts.phase, prompt, opts })
   const L = opts.label || ''
   if (L.startsWith('segment')) {
     const m = prompt.match(/--ids (\d+) (\d+)/)
@@ -112,5 +116,15 @@ const result = {
   items: out.findings.items.filter((i) => i.kind.startsWith('support')).map((i) => [i.kind, i.verdict, i.footnote]),
   exported: out.findings.support,
   spend: out.spend,
+  secondaryExistence: out.secondaryExistence,
+  // prompt facts the Zotero scenario checks (no prompt text leaves the harness)
+  prompts: prompts.map((p) => ({
+    label: p.label,
+    hasCostOpt: 'cost' in p.opts,
+    mentionsZoteroTool: /zotero_search_items|zotero_item_fulltext|zotero_item_metadata/.test(p.prompt),
+    saysNotInZotero: /NOT in any of the user's Zotero libraries/.test(p.prompt),
+    textOnDisk: (p.prompt.match(/FULL TEXT is already on disk at (\S+)/) || [])[1] || '',
+    toolCap: Number((p.prompt.match(/at most (\d+) tool calls/) || [])[1] || 0),
+  })),
 }
 console.log(JSON.stringify(result))

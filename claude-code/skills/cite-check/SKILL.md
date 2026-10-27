@@ -59,13 +59,16 @@ reaches the report; the report shows the draft's claim and the source's passage 
 Default scope is **pincited** instances (a page, section, URL or parenthetical to read); bare
 whole-work cites are listed as not read unless `supportScope:"all"`. Quoted instances are not
 support units (the quote path, with its fragment-framing judgment, covers them). **Cost (measured,
-2026-10-26):** the first live run with the pass spent 1,989,264 subagent tokens on footnotes 1–30
-of a 293-note draft — 34 agents, about 58k per agent, most of it on sources that ended
-unverifiable after agents tried URL after URL. That is six times the per-agent figure the budget
-ladder had assumed, so the ladder never engaged. The soft cap rises by 350k when the pass is on;
-the run itself now measures its spend per phase (returned as `spend`) and launches its fan-outs
-in budget-sized waves, so a run that outgrows the cap stops and discloses what it did not read
-instead of overshooting. Step 3a says how to state the expected cost before launching.
+2026-10-26, read off the agent transcripts 2026-10-27):** the first live run with the pass
+reported 1,989,264 subagent tokens on footnotes 1–30 of a 293-note draft, 34 agents. Output tokens
+were not the cost (278k for the run, in line with the budget gates, which were right not to
+close); the cost was 486 agent turns, each re-reading 50–60k of context, and the turn-heavy agents
+were the ones searching Zotero by hand (12 searches per existence batch, three libraries per
+verify agent) and trying repository URLs one at a time. Since then the Zotero work is done once,
+deterministically, before launch (step 3), every agent carries a tool-call budget, batches are
+smaller, and the gates project cost per agent kind in a unit the transcripts measure afterwards
+(`scripts/run_usage.py`) instead of reading output tokens. The soft cap rises by 3M when the pass is on.
+Step 3a says how to state the expected cost before launching.
 
 **Plus the obvious FORM problems (scope lock lifted by the user, 2026-08-10 — "undo the lock insofar as
 it's stopping you from checking obvious stuff").** A `Form` phase reports what is decidable from the
@@ -122,8 +125,8 @@ Two options — cite-check has no `fable` escalation, so the ladder is shorter t
 
 | Option | Args | What to say |
 |---|---|---|
-| **Standard** | `deep:false` | Verify agents at low effort, soft cap 650k. Good for a working draft. |
-| **Deep** | `deep:true` | Verify agents at **medium** effort, soft cap 900k. Closer reading of each quote against its source — for a near-final draft. |
+| **Standard** | `deep:false` | Verify agents at low effort, soft cap 4M input-equivalent tokens (+3M with support). Good for a working draft. |
+| **Deep** | `deep:true` | Verify agents at **medium** effort, soft cap 6M input-equivalent tokens (+3M with support). Closer reading of each quote against its source — for a near-final draft. |
 
 **Do NOT reuse /proofread's rationale here — the two `deep`s are different mechanisms.**
 Proofread's deep adds a second offset extraction pass (a recall play, backed by the ~75–80%
@@ -163,11 +166,18 @@ stage. Ask first.
       no server yet, offer to add it through `/legal-research:setup`; it takes effect after a
       Claude Code restart, so agents fall back to the web this run.
    d. Pass the server name as `zoteroServer` (and `zotero:false` if no usable server this run).
+   e. The deterministic pre-lookup in step 3 reads the same `mcpServers` entries (API key and
+      library id) from `~/.claude.json`, so it needs nothing more. Pass it the project's server
+      first and any other registered Zotero server the user's sources may live in (a personal
+      library beside a group's); it searches them in that order.
 
 ### 2a. Look for the previous report (re-runs)
-If `<draft's directory>/<draftName> — Cite Check findings.json` exists, this is a re-run after
-edits: keep that path for step 5, where the new report opens with what changed. Nothing else to do
-now; the run itself is identical.
+If `<draft's directory>/<draftName> — Cite Check (Claude) findings.json` exists, this is a re-run
+after edits: keep that path for step 5, where the new report opens with what changed. Nothing
+else to do now; the run itself is identical. (Runs before 2026-10-27 wrote
+`<draftName> — Cite Check findings.json`, the name the Codex skill's report also uses; if only
+that older file exists, use it as the previous run this once — step 5 writes the new name from
+now on and leaves the old file alone.)
 
 ### 2b. Snapshot the draft (always)
 A live OneDrive/Word co-authored file can change between extraction and delivery, which would
@@ -198,6 +208,29 @@ With `support:true`, also build the support units (zero model tokens):
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/prepare_support_units.py "<scratch>/extract.json" "<scratch>/support_units.json"
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/prepare_support_units.py "<scratch>/extract.json" --compact > "<scratch>/support_args.json"
 ```
+
+**Zotero pre-lookup (2026-10-27; whenever a Zotero server exists, support on or off).** One
+deterministic pass matches every article/book the draft cites to the user's Zotero libraries,
+compares the record's metadata to the cite, downloads each match's PDF attachment and extracts its
+text to a file. It replaces every Zotero search an agent used to make, and the agents are told so
+per source (text already on disk, or not in Zotero at all). Run it with the project's server first
+and any other registered Zotero server the sources may live in:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/zotero_lookup.py "<scratch>/zotero_lookup.json" \
+    --server <zoteroServer> [--server zotero ...] \
+    --secondary "<scratch>/ledger_args.json" --support "<scratch>/support_args.json" \
+    --cache-dir "<scratch>/zotero-cache"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/zotero_lookup.py "<scratch>/zotero_lookup.json" --compact > "<scratch>/zotero_hits.json"
+```
+
+(`--support` only with `support:true`; without it the support units file does not exist.) It
+prints `{sources, matched, withText, unmatched, downloads}`; the first run on a 1,453-item
+library took about three and a half minutes, nearly all of it PDF downloads, and a re-run in the
+same cache dir is seconds (library dumps and texts are reused). Say the match count at deliver
+time; `unmatched` sources are checked on the web as before. The `--compact` file is the map the
+workflow takes as `zoteroHits`; pass the report path as `zoteroLookupPath`. If no Zotero server
+is registered, skip this and pass `zotero:false`; the agents are then told not to search Zotero.
 
 The first prints `unit_count`, `in_scope_pincited`, `whole_work`, `by_kind`, `unique_sources`,
 `units_without_anchor`. Glance at `whole_work`: those are bare cites to an entire work that the
@@ -239,20 +272,32 @@ the draft (a partial findings file would otherwise overwrite it and reset the re
 
 ### 3a. Say what it will cost before launching (2026-10-27)
 
-The only live measurement so far is about **58k subagent tokens per agent** (standard tier,
-support on, Sonnet agents): one agent per unique source that has to be fetched, plus one per
-batch of 12 secondary sources for the existence pass, one per 30 case cites, one per 8 cases
-for history, and a few for segmentation, re-verification, form and the report. Before step 4,
-add it up from the counts the scripts printed — `unit_count` (quotes; the unique sources behind
-them are fewer, often by half), `unique_secondary_cites`, `unique_case_cite_count`, and with
-`support:true` the support `unique_sources` — and tell the user in one sentence roughly how many
-agents and tokens to expect against the soft cap (650k standard / 900k deep, +350k with
-support). If the estimate exceeds the cap, say so plainly: the run will stop launching agents
-when the cap is reached and list what it never read as NOT CHECKED (budget), and a `+Nk`
-budget written in their request (for example `+3000k`) lifts the cap to a hard ceiling of that
-size. Do not launch a run you expect to degrade without having said so; do not pad the estimate
-either — the report footer will show the real figure, and a re-run on a cached `resumeFromRunId`
-replays the cheap phases.
+The workflow's gates **project** the run's cost from a per-agent-kind model. The unit is
+**input-equivalent tokens**: uncached input + cache writes + cache reads ÷ 10 + output × 5, the
+Sonnet price ratios, so 1M is about three dollars at Sonnet rates; `scripts/run_usage.py` measures
+it from the run's transcripts afterwards (step 5). (Neither figure the runtime offers is a cost:
+`budget.spent()` is output tokens, a few percent of this unit, and the completion notification's
+`subagent_tokens` is the sum of each agent's peak context — checked on two runs — which grows
+with agent count, not with work.) The model, overridable per kind through the `costModel` arg,
+from the 2026-10-26 and 2026-10-27 runs (the second measured 5.28M against 5.08M projected): a
+verify agent 150k from the web or 80k when Zotero put the text on disk; a dedicated support
+agent 200k web / 100k Zotero; a verify tail batch (4 single-quote web sources) 130k and a
+support tail batch (3 single-unit web sources) 210k; a secondary-existence batch of 5 web
+sources 130k (sources matched in Zotero cost no agent); a case-existence batch of 30 cites 90k;
+a history batch of 8 cases 110k; segmentation 150k per chunk; re-verification 100k per finding;
+form 130k; the report 250k. Before step 4, add it up
+from the counts the scripts printed (`unit_count` quotes, whose unique sources are fewer, often
+by half; `unique_secondary_cites` less the Zotero `matched`; `unique_case_cite_count`; with
+`support:true` the support `unique_sources` less those with Zotero text) and tell the user in
+one sentence roughly how many agents and tokens to expect against the soft cap (4M standard /
+6M deep, +3M with support; a 30-footnote run with support fits, a full draft usually does not).
+If the projection exceeds the cap, say so plainly: the run degrades *before* launching the
+phase that would not fit (the ladder in DESIGN.md — whole-work units, then secondary sources,
+then the pass), lists every unit it did not read, and a `+Nk` budget written in the user's
+request (for example `+20000k`) raises the cap to N in the same unit. Do not launch a run you
+expect to degrade without having said so; do not pad the estimate either — the footer shows the
+measured figure beside the projection, and a re-run on a cached `resumeFromRunId` replays the
+cheap phases.
 
 ### 4. Launch the workflow
 
@@ -278,7 +323,10 @@ Workflow({
     supportUnits:  <support_args.units>,               // with support:true — prepare_support_units.py --compact
     supportScope:  "pincited",                         // "all" also reads bare whole-work cites (explicit request only)
     zotero:        true,                               // false if no usable Zotero server this run
-    zoteroServer:  "<from pre-flight 2.3>"             // e.g. "zotero-group" (5A) or "zotero" (personal)
+    zoteroServer:  "<from pre-flight 2.3>",            // e.g. "zotero-group" (5A) or "zotero" (personal)
+    zoteroHits:    <zotero_hits.json>,                 // the --compact map from the pre-lookup (step 3); {} if none
+    zoteroLookupPath: "<scratch>/zotero_lookup.json",  // agents read the full record of a matched source from it
+    costModel:     undefined,                          // optional per-kind overrides, e.g. { verify: 60000 } (step 3a)
   }
 })
 ```
@@ -296,8 +344,10 @@ Workflow({
    opinions whose text cites the citation string, which proves the cite real even when the
    opinion itself is not indexed) BEFORE any web escalation; reporter typos proposed. In the same
    fan-out, **secondary-source existence**: every unique unquoted article/book/statute/URL from
-   the ledger is located (Zotero, then web) and its bibliographic metadata compared to the
-   draft's cite — 12 per agent, low effort, no substance read. Under budget pressure this pass is
+   the ledger that the Zotero pre-lookup did not match is located on the web and its
+   bibliographic metadata compared to the draft's cite — 5 per agent, low effort, no substance
+   read; a source the pre-lookup matched is settled without an agent, its record as the basis and
+   any draft-vs-record difference as a "confirm" note. Under budget pressure this pass is
    skipped and the affected instances ship as `unchecked` (never silently).
 2b. **History** (added 2026-10-19) — for every case cite that exists: lower-court cases get
    `cl_case_tools.py history` (the RECAP docket's entries after the decision date, with the
@@ -323,8 +373,9 @@ Workflow({
    present in the cited draft but gone/moved in the current SSRN version → `superseded-source`).
 3b. **Support** (opt-in, 2026-10-24) — the support units whose source a verify agent fetched
    anyway were already judged inside that agent; the rest are bundled by unique source (one
-   agent per multi-unit source, five single-unit sources per agent) and read at the pincite
-   with `verify_quotes.py --page`, medium effort (a judgment, never low). Under budget pressure
+   agent per multi-unit source, three single-unit sources per agent) and read at the pincite
+   with `verify_quotes.py --page`, medium effort (a judgment, never low) — straight from the
+   file the Zotero pre-lookup extracted when it matched the source, from the web otherwise. Under budget pressure
    it degrades in order — whole-work units (if `all`), then secondary sources, then the whole
    dedicated pass — and every skipped unit is disclosed as not read.
 4. **Verify-the-verifier** — a MANDATORY independent re-derivation of every high-severity finding
@@ -352,8 +403,9 @@ Workflow({
    the unchecked / unverifiable / unresolved-cross-reference instances listed by footnote) and
    citation form in their own sections near the end.
 
-The run is spend-guarded (soft cap ~650k lean / ~900k deep output tokens) with the legal-research
-degradation ladder armed; it runs in the background and notifies on completion.
+The run is spend-guarded (soft cap 4M standard / 6M deep, +3M with support, input-equivalent
+tokens projected per agent kind — step 3a) with the legal-research degradation ladder armed; it
+runs in the background and notifies on completion.
 
 ### 5. Deliver
 The workflow returns `{ report, counts, exitState, degradation, artifactsCaught, ledger, history,
@@ -367,13 +419,16 @@ support, findings, spend, … }`.
   "not rechecked", never resolved, when this run's support pass did not run or ran at a
   different scope). Insert that block into the report immediately after the TL;DR, before
   section A. Lead the deliver message with its three counts.
-- Write **`report`** to `<draft's directory>/<draftName> — Cite Check.md` (next to the draft).
-- Write the findings file for next time: `<draft's directory>/<draftName> — Cite Check findings.json`
+- Write **`report`** to `<draft's directory>/<draftName> — Cite Check (Claude).md` (next to the
+  draft). The "(Claude)" tag is deliberate and never dropped: the Codex cite-check skill publishes
+  its report as `<Draft name> — Cite Check.md` in the same folder, and the two must never
+  overwrite each other (author's rule, 2026-10-27).
+- Write the findings file for next time: `<draft's directory>/<draftName> — Cite Check (Claude) findings.json`
   (the same object, with `snapshotSha256` and `date`; overwrite the previous one — the diff has
   already been taken).
 - Write the **companion ledger** next to it: save the result's `ledger` array to
   `<scratch>/ledger_final.json`, then
-  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py --render "<scratch>/ledger_final.json" --extract "<scratch>/extract.json" > "<draft's directory>/<draftName> — Citation Ledger.md"`
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/citation_ledger.py --render "<scratch>/ledger_final.json" --extract "<scratch>/extract.json" > "<draft's directory>/<draftName> — Citation Ledger (Claude).md"`
   — one row per citation instance (note, kind, signal, disposition, cite text, and — from
   `--extract` — the body sentence the note hangs on, so an `existence-only` row can be checked by
   eye). This is the audit trail behind section J; `counts.ledger` has the totals for the TL;DR.
@@ -385,13 +440,17 @@ support, findings, spend, … }`.
   skill, the workflow-agent model(s) actually used (read them off the run's per-agent
   progress entries — don't assume the model map), the wall-clock duration, and the token
   count — from the workflow completion notification's `<usage>` block (`duration_ms`,
-  `subagent_tokens`, `agent_count`), labeled subagent output tokens (orchestrator
-  overhead not included) — **and the workflow's own measurement** from the result's `spend`
-  object (`measured`, the `budget.spent()` tokens this workflow consumed; `agents`; the
-  per-phase `byPhase` breakdown; and `softCap`). Print both figures: they have not yet been
-  reconciled (the 2026-10-26 run's gates saw less than half the notification's figure), and
-  seeing them side by side on every report is how that gets settled — **plus the snapshot's
-  SHA-256** (recorded in step 2b), which
+  `subagent_tokens`, `agent_count`) — and **the measured cost**: run
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/run_usage.py "<transcript dir>" --projected <spend.projected>`
+  on the transcript directory the Workflow launch result named (it reads the agents'
+  own usage records: turns, input, cache writes and reads, output) and put its
+  `measured` line, the measured ÷ projected ratio, and the per-phase table's top lines in
+  the footer beside `spend.projected`. Label the notification's `subagent_tokens` for
+  what it is, the sum of the agents' peak contexts. When measured ÷ projected is off by
+  more than half in either direction, say so in the deliver message with the per-kind
+  figures the script prints, so `COST` in the workflow (or a `costModel` override) gets
+  corrected.
+  **Plus the snapshot's SHA-256** (recorded in step 2b), which
   ties the report to the exact bytes checked. At deliver time also hash the live draft;
   if it no longer matches the snapshot, say so in the deliver message and in the footer
   ("draft edited since snapshot") — the report covers the snapshot, not the new text.
@@ -404,10 +463,12 @@ support, findings, spend, … }`.
   Example footer (last lines of the file):
   ```
   ---
-  Production details: Claude Code /cite-check; 21m 7s; 2,397,252 subagent output
-    tokens across 53 agents (workflow agents Claude Sonnet 5 + Claude Opus 4.8 report);
-    workflow-measured 1,104,300 tokens of a 1,000,000 soft cap (Verify 612k / Support
-    388k / other 104k).
+  Production details: Claude Code /cite-check; 21m 7s; 53 agents (workflow agents
+    Claude Sonnet 5 + Claude Opus 4.8 report); measured 6,420,000 input-equivalent tokens
+    (run_usage.py: 53 agents, 410 turns; Verify 3,100k / Support 2,200k / other 1,120k)
+    against 5,900,000 projected, of a 7,000,000 soft cap; the completion notification's
+    subagent_tokens 2,397,252 (sum of the agents' peak contexts); Zotero pre-lookup
+    matched 41 of 146 sources, 30 with text.
     Draft checked: test draft.docx, SHA-256 3f2a…e91b (report is stale if the hash no
     longer matches the draft).
   ```

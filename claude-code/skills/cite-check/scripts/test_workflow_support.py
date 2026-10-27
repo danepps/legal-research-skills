@@ -13,10 +13,11 @@ scenarios and checks what reaches the findings, the ledger, the counts and the e
     a retraction ends as supported in the ledger;
   * the findings export lists what was read, so a later diff can tell resolved from not
     rechecked per item;
-  * (2026-10-27) the run measures itself — agents and budget.spent() tokens per phase come
-    back as `spend` — and a fan-out launches in budget-sized waves, so a phase whose agents
-    cost more than the gate assumed stops launching and discloses what it never read instead
-    of overshooting the cap.
+  * (2026-10-27) the gates PROJECT cost (agents x per-kind cost in the completion
+    notification's unit, returned as `spend`): a phase whose projection would pass the cap
+    degrades before launching and discloses every unit it did not read; the Zotero pre-lookup
+    (`zoteroHits`) settles matched sources without an agent and tells every agent, per source,
+    whether its text is on disk or it is not in Zotero at all.
 
 Needs node (the workflow is JavaScript). Skips, with exit 0, when node is absent.
 """
@@ -109,7 +110,13 @@ with tempfile.TemporaryDirectory() as td:
     check(sp["agents"] == len(r["agents"]) and sp["measured"] == 3000 * len(r["agents"]), "spend: agents and tokens measured for the run (%s)" % {k: sp[k] for k in ("agents", "measured", "perAgent")})
     check(sp["byPhase"].get("Support", {}).get("agents") == 2 and sp["byPhase"].get("Verify", {}).get("agents") == 1, "spend: per-phase agent counts (%s)" % {k: v["agents"] for k, v in sp["byPhase"].items()})
     check(sum(v["tokens"] for v in sp["byPhase"].values()) == sp["measured"], "spend: per-phase tokens sum to the run total")
-    check(sp["softCap"] == 1_000_000 and sp["hardCeiling"] is False, "spend: soft cap 650k + 350k for support, no hard ceiling")
+    check(sp["softCap"] == 7_000_000 and sp["hardCeiling"] is False, "spend: soft cap 4M + 3M for support (input-equivalent tokens), no hard ceiling")
+    cm = sp["costModel"]
+    kind = lambda L: "segment" if L.startswith("segment") else "existWeb" if L.startswith("exist-secondary") else "exist" if L.startswith("exist") else "history" if L.startswith("history") else "verifyTail" if L.startswith("verify-tail") else "verify" if L.startswith("verify") else "supportTail" if L.startswith("support-tail") else "support" if L.startswith("support") else "reverify" if L.startswith("re-verify") else "form" if L == "Form" else "report" if L == "Report" else "verify"
+    expected = sum(cm[kind(L)] for L in r["agents"])
+    check(sp["projected"] == expected and sp["perAgent"] == round(expected / len(r["agents"])), "spend: projected cost = cost model summed over the agents launched (%s)" % {k: sp[k] for k in ("projected", "perAgent")})
+    check(sum(v["projected"] for v in sp["byPhase"].values()) == sp["projected"], "spend: per-phase projections sum to the run total")
+    check("input-equivalent tokens" in sp["unit"] and "peak context" in sp["unit"], "spend: the unit is named and the notification figure explained")
 
     print("adverse, audited")
     r = run("adverse")
@@ -119,7 +126,7 @@ with tempfile.TemporaryDirectory() as td:
     check(sorted(v for v in r["ledger"].values() if v.startswith("support-")) == ["support-finding", "support-finding"], "ledger: two support-finding instances")
 
     print("adverse, re-verify skipped for budget (Codex item 1)")
-    r = run("budget-tight")
+    r = run("budget-tight", {"costModel": {"reverify": 5_000_000}})
     s = r["support"]
     check(any("re-verify skipped" in d for d in r["degradation"]), "degradation records the skipped audit")
     check(s["notSupported"] == 0 and s["contradicted"] == 0 and s["unauditedAdverse"] == 2, "unaudited adverse verdicts are NOT counted as findings (%s)" % {k: s[k] for k in ("notSupported", "contradicted", "unauditedAdverse")})
@@ -166,15 +173,45 @@ with tempfile.TemporaryDirectory() as td:
     check(s["artifactsCaught"] == 1 and s["supported"] == 6 and r["ledger"]["2:1"] == "supported", "retracted finding counted and recorded as supported in the ledger")
     check(any(e["claim"] == f0["claim"] for e in r["exported"]["read"]), "a retracted finding's unit still counts as read in the export")
 
-    print("budget runs out mid-phase (2026-10-27 wave gate)")
-    r = run("budget-wave", {"maxWave": 1})
+    print("support projection exceeds the cap: the ladder degrades BEFORE launching (2026-10-27)")
+    # Gates project by cost model (agents x per-kind cost in the completion notification's unit),
+    # so a phase that passes its gate completes; one that would not fit degrades up front, with
+    # every skipped unit disclosed. Here the dedicated support pass would cost 500k + 3 x 167k
+    # against ~850k left, so the ladder drops the secondary sources and keeps the case.
+    r = run("baseline", {"costModel": {"support": 4_000_000, "supportTail": 4_000_000}})
     s = r["support"]
-    check(r["spend"]["byPhase"]["Support"]["agents"] == 1, "only the first support wave launched (%d agent)" % r["spend"]["byPhase"]["Support"]["agents"])
-    check(any("ran out mid-phase" in d and d.startswith("support:") for d in r["degradation"]), "degradation names the mid-phase stop (%s)" % r["degradation"])
-    check(s["unitsChecked"] == 3 and s["unread"] >= 3, "the dropped bundle's three units are unread, not checked (%s)" % {k: s[k] for k in ("unitsChecked", "unread", "supported")})
+    check(r["spend"]["byPhase"]["Support"]["agents"] == 1, "one support agent launched, for the case kept (%d)" % r["spend"]["byPhase"]["Support"]["agents"])
+    check(any("secondary source(s) not read (budget)" in d for d in r["degradation"]), "degradation names the ladder step (%s)" % r["degradation"])
+    check(s["unitsChecked"] == 2 and s["unread"] >= 4, "only the folded McCulloch unit and the Marbury unit are read; the rest unread, not checked (%s)" % {k: s[k] for k in ("unitsChecked", "unread", "supported")})
     check(r["exported"]["complete"] is False, "export is not complete when units were skipped for budget")
     check(r["exitState"] == "complete_with_limits", "exit state discloses the limit")
     check(not any("agent failure" in d for d in r["degradation"]), "budget skips are never reported as agent failures")
+    check(r["spend"]["projected"] <= r["spend"]["softCap"], "the projection never exceeds the cap (%d of %d)" % (r["spend"]["projected"], r["spend"]["softCap"]))
+
+    print("Zotero pre-lookup joined to the run (2026-10-27)")
+    doe_txt = os.path.join(td, "zotero-DOE1.txt")
+    open(doe_txt, "w").write("page 815\fpage 816\f")
+    hits = {"110 harv l rev 815": {"lib": "zotero", "item": "DOE1", "title": "The Taxing Power Reconsidered", "au": ["Doe"], "year": "1997",
+                                   "vol": "110", "pp": "815-870", "text": doe_txt, "pages": 2, "src": "pdf", "first": "815",
+                                   "confirm": ["confirm: draft year 1997 vs Zotero record 1998"]}}
+    r = run("baseline", {"zotero": True, "zoteroHits": hits, "zoteroLookupPath": os.path.join(td, "zotero_lookup.json")})
+    labels = r["agents"]
+    check("exist-secondary:2" in labels and "exist-secondary:3" not in labels, "the matched source never reaches an existence agent (batch of 2, not 3): %s" % [l for l in labels if l.startswith("exist")])
+    doe = [e for e in r["secondaryExistence"] if e["key"] == "110 harv l rev 815"]
+    check(len(doe) == 1 and doe[0]["exists"] is True and doe[0]["basis"] == "zotero" and "confirm: draft year 1997" in doe[0]["note"], "its existence is settled deterministically with the record as basis and the difference as a confirm note (%s)" % (doe[0] if doe else None))
+    pr = {p["label"]: p for p in r["prompts"]}
+    sup = [p for p in r["prompts"] if p["label"].startswith("support:")][0]
+    check(sup["textOnDisk"] == doe_txt and not sup["hasCostOpt"] and sup["toolCap"] == 8, "the support agent for the matched source is told its text is on disk and gets the tighter tool cap; the cost kind never reaches agent() (%s)" % {k: sup[k] for k in ("textOnDisk", "hasCostOpt", "toolCap")})
+    tail = [p for p in r["prompts"] if p["label"].startswith("support-tail")][0]
+    check(tail["saysNotInZotero"], "unmatched sources are told they are not in Zotero")
+    check(not any(p["mentionsZoteroTool"] for p in r["prompts"]), "no agent prompt names a Zotero MCP tool")
+    check(r["spend"]["byPhase"]["Support"]["projected"] == r["spend"]["costModel"]["supportZotero"] + r["spend"]["costModel"]["supportTail"], "support projection uses the Zotero rate for the matched source (%s)" % r["spend"]["byPhase"]["Support"])
+    check(r["support"]["unitsChecked"] == 6, "all six in-scope units still read")
+    # the draft cites a short title; the record carries a subtitle and sits under a different key
+    hits2 = {"orphan-key": dict(hits["110 harv l rev 815"], title="The Taxing Power Reconsidered: A Subtitle the Draft Omits")}
+    r = run("baseline", {"zotero": True, "zoteroHits": hits2, "zoteroLookupPath": os.path.join(td, "zotero_lookup.json")})
+    sup = [p for p in r["prompts"] if p["label"].startswith("support:")][0]
+    check(sup["textOnDisk"] == doe_txt, "a record with a subtitle is joined by its main title + author when the keys differ")
 
 print("\n%s" % ("all tests passed" if not fails else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)

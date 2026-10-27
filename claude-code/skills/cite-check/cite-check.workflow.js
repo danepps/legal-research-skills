@@ -50,6 +50,15 @@ const SUPPORT_SCOPE = A.supportScope === 'all' ? 'all' : 'pincited' // whole-wor
 const SUPPORT_UNITS = SUPPORT_ON && Array.isArray(A.supportUnits) ? A.supportUnits : []
 const ZOTERO_OK = A.zotero !== false // assume available unless SKILL.md says otherwise
 const ZOTERO_SERVER = A.zoteroServer || 'zotero' // per-project; SKILL.md pre-flight resolves it (setup registers "zotero" for a personal library, "zotero-<name>" for a group)
+// Deterministic Zotero pre-lookup (2026-10-27): SKILL.md runs scripts/zotero_lookup.py before
+// launching and passes its `--compact` map as zoteroHits ({ledger key: {lib, item, title, au,
+// year, vol, pp, text, pages, src, first, confirm}}) plus the report path as zoteroLookupPath.
+// Agents never call a Zotero tool: a matched source has its text on disk already, an unmatched
+// one is told so. The 2026-10-26 transcripts showed Zotero searches by hand were the single
+// largest source of agent turns (three libraries per verify agent, 12 searches per existence batch).
+const ZOTERO_HITS = (A.zoteroHits && typeof A.zoteroHits === 'object') ? A.zoteroHits : {}
+const ZOTERO_LOOKUP = A.zoteroLookupPath || ''
+const ZOTERO_PRELOOKED = ZOTERO_OK && !!ZOTERO_LOOKUP
 // Partial pass (DESIGN.md: `--footnotes 45-80`): SKILL.md resolves a footnote
 // range/list to explicit unit ids and passes them here. Empty => full draft.
 const UNIT_IDS = Array.isArray(A.unitIds) && A.unitIds.length ? A.unitIds.slice() : null
@@ -82,14 +91,18 @@ const VERIFY_QUOTES = `${SKILLS}/cite-check/scripts/verify_quotes.py`
 const PREPARE_SUPPORT = `${SKILLS}/cite-check/scripts/prepare_support_units.py`
 const CL_TOOLS = `${SKILLS}/legal-research/cl_case_tools.py`
 const PROBE = `${SKILLS}/legal-research/probe_sources.py`
+const ZOTERO_LOOKUP_SCRIPT = `${SKILLS}/cite-check/scripts/zotero_lookup.py`
 
 // ---- knobs -------------------------------------------------------------------
 const SEGMENT_CHUNK = 28   // quote-units per resolver agent
 const EXIST_BATCH = 30     // case cites per existence agent (CL paces 60/min)
-const SECONDARY_BATCH = 12 // unique secondary sources per existence/metadata agent
+// Batch sizes (2026-10-27): an agent's cost is turns × context, and context grows with every
+// tool result, so a 12-source existence batch (30+ turns) cost more than three 4-source ones.
+// Sources already matched in Zotero never reach an existence agent at all.
+const SECONDARY_BATCH = 5  // unique secondary sources (not in Zotero) per existence/metadata agent (was 12)
 const HISTORY_BATCH = 8    // case cites per subsequent-history / treatment agent
-const VERIFY_CHUNK = 8     // small/quoteless sources bundled per verify agent
-const SUPPORT_TAIL = 5     // single-unit support sources bundled per agent under budget pressure
+const VERIFY_CHUNK = 4     // small/quoteless sources bundled per verify agent (was 8)
+const SUPPORT_TAIL = 3     // single-unit support sources bundled per agent under budget pressure (was 5)
 const MIRROR_CAP = 3       // max fetch attempts per source before "unverifiable"
 
 // Model map (house convention): mechanical/mid-volume work on Sonnet; the final
@@ -99,83 +112,123 @@ const RESOLVE_MODEL = 'sonnet'
 const VERIFY_MODEL = 'sonnet'
 const REVERIFY_MODEL = 'sonnet'
 
-// Budget: always-armed soft cap + graceful degradation (ported from
-// legal-research). The practice run burned ~2.2M without unique-source
-// bundling and Id./supra pre-resolution; with them the target was 400-700k.
-// The first live run with the support pass (2026-10-26: 30 footnotes, 34
-// agents) reported ~58k subagent tokens PER AGENT against the 9-10k per source
-// these gates assumed, so no gate ever closed and the run spent twice the cap
-// with "0 dropped for budget". Two fixes below: the per-agent estimates are
-// floors that this run's own measured mean replaces as soon as agents report,
-// and the big fan-outs launch in budget-sized waves (gatedFanout) instead of
-// all at once, so a phase can no longer overshoot the cap after its gate opens.
+// Budget (rewritten 2026-10-27, recalibrated the same evening from two runs' transcripts).
+// The agent transcripts of the 2026-10-26 run (34 agents) showed output tokens were never the
+// cost: 278k for the whole run, in line with the old gates, which were therefore right not to
+// close. The cost was 486 agent turns, each re-reading 50-60k of context — 22.4M cache-read
+// tokens — and budget.spent() (output tokens, the only figure the runtime exposes) cannot see
+// it. The completion notification's "subagent_tokens" is the SUM OF EACH AGENT'S PEAK CONTEXT
+// (1,988,912 by the transcripts against 1,989,264 reported; 1,102,009 against 1,102,299 on the
+// next run), a measure of breadth, not cost. So the gates PROJECT, in a unit that the
+// transcripts measure after the run (scripts/run_usage.py): INPUT-EQUIVALENT TOKENS, i.e.
+// uncached input + cache writes + cache reads / 10 + output x 5, the Sonnet price ratios, so
+// 1M of this unit is about three dollars at Sonnet rates. Every agent kind has a cost in that
+// unit (the constants below are per-kind means from the 2026-10-26 and 2026-10-27 runs,
+// rounded up), the run adds up what it launches, and a phase whose projection would pass the
+// cap degrades before launching. The report footer prints the projection beside the measured
+// figure so the constants get recalibrated run over run (`costModel` arg overrides any).
+const COST = Object.assign({
+  segment: 150_000,       // one resolver chunk (SEGMENT_CHUNK units; 7 turns)
+  exist: 90_000,          // case-existence batch (one deterministic script call + reasoning)
+  existWeb: 130_000,      // 5 secondary sources not in Zotero, located on the web (7-10 turns)
+  history: 110_000,
+  verify: 150_000,        // one source fetched from the web (2026-10-26 mean 176k with Zotero searches by hand; 2026-10-27 run 2: 105-180k, 7-17 turns)
+  verifyZotero: 80_000,   // one source whose text zotero_lookup.py already put on disk (run 2: 72-86k, 3-5 turns)
+  verifyTail: 130_000,    // a VERIFY_CHUNK batch of single-quote web sources
+  support: 200_000,       // one web source read for proposition support (medium effort)
+  supportZotero: 100_000, // the same with the text already on disk
+  supportTail: 210_000,   // a SUPPORT_TAIL batch of single-unit web sources (run 2: 153-290k at 3 per batch, 7-20 turns)
+  reverify: 100_000,      // second-derivation agent (196k on an unbounded one; 75-95k once tool-capped)
+  form: 130_000,
+  report: 250_000,
+}, (A.costModel && typeof A.costModel === 'object') ? A.costModel : {})
 const RESERVE_REPORT = 60_000
 const RESERVE_REVERIFY = 40_000
 const RESERVE_SUPPORT_AUDIT = 30_000 // kept back from the support pass so its adverse verdicts can be re-derived
-// Per-agent floors (output tokens). Used only until this run has measured its own agents.
-const PER_EXIST = 8_000            // existence / secondary-existence batch agent
-const PER_HISTORY = 8_000          // subsequent-history batch agent
-const PER_SOURCE = 25_000          // verify agent for one unique source (was 9k; see above)
-const PER_SUPPORT_SOURCE = 30_000  // dedicated support agent (was 10k; a medium-effort read)
-const PER_REVERIFY = 10_000        // second-derivation agent
-const PER_FORM = 15_000            // case-name typeface agent
 const MAX_WAVE = Number(A.maxWave) || 12 // agents per wave in gatedFanout (near the concurrency cap, so the barrier is cheap)
-let SOFT_CAP = DEEP ? 900_000 : 650_000  // +100k (2026-09-06) for the secondary-source existence pass
-if (SUPPORT_ON) SOFT_CAP += 350_000       // the support pass reads sources the quote pass never fetched
-// budget.spent() is TURN-GLOBAL (main loop + every workflow this turn). Baseline
-// it at workflow start so the soft cap governs THIS workflow's own output — else
-// invoking the skill late in a busy session spuriously degrades from agent one.
-// A user "+Nk" budget (budget.total) is a real hard ceiling, so honor it directly.
-const SPENT0 = budget.spent()
-const spentHere = () => budget.spent() - SPENT0
-const remaining = () => budget.total ? budget.remaining() : Math.max(0, SOFT_CAP - spentHere())
+// Caps in the same unit. The 2026-10-26 run (30 footnotes, support on, agents searching Zotero
+// by hand) measured 7.4M; the 2026-10-27 run after the fixes measured 2.7M with the support pass
+// mostly degraded. These defaults let a 30-footnote run with the support pass complete; a full
+// draft will project past them and degrade unless the request carries a "+Nk" budget.
+let SOFT_CAP = DEEP ? 6_000_000 : 4_000_000
+if (SUPPORT_ON) SOFT_CAP += 3_000_000     // the support pass reads sources the quote pass never fetched
+// A user "+Nk" budget (budget.total) is read in the same unit as the cap. The runtime also
+// enforces it as an output-token ceiling, which is far looser (output is a few percent of this
+// unit), so the projection binds first.
+const CAP = budget.total || SOFT_CAP
+let projected = 0
+const remaining = () => Math.max(0, CAP - projected)
 const tight = (need) => remaining() < need
 const degradation = []
+// Output tokens, for the footer only (budget.spent() is turn-global; baseline at start).
+const SPENT0 = budget.spent()
+const spentHere = () => budget.spent() - SPENT0
 
-// ---- spend instrumentation (2026-10-27) -------------------------------------
-// Every agent goes through spawn() so the run can measure itself: agents and
-// budget.spent() tokens per phase, logged at each phase boundary and returned as
-// `spend`. est(floor) is the per-agent estimate the gates use: the stage floor
-// above, or this run's measured mean per agent once that is higher — the same
-// units the gates compare against, which the static constants never were.
+// ---- spend instrumentation --------------------------------------------------
+// Every agent goes through spawn(): the cost kind is inferred from the label (or given as
+// opts.cost for the Zotero variants), added to the projection and to the phase record.
 let agentsSoFar = 0
 let currentPhase = 'Setup'
 let phaseStart = 0
 const spendByPhase = {}
-const phaseRec = (t) => spendByPhase[t] || (spendByPhase[t] = { agents: 0, tokens: 0 })
+const phaseRec = (t) => spendByPhase[t] || (spendByPhase[t] = { agents: 0, projected: 0, tokens: 0 })
 const mark = (title) => {
   const now = spentHere()
   const rec = phaseRec(currentPhase)
   rec.tokens += now - phaseStart
-  if (rec.agents || rec.tokens) log(`Spend — ${currentPhase}: ${rec.agents} agent(s), ${rec.tokens.toLocaleString()} tokens; run so far ${now.toLocaleString()} of ${(budget.total || SOFT_CAP).toLocaleString()}.`)
+  if (rec.agents) log(`Spend — ${currentPhase}: ${rec.agents} agent(s), projected ${rec.projected.toLocaleString()}; run so far ${projected.toLocaleString()} of ${CAP.toLocaleString()} (output tokens ${now.toLocaleString()}).`)
   phaseStart = now
   currentPhase = title
   if (title !== 'Done') phase(title)
 }
-const spawn = (prompt, opts) => {
-  agentsSoFar++
-  phaseRec((opts && opts.phase) || currentPhase).agents++
-  return agent(prompt, opts)
+const costKind = (opts) => {
+  if (opts && opts.cost) return opts.cost
+  const L = (opts && opts.label) || ''
+  if (L.startsWith('segment')) return 'segment'
+  if (L.startsWith('exist-secondary')) return 'existWeb'
+  if (L.startsWith('exist')) return 'exist'
+  if (L.startsWith('history')) return 'history'
+  if (L.startsWith('verify-tail')) return 'verifyTail'
+  if (L.startsWith('verify')) return 'verify'
+  if (L.startsWith('support-tail')) return 'supportTail'
+  if (L.startsWith('support')) return 'support'
+  if (L.startsWith('re-verify')) return 'reverify'
+  const P = (opts && opts.phase) || currentPhase
+  return P === 'Form' ? 'form' : P === 'Report' ? 'report' : 'verify'
 }
-const perAgentMeasured = () => (agentsSoFar ? Math.round(spentHere() / agentsSoFar) : 0)
-const est = (floor) => Math.max(floor, perAgentMeasured())
-// Launch `jobs` (thunks) in waves sized to the budget left after `reserve`, re-measuring
-// between waves. Results align with jobs (null where a job was never launched); `dropped`
+const spawn = (prompt, opts) => {
+  const { cost, ...rest } = opts || {}
+  const c = COST[costKind(opts)] || 0
+  agentsSoFar++
+  projected += c
+  const rec = phaseRec(rest.phase || currentPhase)
+  rec.agents++
+  rec.projected += c
+  return agent(prompt, rest)
+}
+const perAgentProjected = () => (agentsSoFar ? Math.round(projected / agentsSoFar) : 0)
+// Launch `jobs` (thunks) in waves sized to the budget left after `reserve`; `costs[i]` is each
+// job's projected cost. Results align with jobs (null where a job was never launched); `dropped`
 // lists the indexes that were not launched. A wave always holds at least one job while any
 // budget beyond the reserve remains, so a phase that passed its gate is never dropped whole.
-async function gatedFanout(jobs, perJob, reserve) {
+async function gatedFanout(jobs, costs, reserve) {
   const results = new Array(jobs.length).fill(null)
   const dropped = []
   let i = 0
   while (i < jobs.length) {
-    const room = remaining() - reserve
-    let wave = Math.floor(room / est(perJob))
-    if (wave < 1 && room > 0) wave = 1
-    wave = Math.min(wave, MAX_WAVE, jobs.length - i)
-    if (wave < 1) { for (let j = i; j < jobs.length; j++) dropped.push(j); break }
-    const outs = await parallel(jobs.slice(i, i + wave))
+    let room = remaining() - reserve
+    const wave = []
+    while (i + wave.length < jobs.length && wave.length < MAX_WAVE) {
+      const c = costs[i + wave.length] || 0
+      if (room - c < 0 && wave.length) break
+      if (room - c < 0 && room <= 0) break
+      room -= c
+      wave.push(jobs[i + wave.length])
+    }
+    if (!wave.length) { for (let j = i; j < jobs.length; j++) dropped.push(j); break }
+    const outs = await parallel(wave)
     outs.forEach((o, k) => { results[i + k] = o })
-    i += wave
+    i += wave.length
   }
   return { results, dropped }
 }
@@ -195,6 +248,56 @@ function sourceKey(citation, kind) {
   return norm(s).split(' ').slice(0, 8).join(' ')
 }
 
+// Zotero, per source (2026-10-27). The lookup ran before launch; agents get a one-line verdict
+// per source and never call a Zotero tool. Hits are joined by ledger key, then by title words
+// + author for a resolved quote source whose JS key differs from the ledger's.
+const STOPW = new Set('a an the of and or in on at to for by with from as is are be this that its it their into over under about between among upon vs v law review rev journal j'.split(' '))
+const cwords = (s) => norm(s).split(' ').filter((w) => w.length >= 3 && !STOPW.has(w) && !/^\d+$/.test(w))
+const zoteroHitFor = (key, source) => {
+  if (!ZOTERO_PRELOOKED) return null
+  if (key && ZOTERO_HITS[key]) return ZOTERO_HITS[key]
+  const toks = new Set(norm(source || '').split(' '))
+  for (const h of Object.values(ZOTERO_HITS)) {
+    const au = (h.au || []).some((n) => toks.has(norm(n).split(' ').pop()))
+    if (!au) continue
+    const tw = cwords(h.title || '')
+    if (tw.length >= 2 && tw.filter((w) => toks.has(w)).length / tw.length >= 0.85) return h
+    // the draft cites the short title of a record that carries a subtitle ("Justice Abandoned"
+    // vs "Justice Abandoned: How the Supreme Court ..."): the main title, before the colon
+    const mw = cwords((h.title || '').split(':')[0])
+    if (mw.length >= 2 && mw.length < tw.length && mw.every((w) => toks.has(w))) return h
+  }
+  return null
+}
+const ZOTERO_POLICY = ZOTERO_PRELOOKED
+  ? `ZOTERO: the user's Zotero libraries were searched DETERMINISTICALLY before this run (zotero_lookup.py)
+for every secondary source the draft cites, and every source below carries a "ZOTERO:" line with the
+result. NEVER call a Zotero MCP tool (no zotero_search_items / zotero_item_metadata /
+zotero_item_fulltext): a source marked not in Zotero is not there, and a matched source already has
+its text on disk. Full record of a matched source, if you need it:
+  python3 "${ZOTERO_LOOKUP_SCRIPT}" "${ZOTERO_LOOKUP}" --get "<ledger key>"`
+  : ZOTERO_OK
+    ? `ZOTERO: no pre-lookup was run this time — do NOT search Zotero by hand either (it cost more than
+every fetch in the 2026-10-26 run); verify scholarship via the open web, probe first.`
+    : `ZOTERO: unavailable this run — verify scholarship via the open web, probe first.`
+const zoteroLine = (key, source) => {
+  if (!ZOTERO_PRELOOKED) return ZOTERO_OK ? 'ZOTERO: not pre-checked; do not search it — open web, probe first.' : 'ZOTERO: not available this run.'
+  const h = zoteroHitFor(key, source)
+  if (!h) return "ZOTERO: NOT in any of the user's Zotero libraries (checked before this run) — do not search Zotero; open web, probe first."
+  const rec = `in Zotero (${h.lib} item ${h.item}: ${(h.au || []).join(', ')}, "${h.title}"${h.year ? ', ' + h.year : ''}${h.vol ? ', vol. ' + h.vol : ''}${h.pp ? ', pp. ' + h.pp : ''})`
+  const confirm = (h.confirm && h.confirm.length) ? ` Record vs draft: ${h.confirm.join('; ')}.` : ''
+  if (h.text) {
+    return `ZOTERO: ${rec}. Its FULL TEXT is already on disk at ${h.text} (${h.pages || '?'} page${h.pages === 1 ? '' : 's'}, from ${h.src === 'pdf' ? 'the PDF attachment — form feeds mark page breaks' : "Zotero's full-text index — no page boundaries, so pincites are unverifiable from it"}). Do NOT fetch or search anything first: run the verifier straight against that file${h.first ? `, with --first-page ${h.first} when page 1 of the file is the article's first page (check its footer; a cover page shifts the count by one or more)` : ''}. Go to the web only if the verifier's hint shows the file is a different work.${confirm}`
+  }
+  return `ZOTERO: ${rec}, but NO readable attachment — the record settles existence and metadata; for the text go to the open web (probe first). Do not search Zotero.${confirm}`
+}
+// Tool-call budget (2026-10-27): an agent's cost is turns × context, so the calls are the cost.
+const TOOL_CAP = (n) => `TOOL-CALL BUDGET: at most ${n} tool calls for this whole task, ToolSearch included — load every
+tool you need in ONE ToolSearch call. Each call re-reads your entire context, so the calls, not your
+words, are what this costs. Plan them before the first one; never read a whole source file into
+context (use the scripts and targeted excerpts); when the budget is spent, return what you have and
+mark the rest unverifiable with the unlock path.`
+
 const SOURCES = `FREE / OPEN-WEB SOURCES ONLY (no Westlaw/Lexis):
 - Cases: CourtListener (HTML opinion view), Cornell LII, Justia, Google Scholar case law.
   OFFICIAL reporter text with star pagination (best for verbatim quotes + pincites):
@@ -204,9 +307,9 @@ const SOURCES = `FREE / OPEN-WEB SOURCES ONLY (no Westlaw/Lexis):
     fetcher script, NEVER raw WebFetch). Authoritative, and — CRITICAL — the ONLY free source that
     carries the SYLLABUS and front matter; CourtListener/CAP opinion text does NOT.
 - Statutes/rules: uscode.house.gov, Cornell LII, official state legislature sites.
-- Scholarship: the user's Zotero library FIRST (see per-agent instructions), then the journal's
-  own website, the author's faculty page, the Wayback Machine, Google Books / archive.org snippet
-  search for book quotes.
+- Scholarship: the ZOTERO line given with each source decides the first step (text already on disk,
+  or not in Zotero at all — never search Zotero yourself); then the journal's own website, the
+  author's faculty page, the Wayback Machine, Google Books / archive.org snippet search for book quotes.
 - KNOWN FETCH BLOCKS (every one confirmed in live runs): HeinOnline, JSTOR, Westlaw and Lexis are
   subscription-only — never fetchable. SSRN, Justia and every bepress Digital Commons repository
   (digitalcommons.*, scholarship.law.*, ir.lawnet.fordham.edu, repository.law.umich.edu and the
@@ -716,8 +819,14 @@ ${SOURCES}`
 // Secondary sources (articles / books / statutes / internet) cited WITHOUT a quotation never
 // reach the verify stage, so this is the only pass that touches them: existence + metadata,
 // no substance. One batch per SECONDARY_BATCH unique sources.
+// Secondary sources the Zotero pre-lookup matched are settled here, deterministically: they
+// exist (the record is the evidence), and the lookup's draft-vs-record differences travel as
+// "confirm:" notes, never as fixes (a Zotero record can be wrong too). Only the rest go to agents.
+const secZotero = ZOTERO_PRELOOKED ? SECONDARY_CITES.filter((s) => ZOTERO_HITS[s.key]) : []
+const secWeb = ZOTERO_PRELOOKED ? SECONDARY_CITES.filter((s) => !ZOTERO_HITS[s.key]) : SECONDARY_CITES
 const secBatches = []
-for (let i = 0; i < SECONDARY_CITES.length; i += SECONDARY_BATCH) secBatches.push(SECONDARY_CITES.slice(i, i + SECONDARY_BATCH))
+for (let i = 0; i < secWeb.length; i += SECONDARY_BATCH) secBatches.push(secWeb.slice(i, i + SECONDARY_BATCH))
+if (secZotero.length) log(`Secondary sources: ${secZotero.length} of ${SECONDARY_CITES.length} matched in Zotero before launch (no agent needed); ${secWeb.length} go to the web in batches of ${SECONDARY_BATCH}.`)
 const secPrompt = (batch) => `You are confirming that SECONDARY sources cited in a law-review draft exist and are
 cited with the right metadata. Do NOT read them for substance, do NOT check any quotation, and do NOT
 assess whether they support anything — existence + bibliographic metadata only.
@@ -725,10 +834,14 @@ assess whether they support anything — existence + bibliographic metadata only
 SOURCES (echo each key exactly; the cite text is verbatim from the draft's footnote):
 ${batch.map((s) => `- key ${s.key} | ${s.kind} | ${s.cite}`).join('\n')}
 
+${ZOTERO_PRELOOKED ? `ZOTERO: none of these sources is in the user's Zotero libraries (checked before this run) — do NOT search
+Zotero; every one is a web lookup.` : ZOTERO_POLICY}
+${TOOL_CAP(2 + 3 * batch.length)}
+
 For EACH source:
-- article: locate it (${ZOTERO_OK ? `the "${ZOTERO_SERVER}" Zotero MCP tools first — search by author/title — then` : ''} Google
-  Scholar, SSRN, HeinOnline citation page, the journal's site, a digital-commons repository) and confirm
-  author, title, journal, volume, first page, year. basis "zotero" or "web".
+- article: locate it (Google Scholar, the journal's site, the HeinOnline or SSRN citation page, a
+  digital-commons repository — one WebSearch, then at most one page opened) and confirm
+  author, title, journal, volume, first page, year. basis "web".
 - book: a catalog / publisher / Open Library / Google Books record confirming author, title, edition,
   publisher, year.
 - statute / rule: the current official text (uscode.house.gov, LII, official state source) exists at
@@ -759,10 +872,10 @@ from an opencasebook.org URL slug; the Stanford Law Review's own page showed the
 - Author ORDER specifically is never a finding without the source's own title page or landing page.
 ${SOURCES}`
 
-const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + (existBatches.length + secBatches.length) * est(PER_EXIST))
+const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + existBatches.length * COST.exist + secBatches.length * COST.existWeb)
 const casePassRan = !CASE_CITES.length || existGate
-const secondaryPassRan = !SECONDARY_CITES.length || existGate
-if (!secondaryPassRan) degradation.push(`secondary-source existence pass skipped for ${SECONDARY_CITES.length} sources (budget) — they are UNCHECKED in the ledger`)
+const secondaryPassRan = !secWeb.length || existGate
+if (!secondaryPassRan) degradation.push(`secondary-source existence pass skipped for ${secWeb.length} sources not in Zotero (budget) — they are UNCHECKED in the ledger`)
 const existJobs = []
 if (casePassRan) for (const b of existBatches) existJobs.push(() =>
   spawn(existPrompt(b), { label: `exist:${b.length}`, phase: 'Existence', schema: EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' }))
@@ -772,6 +885,15 @@ if (secondaryPassRan) for (const b of secBatches) existJobs.push(() =>
 const existRaw = existJobs.length ? await parallel(existJobs) : []
 const existence = []
 const secondaryExistence = []
+for (const s of secZotero) {
+  const h = ZOTERO_HITS[s.key]
+  secondaryExistence.push({
+    key: s.key, exists: true, basis: 'zotero',
+    identified: `Zotero ${h.lib} item ${h.item}: ${(h.au || []).join(', ')}, "${h.title}"${h.year ? ' (' + h.year + ')' : ''}`,
+    metadataFindings: [],
+    note: (h.confirm && h.confirm.length) ? h.confirm.join('; ') + ` [Zotero record ${h.lib}/${h.item}; the draft may be right — check the source itself]` : '',
+  })
+}
 for (const r of existRaw.filter(Boolean)) {
   if (r._secondary) secondaryExistence.push(...r._secondary)
   else for (const e of (r.results || [])) existence.push(e)
@@ -916,7 +1038,7 @@ const historyTargets = HISTORY_ON ? historyCases.filter((c) => c.exists) : []
 for (let i = 0; i < historyTargets.length; i += HISTORY_BATCH) historyBatches.push(historyTargets.slice(i, i + HISTORY_BATCH))
 let historyResults = []
 let historyRan = false
-if (historyBatches.length && !tight(RESERVE_REPORT + RESERVE_REVERIFY + historyBatches.length * est(PER_HISTORY))) {
+if (historyBatches.length && !tight(RESERVE_REPORT + RESERVE_REVERIFY + historyBatches.length * COST.history)) {
   historyRan = true
   const hAgent = (b, i) => spawn(historyPrompt(b), { label: `history:${i * HISTORY_BATCH}-${i * HISTORY_BATCH + b.length}`, phase: 'History', schema: HISTORY_SCHEMA, model: VERIFY_MODEL, effort: DEEP ? 'medium' : 'low' })
   const outs = await parallel(historyBatches.map((b, i) => async () => {
@@ -968,8 +1090,13 @@ log(`Collapsed ${resolutions.length} quotes onto ${bundleList.length} unique sou
 
 // Budget degradation: if a full verify won't fit, verify multi-quote sources
 // individually and batch the single-quote long tail; never drop a source silently.
+// Join the Zotero pre-lookup: a bundle whose text is on disk costs a fraction of a web fetch.
+for (const b of bundleList) b.zotero = (b.kind === 'case' || b.kind === 'statute') ? null : zoteroHitFor(b.key, b.source)
+const zText = bundleList.filter((b) => b.zotero && b.zotero.text).length
+if (ZOTERO_PRELOOKED) log(`Verify: ${zText} of ${bundleList.length} unique sources have their text on disk from Zotero; ${bundleList.filter((b) => b.zotero && !b.zotero.text).length} more are in Zotero without an attachment.`)
 let verifyBundles = bundleList
-if (bundleList.length && tight(RESERVE_REPORT + RESERVE_REVERIFY + bundleList.length * est(PER_SOURCE))) {
+const fullVerifyCost = bundleList.reduce((n, b) => n + (b.zotero && b.zotero.text ? COST.verifyZotero : COST.verify), 0)
+if (bundleList.length && tight(RESERVE_REPORT + RESERVE_REVERIFY + fullVerifyCost)) {
   const heavy = bundleList.filter((b) => b.quotes.length >= 2)
   const light = bundleList.filter((b) => b.quotes.length < 2)
   degradation.push(`verify degraded: ${light.length} single-quote sources batched, ${heavy.length} read individually (budget)`)
@@ -1016,19 +1143,6 @@ ${SUPPORT_RULES}
 // Phase 3 — VERIFY (one agent per unique source; path per kind)
 // ===========================================================================
 mark('Verify')
-const zoteroHint = ZOTERO_OK
-  ? `SCHOLARSHIP (article/book): try the user's Zotero library FIRST. This project's library is
-  served by the "${ZOTERO_SERVER}" MCP server. Load with
-  ToolSearch "select:mcp__${ZOTERO_SERVER}__zotero_search_items,mcp__${ZOTERO_SERVER}__zotero_item_metadata,mcp__${ZOTERO_SERVER}__zotero_item_fulltext"
-  (if those tools are absent, fall back to the mcp__zotero__* personal-library equivalents, knowing
-  a co-authored project's sources usually live in its group library). Search by author/title; if the item is there, use
-  zotero_item_metadata for existence/volume/page and zotero_item_fulltext to check the quote and
-  pincite verbatim. Item keys can also be read from the draft's own Word field codes (CSL_CITATION
-  blobs contain zotero.org/groups/<id>/items/<KEY>). If the Zotero tools error or the item is
-  absent, fall back to the web mirror chain. If the item exists in Zotero WITHOUT an attached PDF,
-  verify existence/metadata there and the quote via the web.`
-  : `SCHOLARSHIP: the Zotero library is unavailable this run — verify articles/books via the open-web
-  mirror chain (repository copy over SSRN; Google Books / archive.org snippet search for book quotes).`
 
 const verifyPrompt = (b) => `You are a cite-checker verifying ONE source that a law-review draft
 relies on. Fetch it ONCE and check every quotation the draft pins to it. ${b.quotes.length} quote(s)
@@ -1039,9 +1153,12 @@ the draft's own footnote text, which you can fetch with the prepare command belo
 authoritative record of what the draft says): ${b.source}
 KIND: ${b.kind}${b.manuscript ? '  [MANUSCRIPT — run the version-drift check]' : ''}${b.syllabus ? '  [SYLLABUS pincite present — see syllabus rule]' : ''}
 SOURCE-BUNDLE KEY (echo it back exactly): ${b.key}
+${b.kind === 'case' || b.kind === 'statute' ? '' : zoteroLine(b.key, b.source)}
 
 QUOTES TO CHECK (echo each id exactly):
 ${b.quotes.map((q) => `  [id ${q.id}]${q.syllabus ? ' [syllabus pincite]' : ''} @ ${q.pincite || '(no pincite)'} — "${q.quote}"`).join('\n')}
+
+${TOOL_CAP(b.zotero && b.zotero.text ? 8 : 12)}
 
 HOW TO FETCH (stop after ${MIRROR_CAP} attempts; then mark remaining quotes "unverifiable" with the
 unlock path — do NOT keep retrying):
@@ -1051,7 +1168,9 @@ unlock path — do NOT keep retrying):
   pincite's plausibility (best-effort — if there is no star pagination, say "pincite unverifiable",
   never guess a page).
 - STATUTE/RULE: uscode.house.gov / LII / official source; verify the operative text verbatim.
-- ${zoteroHint.trim()}
+- SCHOLARSHIP (article/book): follow the ZOTERO line above. Text on disk => verify from it. Otherwise
+  the open web: the journal's own site, the author's faculty page, a repository copy, the Wayback
+  Machine, Google Books / archive.org snippet search for book quotes — probe every candidate first.
 - MANUSCRIPT (working paper / forthcoming / SSRN / slip op.): verify the quote against the CURRENT
   public version. If a quoted passage is ABSENT or MOVED in the current version, set the quote's
   verdict "superseded_source" and fill versionDrift with the current revision date and the new
@@ -1123,15 +1242,19 @@ For EACH, fetch the source once (${MIRROR_CAP} attempts max), check the one quot
 verdict per the schema. Echo each sourceKey and each quote id exactly.
 
 SOURCES:
-${chunk.map((b) => `- key ${b.key} | ${b.kind} | ${b.source}\n    [id ${b.quotes[0].id}] @ ${b.quotes[0].pincite || '(no pincite)'} — "${b.quotes[0].quote}"`).join('\n')}
+${chunk.map((b) => `- key ${b.key} | ${b.kind} | ${b.source}\n    [id ${b.quotes[0].id}] @ ${b.quotes[0].pincite || '(no pincite)'} — "${b.quotes[0].quote}"${b.kind === 'case' || b.kind === 'statute' ? '' : `\n    ${zoteroLine(b.key, b.source)}`}`).join('\n')}
+
+${TOOL_CAP(2 + 3 * chunk.length)}
 
 ${DETERMINISTIC_CHECK}
 
 ${CALIBRATION}
 ${SOURCES}`
 
+const verifyCost = (b) => (b.zotero && b.zotero.text ? COST.verifyZotero : COST.verify)
 const verifyAgent = (b) => spawn(verifyPrompt(b), {
   label: `verify:${(b.source || b.key).slice(0, 44)}`,
+  cost: b.zotero && b.zotero.text ? 'verifyZotero' : 'verify',
   phase: 'Verify',
   schema: VERIFY_SCHEMA,
   model: VERIFY_MODEL,
@@ -1144,11 +1267,13 @@ const verifyJobs = verifyBundles.map((b) => async () => {
   return r
 })
 const verifyJobKeys = verifyBundles.map((b) => [b.key]) // job index -> source keys, for budget accounting
+const verifyJobCosts = verifyBundles.map((b) => verifyCost(b)) // job index -> projected cost, for the wave gate
 // Degraded long-tail: chunk single-quote sources VERIFY_CHUNK at a time.
 const light = verifyBundles._light || []
 for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
   const chunk = light.slice(i, i + VERIFY_CHUNK)
   verifyJobKeys.push(chunk.map((b) => b.key))
+  verifyJobCosts.push(COST.verifyTail)
   verifyJobs.push(() => spawn(tailPrompt(chunk), {
     label: `verify-tail:${i}`,
     phase: 'Verify',
@@ -1161,7 +1286,7 @@ for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
 
 // Waves sized to the budget: a verify phase can no longer launch every source at once and
 // overshoot the cap. Sources never launched are disclosed, by name, as NOT CHECKED (budget).
-const { results: verifyRaw, dropped: verifyDropped } = await gatedFanout(verifyJobs, PER_SOURCE, RESERVE_REPORT + RESERVE_REVERIFY)
+const { results: verifyRaw, dropped: verifyDropped } = await gatedFanout(verifyJobs, verifyJobCosts, RESERVE_REPORT + RESERVE_REVERIFY)
 const budgetDroppedKeys = new Set(verifyDropped.flatMap((j) => verifyJobKeys[j]))
 if (budgetDroppedKeys.size) degradation.push(`verify: ${budgetDroppedKeys.size} source(s) never fetched — the budget ran out mid-phase (ask for a "+Nk" budget to lift the cap); their quotes are listed as NOT CHECKED`)
 // Flatten (tail batches return {_multi:[...]}).
@@ -1224,9 +1349,11 @@ actually SUPPORT the propositions they are cited for (the opt-in proposition-sup
 judgment call, so the discipline below matters more than speed. ${bundles.length === 1 ? 'ONE source; fetch it once.' : `${bundles.length} sources, one unit each; fetch each once.`}
 
 ${bundles.map((b) => `SOURCE (resolved from the draft's footnotes; the footnote text you load below is the authoritative record): ${b.source}
-KIND: ${b.kind}   SOURCE-BUNDLE KEY (echo exactly): ${b.key}
+KIND: ${b.kind}   SOURCE-BUNDLE KEY (echo exactly): ${b.key}${b.kind === 'case' || b.kind === 'statute' ? '' : `\n${zoteroLine(b.key, b.source)}`}
 UNITS:
 ${b.units.map(supportUnitLine).join('\n')}`).join('\n\n')}
+
+${TOOL_CAP(4 + bundles.reduce((n, b) => n + (b.zotero && b.zotero.text ? 4 : 8), 0))}
 
 STEP 1 — load the units (proposition sentence, preceding sentence, full footnote, signal,
 parenthetical, opinion note), via Bash (load it with ToolSearch "select:Bash" if needed):
@@ -1235,7 +1362,8 @@ parenthetical, opinion note), via Bash (load it with ToolSearch "select:Bash" if
 STEP 2 — fetch each source ONCE (stop after ${MIRROR_CAP} attempts; then every unit on it is
 "unverifiable" with the unlock path). Save the FULL text with --out (never cat it into context):
   python3 "${FETCH_PAGE}" "<url>" --out /tmp/sup-<slug>.txt
-${zoteroHint.trim()}
+A source whose ZOTERO line says its text is on disk needs no fetch at all: use that file as
+/tmp/sup-<slug>.txt and go straight to reading the pincited page.
 For a case, CourtListener's HTML opinion or CAP static HTML carries star pagination; for a journal
 PDF, pass the printed number of its first page. Then read the PINCITED page of each unit:
   python3 "${VERIFY_QUOTES}" /tmp/sup-<slug>.txt --page <pincite> [--first-page <printed first page>]
@@ -1250,12 +1378,15 @@ ${SOURCES}`
 
 let supportDedicated = [...supportByKey.entries()]
   .filter(([key]) => !foldedKeys.has(key))
-  .map(([key, units]) => ({ key, units, kind: units[0].k, source: units[0].src }))
+  .map(([key, units]) => ({ key, units, kind: units[0].k, source: units[0].src, zotero: (units[0].k === 'case' || units[0].k === 'statute') ? null : zoteroHitFor(key, units[0].src) }))
 let supportRan = false
 const supportSkippedUnits = []
+// Projected cost of a dedicated support bundle: text on disk is cheap; a single-unit web source
+// rides a SUPPORT_TAIL batch, so it carries a share of that batch's cost.
+const supportCost = (b) => (b.zotero && b.zotero.text) ? COST.supportZotero : (b.units.length >= 2 ? COST.support : Math.ceil(COST.supportTail / SUPPORT_TAIL))
 if (SUPPORT_ON && supportDedicated.length) {
   // Budget ladder: whole-work units first (if 'all'), then secondary sources, then skip.
-  const need = () => RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT + supportDedicated.length * est(PER_SUPPORT_SOURCE)
+  const need = () => RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT + supportDedicated.reduce((n, b) => n + supportCost(b), 0)
   if (tight(need()) && SUPPORT_SCOPE === 'all') {
     const dropped = supportDedicated.filter((b) => b.units.every((u) => u.scope === 'whole-work'))
     supportDedicated = supportDedicated.filter((b) => !b.units.every((u) => u.scope === 'whole-work'))
@@ -1280,13 +1411,16 @@ if (SUPPORT_ON && (supportDedicated.length || foldedKeys.size)) {
   const heavy = supportDedicated.filter((b) => b.units.length >= 2)
   const light = supportDedicated.filter((b) => b.units.length < 2)
   const jobUnits = heavy.map((b) => b.units) // job index -> units, for budget accounting
+  const jobCosts = heavy.map((b) => (b.zotero && b.zotero.text ? COST.supportZotero : COST.support))
   const jobs = heavy.map((b) => () => spawn(supportPrompt([b]), {
-    label: `support:${(b.source || b.key).slice(0, 44)}`, phase: 'Support', schema: SUPPORT_SCHEMA,
+    label: `support:${(b.source || b.key).slice(0, 44)}`, cost: b.zotero && b.zotero.text ? 'supportZotero' : 'support',
+    phase: 'Support', schema: SUPPORT_SCHEMA,
     model: VERIFY_MODEL, effort: 'medium', // a judgment, not a string match: never low
   }))
   for (let i = 0; i < light.length; i += SUPPORT_TAIL) {
     const chunk = light.slice(i, i + SUPPORT_TAIL)
     jobUnits.push(chunk.flatMap((b) => b.units))
+    jobCosts.push(chunk.every((b) => b.zotero && b.zotero.text) ? COST.supportZotero : COST.supportTail)
     jobs.push(() => spawn(supportPrompt(chunk), {
       label: `support-tail:${i}`, phase: 'Support',
       schema: { type: 'object', required: ['sources'], properties: { sources: { type: 'array', items: SUPPORT_SCHEMA } } },
@@ -1294,7 +1428,7 @@ if (SUPPORT_ON && (supportDedicated.length || foldedKeys.size)) {
     }).then((o) => o && o.sources ? { _multi: o.sources } : o))
   }
   const { results: outs, dropped: supportDropped } = jobs.length
-    ? await gatedFanout(jobs, PER_SUPPORT_SOURCE, RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT)
+    ? await gatedFanout(jobs, jobCosts, RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT)
     : { results: [], dropped: [] }
   if (supportDropped.length) {
     const units = supportDropped.flatMap((j) => jobUnits[j])
@@ -1403,13 +1537,15 @@ STEP 2 — independently determine the truth, checking specifically for these ar
 Open the source yourself (${MIRROR_CAP} attempts max) to confirm. If the original finding holds after
 all this, upheld=true and restate it with the source text. Fill sourceText whenever you read it.
 
+${TOOL_CAP(10)}
+
 ${DETERMINISTIC_CHECK}
 
 ${CALIBRATION}
 ${SOURCES}`
 
 let reverified = new Map()
-if (highSev.length && !tight(highSev.length * est(PER_REVERIFY))) {
+if (highSev.length && !tight(highSev.length * COST.reverify)) {
   const outs = await parallel(highSev.map((f) => () =>
     spawn(reverifyPrompt(f), {
       label: `re-verify:n.${f.footnote ?? '?'}#${f.id}`,
@@ -1473,11 +1609,13 @@ and check specifically for these artifact classes:
 If the finding holds after all this, upheld=true and restate it with the passage verbatim in
 sourceText. If it is an artifact, upheld=false with the corrected verdict.
 
+${TOOL_CAP(10)}
+
 ${SUPPORT_RULES}
 ${SOURCES}`
 const supportToReverify = supportFindings.filter((f) => f.verdict === 'contradicted' || f.verdict === 'not_supported')
 const supportReverified = new Map()
-if (supportToReverify.length && !tight(supportToReverify.length * est(PER_REVERIFY))) {
+if (supportToReverify.length && !tight(supportToReverify.length * COST.reverify)) {
   const outs = await parallel(supportToReverify.map((f) => () =>
     spawn(supportReverifyPrompt(f), { label: `re-verify-support:n.${f.footnote}#${f.id}`, phase: 'Re-verify', schema: SUPPORT_REVERIFY_SCHEMA, model: REVERIFY_MODEL, effort: 'medium' })))
   for (const o of outs.filter(Boolean)) supportReverified.set(o.id, o)
@@ -1637,7 +1775,7 @@ const FORM_SCHEMA = {
 }
 let formAgentFindings = []
 let formAgentConventions = []
-if (FORM_FMT_OK && FORM_CANDIDATES.length && !tight(RESERVE_REPORT + est(PER_FORM))) {
+if (FORM_FMT_OK && FORM_CANDIDATES.length && !tight(RESERVE_REPORT + COST.form)) {
   const fr = await spawn(
     `You are settling CASE-NAME TYPEFACE questions in the law review draft "${DRAFT_NAME}".
 
@@ -2023,15 +2161,19 @@ const findingItems = [
 ]
 
 mark('Done')
-// What this run spent, in the units the gates use (budget.spent(), output tokens this workflow).
-// SKILL.md puts it in the report footer beside the completion notification's subagent_tokens so
-// the two figures can be compared run over run.
+// What this run cost. `projected` is the gates' figure (cost model × agents launched, in the
+// completion notification's unit); `measured` is budget.spent() output tokens, which the
+// 2026-10-26 transcripts showed is about a seventh of the notification's number and never the
+// cost. SKILL.md prints projected beside the notification's actual so the model gets recalibrated.
 const spend = {
-  measured: spentHere(),
+  projected,
   agents: agentsSoFar,
-  perAgent: perAgentMeasured(),
-  softCap: budget.total || SOFT_CAP,
+  perAgent: perAgentProjected(),
+  measured: spentHere(),
+  softCap: CAP,
   hardCeiling: !!budget.total,
+  unit: 'input-equivalent tokens (uncached input + cache writes + cache reads/10 + output x 5); run scripts/run_usage.py on the transcript dir for the measured figure. measured = output tokens only. The completion notification\'s subagent_tokens is the sum of each agent\'s peak context, not a cost.',
+  costModel: COST,
   byPhase: Object.fromEntries(Object.entries(spendByPhase).filter(([, v]) => v.agents || v.tokens)),
 }
 
