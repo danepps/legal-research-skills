@@ -1,7 +1,11 @@
 # Up-front dialog for /cite-check and /proofread — design note
 
-*Drafted 2026-10-27 after a live test in the Claude desktop app. Not built. Nothing in this note
-changes how either skill runs today.*
+*Drafted 2026-10-27 after a live test in the Claude desktop app. Built the same day: cite-check
+SKILL.md step 1b, proofread SKILL.md step 1b, `legal-research/zotero_servers.py` (the group-name
+lookup and the description matching, as a script rather than ad-hoc requests), README, CHANGELOG.
+Open question 1 was resolved toward the lighter dialog: with only a personal library registered the
+choice is made silently and said in one line. Open question 2 as the note suggests: a `+Nk` budget
+does not skip the Support question.*
 
 **TL;DR.** Both skills already stop once at the start with a single `AskUserQuestion` on depth.
 The proposal is to let that one dialog carry the other opt-in choices a nontechnical user would

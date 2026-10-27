@@ -100,40 +100,114 @@ prose, cite-check verifies the authorities** — they now happen to share the ci
 - **footnotes** — optional partial pass, e.g. "footnotes 45–80" or a list. Default: whole draft.
 - **deep** — optional; heavier verification (medium-effort verify agents, higher soft cap). Turn on
   for a near-final draft or when the user says "deep"/"thorough".
-- **support** — optional, OFF by default. Turn on when the user asks whether the cites actually
+- **support** — optional, OFF by default. On when the user asks whether the cites actually
   support their propositions ("check that the sources support what I cite them for", "check
-  proposition support", "do the signal cites hold up", "support pass"). Never infer it from
-  "deep" or "thorough" — deep buys care per quote, support buys a different check with a
-  different cost (see above); when the user asks for support on a long draft, say in one
-  sentence that it reads every pincited unquoted cite and give the step 3a estimate. `supportScope:"all"` additionally reads bare whole-work cites; only when the
-  user asks for that explicitly.
+  proposition support", "do the signal cites hold up", "support pass"), or when they choose it
+  in the step 1b dialog, which is how a user who does not know the option exists finds it. Never
+  infer it from "deep" or "thorough" — deep buys care per quote, support buys a different check
+  with a different cost (see above); on a long draft, give the step 3a estimate before
+  launching. `supportScope:"all"` additionally reads bare whole-work cites; only when the user
+  asks for that explicitly or picks it in the dialog.
 - If the draft has tracked changes, say so and ask whether to accept-all before checking (the parser
   reads the current/accepted text and skips tracked deletions, but a heavily-marked draft is worth a
   heads-up).
 
-### 1b. Ask how deep to go (author's call, 2026-08-09 — mirrors /proofread step 1b)
+### 1b. Ask up front — depth, support, Zotero — in ONE dialog (author's call 2026-08-09; expanded 2026-10-27, `DESIGN-upfront-dialog.md`)
 
-**Unless the request already settles it, ASK up front** — one `AskUserQuestion`, header `Depth`,
-before pre-flight. Fold the tracked-changes heads-up (step 1) into the same call when it applies, so
-the user answers everything in one interaction rather than being stopped twice.
+The user is stopped **once**, before pre-flight and before the snapshot, with a single
+`AskUserQuestion` call that carries every choice a run needs — depth, the proposition-support
+pass, and (when it is open) which Zotero library — plus the tracked-changes heads-up from
+step 1 when it applies. Three questions in one call render as one interaction (tested live in
+the desktop app, 2026-10-27); asking the Zotero question later in pre-flight, as this skill once
+did, stopped a first-time user twice.
 
-**Skip the ask** when the wording already picks a tier ("deep", "thorough", "near-final",
-"pre-submission", "quick", "standard"), on a partial re-run of a tier already chosen this session, or
-when the user asked only for a narrow footnote range.
+**Before the call, two reads that cost nothing** (they decide whether the Zotero question is
+asked at all): look for a `Zotero library:` line in the project folder's `CLAUDE.md` (or
+`AGENTS.md`), and list the registered Zotero servers by their real names:
 
-Two options — cite-check has no `fable` escalation, so the ladder is shorter than proofread's:
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/zotero_servers.py --text
+```
 
-| Option | Args | What to say |
+(one request per group server for its name and description, five-second timeout, the server's
+short name as the fallback; nothing is asked of the user yet).
+
+**Skip any question the request already settles, by dropping it from the call** — never ask it
+with a preselected default. "Deep", "thorough", "near-final", "pre-submission", "quick",
+"standard" settle Depth; "check that the sources support what I cite them for", "support
+pass", "do the signal cites hold up" settle Support on, and "just the quotes" or "no support"
+settle it off; a request that names the library settles Zotero. A `+Nk` budget in the request
+does **not** settle Support (it lifts the cap; it does not choose the pass). Also skip a question
+on a partial re-run of a configuration already chosen this session. When every question is
+settled, make no call.
+
+**Question 1 — Depth** (header `Depth`). No "(Recommended)" tag: the right tier depends on how
+near-final the draft is, which the user knows and you do not.
+
+| Option | Args | Description shown |
 |---|---|---|
-| **Standard** | `deep:false` | Verify agents at low effort, soft cap 4M input-equivalent tokens (+3M with support). Good for a working draft. |
-| **Deep** | `deep:true` | Verify agents at **medium** effort, soft cap 6M input-equivalent tokens (+3M with support). Closer reading of each quote against its source — for a near-final draft. |
+| Standard | `deep:false` | Verify agents at low effort. Every quotation is still checked against its source. Good for a working draft. |
+| Deep | `deep:true` | Verify agents at medium effort: a closer reading of each quote against its source. No extra pass, same coverage. For a near-final draft. |
 
-**Do NOT reuse /proofread's rationale here — the two `deep`s are different mechanisms.**
+**Question 2 — Proposition support** (header `Support`).
+
+| Option | Args | Description shown |
+|---|---|---|
+| Off (default) | `support:false` | Unquoted citations are confirmed to exist but not read. The report says so and marks them existence-only. |
+| Pincited cites | `support:true, supportScope:"pincited"` | Each unquoted citation with a page, section or parenthetical is read at that place and judged through its signal. The most expensive part of a run; before launching, the cost estimate (step 3a) says what it will cost on this draft. Possible overstatement is reported as something to confirm, never as an error. |
+| All cites | `support:true, supportScope:"all"` | Also reads bare whole-work citations with no pincite. The most expensive option and the most prone to checker artifacts; for a final pre-submission run. |
+
+**Question 3 — Zotero library** (header `Zotero`), asked only when the project's `CLAUDE.md`
+has no `Zotero library:` line AND there is a choice to make: at least one group library is
+registered, or more than one library of any kind. If the only registered library is the
+personal one, do not ask — resolve to it, record it (below), and say so in one line of the
+deliver message (the author left this open in the design note; the lighter dialog won). If no
+Zotero server is registered at all, do not ask — pass `zotero:false`. The options are the
+registered libraries themselves, by name, so nobody types:
+
+| Option | Where the label comes from |
+|---|---|
+| Personal library | the server registered with `ZOTERO_LIBRARY_TYPE=user` |
+| *Group: \<real group name\>* (one per registered group) | `zotero_servers.py` — the group's name from the Zotero API, or the server's short name when the lookup fails |
+| No Zotero this run | — |
+
+Description text for a group option carries no technical content, e.g. for a group named
+Epps–Dave Federalism Project: *The shared library of that name. Claude will remember this choice
+for this folder so it does not ask again.* With more than two group libraries the question would
+exceed four options: list the three most recently registered and let the Other box cover the rest.
+
+**Free-text answers.** If the user types in the Other box instead ("my library with Dave", "the
+one for the federalism paper"), resolve it deterministically:
+
+```
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/zotero_servers.py --match "<what they typed>"
+```
+
+It matches the text against each library's group name, description and server name by shared
+words ("personal" resolves to the personal library; with a single group registered, any other
+description resolves to it). One clear match: say which library was chosen, in one sentence, and
+proceed. Several or none: ask once more, listing the candidates by name. Zotero lists group
+members only as numeric ids, so "the one with Dave" resolves only when the group's name or
+description mentions Dave, which in practice it usually does.
+
+**Record the answer.** Whatever library is chosen (asked or resolved silently), write the
+existing line `Zotero library: <name> → MCP server <server>` to the project folder's
+`CLAUDE.md` so the question never recurs for that project. A group that exists in Zotero but
+was never registered during setup is named and pointed at `/legal-research:setup` rather than
+silently falling back to the web.
+
+**When `AskUserQuestion` is unavailable** (a headless or scheduled run), use the defaults —
+Standard, support off, the `CLAUDE.md` library or web-only — and state them in the deliver
+message and the report footer.
+
+**Do NOT reuse /proofread's rationale for Depth — the two `deep`s are different mechanisms.**
 Proofread's deep adds a second offset extraction pass (a recall play, backed by the ~75–80%
 same-model overlap finding). Cite-check's deep does **not** add a pass or re-fetch anything: it
-raises verify-agent effort from `low` to `medium` and lifts the soft cap. It buys
-care per quote, not more quotes. Quote *coverage* is identical either way — every quote is checked in
-both tiers — so don't imply Standard skips anything.
+raises verify-agent effort from `low` to `medium` and lifts the soft cap (4M standard / 6M deep
+input-equivalent tokens, +3M with support). It buys care per quote, not more quotes. Quote
+*coverage* is identical either way — every quote is checked in both tiers — so don't imply
+Standard skips anything. Support is the opposite: a different check with a different cost, never
+inferred from "deep" or "thorough".
 
 Timing matters less here than in proofread (deep doesn't change extraction, so a later re-run can
 replay segment/existence from cache via `resumeFromRunId`), but verify is the bulk of the run — on
@@ -153,14 +227,10 @@ stage. Ask first.
    still works (case existence falls back to web), but mention it once at deliver time.
    Token page: https://www.courtlistener.com/profile/api-token/
 3. Resolve the project's Zotero library, if the user has one (Zotero is optional; without it
-   scholarship is checked against the open web):
-   a. Look for a `Zotero library:` line in the project folder's `CLAUDE.md` (or `AGENTS.md`). If
-      present, use the MCP server it names and skip to (c).
-   b. If absent and a Zotero MCP server is registered, ASK the user which Zotero library this
-      project uses (personal library, or a named group library), then record the answer as a
-      `Zotero library: <name> → MCP server <server>` line in the project folder's `CLAUDE.md` so
-      future runs don't re-ask. If no Zotero server is registered at all, don't ask — pass
-      `zotero:false` and move on.
+   scholarship is checked against the open web). The choice itself was made in step 1b — from the
+   `Zotero library:` line in the project folder's `CLAUDE.md` (or `AGENTS.md`), from the dialog,
+   or silently when only the personal library is registered — and is already recorded in
+   `CLAUDE.md`. Here only confirm it is usable:
    c. Confirm that MCP server actually exists (`/legal-research:setup` registers a personal
       library as `zotero` and a group library as `zotero-<name>`). If the project's library has
       no server yet, offer to add it through `/legal-research:setup`; it takes effect after a
