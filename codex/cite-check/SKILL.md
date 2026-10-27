@@ -30,8 +30,8 @@ Check source identity and metadata, quotation fidelity, honest alterations, prop
 Do not comprehensively lint signals, typefaces, citation ordering, short-form style, or parenthetical form unless separately requested.
 
 - **Focused:** specified footnotes, sources, or quotations.
-- **Standard:** the full draft; default.
-- **Deep:** Standard plus independent review of load-bearing checks and all adverse findings; it does not enable the dedicated proposition-support pass.
+- **Standard:** default review depth, including required adverse-finding audits; full-draft coverage unless a focused scope is selected.
+- **Deep:** independent review of load-bearing checks and all adverse findings in the selected scope; it does not enable the dedicated proposition-support pass. A focused pass can have deep review without becoming a whole-draft check.
 
 The dedicated unquoted proposition-support pass is **opt-in**. Enable it when
 asked “check that the sources support what I cite them for,” “check proposition
@@ -45,17 +45,33 @@ item. The protocol's Proposition support section governs this pass.
 
 ## Run the workflow
 
-### 1. Inspect project rules and initialize
+### 1. Inspect project rules, settle scope and initialize
 
 Read applicable `AGENTS.md` files before choosing paths or publication formats. Identify the draft, scope, local source folders, connected scholarly libraries, and any requested output constraints.
 
-Default the run directory to `<project>/.codex-memo/runs/<run-id>/` and initialize it:
+Read [references/run-picker.md](references/run-picker.md) and prepare a local
+preview before retrieval or delegation. Carry explicit user choices into its
+flags; omit settled questions. For a substantial draft, offer one compact picker
+for coverage, review depth and the separate support pass. Short runs and requests
+with settled choices use defaults without an extra approval step.
+
+Keep the preview under `<project>/.codex-memo/preflight/<run-id>/` and the new run
+under `<project>/.codex-memo/runs/<run-id>/`:
 
 ```bash
-python3 <skill-dir>/scripts/init_run.py <draft> --run-dir <hidden-run-dir> --scope standard
+python3 <skill-dir>/scripts/prepare_run_options.py <draft> --output <hidden-preview-path>
+# Regenerate with resolved choice flags, then initialize only a ready preview:
+python3 <skill-dir>/scripts/init_run.py <draft> --run-dir <hidden-run-dir> --options <hidden-preview-path>
 ```
 
-For a focused pass, add `--scope focused --footnotes 45-80` (or explicit numbers). The run directory itself must not already exist; create its parent, then pass a new run-id child. The initializer freezes a source snapshot inside the run and writes the manifest, extraction, scope-filtered prepared quote units, and empty ledgers. Review only that snapshot; report its hash and disclose later changes to the live draft without invalidating the snapshot review. If tracked changes exist, disclose that extraction includes visible insertions/move destinations and excludes deletions/move origins, including changes inside footnotes; do not silently accept or reject changes.
+The preview supports `--footnotes 45-80` (or explicit numbers), `--coverage sample`,
+`--depth standard|deep`, and `--support off|pincited|all`. Its `--defaults` resolves
+only unspecified choices to whole draft, standard, support off. Direct initializer
+flags remain supported for existing automation. In new manifests, `scope: focused`
+preserves partial coverage while `review_depth: deep` requires the deeper audit.
+Never describe a focused deep run as a whole-draft review.
+
+The run directory itself must not already exist; create its parent, then pass a new run-id child. The initializer freezes a source snapshot inside the run and writes the manifest, extraction, scope-filtered prepared quote units, and empty ledgers. Review only that snapshot; report its hash and disclose later changes to the live draft without invalidating the snapshot review. If tracked changes exist, disclose that extraction includes visible insertions/move destinations and excludes deletions/move origins, including changes inside footnotes; do not silently accept or reject changes.
 
 Inspect `blocking_issues` before continuing. Referenced endnotes, missing note text, and unsupported numbering/restarts block completion. A separately normalized copy can be used only when its text and note mapping to the supplied draft are verified; disclose the transformation and initialize a new run. Otherwise disclose that the requested review could not be completed. Never alter the supplied draft. Unreferenced DOCX notes are preserved separately as warning-only extraction
 records and are excluded from citation coverage; they are not custom author notes.

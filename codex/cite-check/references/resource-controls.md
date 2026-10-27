@@ -46,6 +46,10 @@ file/hash, verdict, searches actually performed and remaining uncertainty.
 
 ## Estimate work and stop repeated attempts
 
+Use the [scope/depth/support picker](run-picker.md) before a substantial run when
+those choices remain unsettled. Its local preview bounds coverage and shows
+source counts only when a compatible resolved inventory exists.
+
 Estimate work from unique uncached sources, required independent audits and
 planned worker assignments, including retries. Existing source files should not
 be counted as new retrievals. Small focused checks usually stay with the lead;

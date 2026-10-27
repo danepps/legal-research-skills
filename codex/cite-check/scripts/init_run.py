@@ -10,8 +10,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from extract_cites import extract_document
+from extract_cites import extract_document, sha256
 from prepare_units import build_prepared_units
+from prepare_run_options import parse_footnotes, resolved_selection
 
 
 LEDGERS = (
@@ -28,38 +29,56 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("draft", type=Path)
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--scope", choices=("focused", "standard", "deep"), default="standard")
+    parser.add_argument("--scope", choices=("focused", "standard", "deep"))
+    parser.add_argument("--options", type=Path, help="resolved prepare_run_options.py preview for this draft")
     parser.add_argument(
         "--publication-policy",
         choices=("matched_pair", "markdown_only", "docx_only"),
         default="markdown_only",
     )
-    parser.add_argument("--support", action="store_true", help="opt in to unquoted proposition-support review")
-    parser.add_argument("--support-scope", choices=("pincited", "all"), default="pincited")
-    parser.add_argument("--min-quote-words", type=int, default=8)
+    parser.add_argument("--support", action="store_true", default=None, help="opt in to unquoted proposition-support review")
+    parser.add_argument("--support-scope", choices=("pincited", "all"))
+    parser.add_argument("--min-quote-words", type=int)
     parser.add_argument("--footnotes", nargs="+", help="Focused footnote numbers or inclusive ranges")
     args = parser.parse_args()
     if not args.draft.is_file():
         parser.error(f"draft not found: {args.draft}")
+    options = None
+    if args.options:
+        if any(value is not None for value in (args.scope, args.support, args.support_scope, args.footnotes, args.min_quote_words)):
+            parser.error("--options cannot be combined with scope/support/footnote/quotation overrides")
+        try:
+            options = json.loads(args.options.read_text(encoding="utf-8"))
+            selected = resolved_selection(options, sha256(args.draft))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(str(exc))
+        args.scope = selected["depth"]
+        args.footnotes = [str(n) for n in selected["footnotes"]] if selected["footnotes"] else None
+        args.support = selected["support"] != "off"
+        args.support_scope = selected["support"] if args.support else "pincited"
+        args.min_quote_words = options["min_quote_words"]
+    args.scope = args.scope or "standard"
+    args.support_scope = args.support_scope or "pincited"
+    args.min_quote_words = args.min_quote_words if args.min_quote_words is not None else 8
+    if args.min_quote_words < 1:
+        parser.error("quotation threshold must be positive")
     args.run_dir.mkdir(parents=True, exist_ok=False)
     snapshot = args.run_dir / f"source-snapshot{args.draft.suffix}"
     shutil.copyfile(args.draft, snapshot)
     snapshot.chmod(0o444)
     extraction = extract_document(snapshot, args.min_quote_words)
+    if options and extraction["input_sha256"] != options["draft_sha256"]:
+        parser.error("draft changed while creating the snapshot; regenerate the preview")
     (args.run_dir / "extraction.json").write_text(
         json.dumps(extraction, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     selected_footnotes: set[int] | None = None
     if args.footnotes:
-        selected_footnotes = set()
-        for token in args.footnotes:
-            if "-" in token:
-                lower, upper = (int(value) for value in token.split("-", 1))
-                if lower > upper:
-                    parser.error(f"invalid descending footnote range: {token}")
-                selected_footnotes.update(range(lower, upper + 1))
-            else:
-                selected_footnotes.add(int(token))
+        try:
+            available = {n["number"] for n in extraction.get("footnotes", []) if isinstance(n.get("number"), int)}
+            selected_footnotes = set(parse_footnotes(args.footnotes, available))
+        except ValueError as exc:
+            parser.error(str(exc))
     prepared = build_prepared_units(extraction, selected_footnotes)
     (args.run_dir / "prepared-units.jsonl").write_text(
         "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in prepared),
@@ -91,7 +110,8 @@ def main() -> int:
         "draft_path": str(snapshot.resolve()),
         "original_draft_path": str(args.draft.resolve()),
         "draft_sha256": extraction["input_sha256"],
-        "scope": args.scope,
+        "scope": "focused" if selected_footnotes is not None else args.scope,
+        "review_depth": "deep" if args.scope == "deep" else "standard",
         "publication_policy": args.publication_policy,
         "selected_footnotes": sorted(selected_footnotes) if selected_footnotes else None,
         "created_at": now,
@@ -99,6 +119,10 @@ def main() -> int:
         "status": "initialized",
         "counts": {"prepared_units": len(prepared)},
     }
+    if options:
+        options_path = args.run_dir / "run-options.json"
+        options_path.write_text(json.dumps(options, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        manifest["run_options_sha256"] = sha256(options_path)
     (args.run_dir / "run-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

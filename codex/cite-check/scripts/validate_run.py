@@ -15,6 +15,7 @@ from urllib.parse import urlparse, parse_qs
 from findings_diff import snapshot, diff, render
 from extract_cites import note_key
 from verify_docx_ooxml import VERIFICATION_METHOD
+from prepare_run_options import resolved_selection
 
 
 REQUIRED_FILES = (
@@ -255,6 +256,23 @@ def main() -> int:
 
     manifest = load_json(args.run_dir / "run-manifest.json", errors)
     extraction = load_json(args.run_dir / "extraction.json", errors)
+    if manifest.get("run_options_sha256"):
+        try:
+            options_path = args.run_dir / "run-options.json"
+            if file_sha256(options_path) != manifest["run_options_sha256"]:
+                errors.append("run-options.json changed since initialization")
+            options = json.loads(options_path.read_text(encoding="utf-8"))
+            chosen = resolved_selection(options, manifest.get("draft_sha256"))
+            expected_scope = "focused" if chosen["footnotes"] is not None else chosen["depth"]
+            expected_support = ({"enabled": False} if chosen["support"] == "off" else
+                                {"enabled": True, "scope": chosen["support"]})
+            if (manifest.get("scope") != expected_scope
+                    or manifest.get("review_depth") != chosen["depth"]
+                    or manifest.get("selected_footnotes") != chosen["footnotes"]
+                    or manifest.get("support_pass") != expected_support):
+                errors.append("run manifest differs from the resolved scope/depth/support choices")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"cannot validate run options: {exc}")
     prepared = load_jsonl(args.run_dir / "prepared-units.jsonl", errors)
     units = load_jsonl(args.run_dir / "citation-units.jsonl", errors)
     sources = load_jsonl(args.run_dir / "source-ledger.jsonl", errors)

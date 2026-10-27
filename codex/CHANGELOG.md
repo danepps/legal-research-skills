@@ -2,6 +2,12 @@
 
 ## 1.5.0 — 2026-10-25
 
+- Add a Codex cite-check picker for whole-draft or sample coverage, review depth,
+  and separately opt-in proposition support. Preview actual draft counts before
+  source work; use compatible reconciled inventories for cache/source counts,
+  otherwise mark them unknown. Skip settled choices, bind resolved options to
+  the draft snapshot, and preserve focused coverage when deep review is selected.
+
 - Reduce cite-check context overhead: prepare bounded source packets with full
   relevant draft context and cache references, use fresh worker contexts, and
   share retrieval records across quote, support and audit work. Add a usage
