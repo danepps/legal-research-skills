@@ -50,10 +50,12 @@ item. The protocol's Proposition support section governs this pass.
 Read applicable `AGENTS.md` files before choosing paths or publication formats. Identify the draft, scope, local source folders, connected scholarly libraries, and any requested output constraints.
 
 Read [references/run-picker.md](references/run-picker.md) and prepare a local
-preview before retrieval or delegation. Carry explicit user choices into its
-flags; omit settled questions. For a substantial draft, offer one compact picker
-for coverage, review depth and the separate support pass. Short runs and requests
-with settled choices use defaults without an extra approval step.
+preview before retrieval or delegation. Discover connected libraries and carry
+public metadata into `--libraries`, following the reference's access checks.
+Carry explicit user choices into flags; omit settled questions. For a substantial
+draft, offer a compact picker for coverage, review depth and the separate support
+pass. Add a library question whenever multiple usable libraries remain unresolved,
+including on short drafts. Otherwise short runs and settled choices use defaults.
 
 Keep the preview under `<project>/.codex-memo/preflight/<run-id>/` and the new run
 under `<project>/.codex-memo/runs/<run-id>/`:
@@ -64,9 +66,11 @@ python3 <skill-dir>/scripts/prepare_run_options.py <draft> --output <hidden-prev
 python3 <skill-dir>/scripts/init_run.py <draft> --run-dir <hidden-run-dir> --options <hidden-preview-path>
 ```
 
-The preview supports `--footnotes 45-80` (or explicit numbers), `--coverage sample`,
+The preview supports `--libraries LIBRARIES.json`, `--library ID_OR_DESCRIPTION`,
+`--no-zotero`, `--footnotes 45-80` (or explicit numbers), `--coverage sample`,
 `--depth standard|deep`, and `--support off|pincited|all`. Its `--defaults` resolves
-only unspecified choices to whole draft, standard, support off. Direct initializer
+unspecified review choices to whole draft, standard, support off; it skips an
+unresolved choice among multiple libraries with a warning. Direct initializer
 flags remain supported for existing automation. In new manifests, `scope: focused`
 preserves partial coverage while `review_depth: deep` requires the deeper audit.
 Never describe a focused deep run as a whole-draft review.
@@ -105,7 +109,7 @@ Use the exact keys in the protocol's [ledger field reference](references/ledger-
 
 ### 4. Retrieve and verify by source bundle
 
-Prefer user-provided sources and the project’s connected scholarly library, then official/primary sources, authoritative reproductions, repositories, and the open web. Use current web research for external sources and record direct URLs or local identifiers.
+Prefer user-provided sources and the selected scholarly library, then official/primary sources, authoritative reproductions, repositories, and the open web. Use the manifest's library selection consistently across retrieval and worker packets; record the library type/ID with each Zotero item key. Report configured but inaccessible libraries and their remedies before retrieval and in the final limitations. Use current web research for external sources and record direct URLs or local identifiers.
 
 Before delegating or estimating a long run, read [references/resource-controls.md](references/resource-controls.md).
 Prepare source-specific packets with `scripts/prepare_source_bundle.py`; use a
@@ -121,7 +125,7 @@ python3 <skill-dir>/scripts/check_cite.py --input-file <citation-text-file>
 
 Retrieve the opinion itself for quotes, holdings, propositions, and pins. Before calling a lookup miss unconfirmed, run both caption and quoted citation-string fallbacks with `check_cite.py 'CITATION' --name 'A v. B'`; inspect candidate identities and citing passages, and record all routes tried or unavailable. A citing passage is corroboration, not conclusive identity proof. Use `too_recent_for_free_index` only with a basis for that explanation, never merely because a citation is unfamiliar. Recommend a direct official-record or database spot-check when unresolved.
 
-Write one row per unique source to `source-ledger.jsonl` and one row per citation unit to `verdicts.jsonl`. For scholarship, inspect the project library before the web and compare cited and current versions of manuscripts. If no library is connected, state that once in the method section and continue to authoritative web sources. For an absent quote, search sibling sources named in the same footnote; use `misattributed` if the passage appears in a different cited source.
+Write one row per unique source to `source-ledger.jsonl` and one row per citation unit to `verdicts.jsonl`. For scholarship, inspect the selected library before the web and compare cited and current versions of manuscripts. Honor a Zotero skip choice; report whether library access was skipped, absent, unassessed or unavailable. For an absent quote, search sibling sources named in the same footnote; use `misattributed` if the passage appears in a different cited source.
 
 Store each retrieved or extracted full-text source under the hidden run directory, preserving form feeds or explicit page markers when available. For each source bundle, create a JSON array whose rows contain `prepared_unit_id`, `unit_id`, `source_id`, `quote`, and any resolved `pincite`, then run:
 

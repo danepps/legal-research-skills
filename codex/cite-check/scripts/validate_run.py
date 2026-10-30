@@ -271,6 +271,8 @@ def main() -> int:
                     or manifest.get("selected_footnotes") != chosen["footnotes"]
                     or manifest.get("support_pass") != expected_support):
                 errors.append("run manifest differs from the resolved scope/depth/support choices")
+            if manifest.get("library_access") != options.get("library_access"):
+                errors.append("run manifest differs from the resolved library choice")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append(f"cannot validate run options: {exc}")
     prepared = load_jsonl(args.run_dir / "prepared-units.jsonl", errors)

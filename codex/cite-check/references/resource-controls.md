@@ -7,8 +7,9 @@ smaller assignments and fresh contexts, not a universal per-source token price.
 
 ## Prepare once, reuse by source
 
-The lead resolves the project library and source identities once. Record found
-item keys, cache paths, source hashes, versions and failed retrieval routes in
+The lead resolves the project library and source identities once. Honor the
+manifest's `library_access.selection`, including a decision to skip Zotero.
+Record found library IDs and item keys, cache paths, source hashes, versions and failed retrieval routes in
 `source-ledger.jsonl`. Workers use those records before making new searches;
 do not repeat the same lookup across multiple libraries without a concrete reason.
 Combine a source's quotes, pins and support units in the same first read. An

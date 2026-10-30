@@ -95,13 +95,19 @@ Ask “Check that the sources support what I cite them for” to enable the unqu
 proposition-support pass. It is off by default, including for deep cite-checks.
 It reads pincited instances through their introductory signals and disclosed
 opinion posture; whole-work citations require a separate `all` scope. On long
-drafts it costs roughly two to four times a standard run. Every not-supported
+drafts, the added work depends on unique uncached sources and the selected scope;
+the preview reports known source/cache counts without a fixed cost multiplier. Every not-supported
 or contradicted finding receives an independent second derivation. Possible
 overstatement is a low-severity **confirm item**, never an error. Reports disclose
 read, unavailable and deliberately unread instances; ordinary v6 runs retain their
 existing behavior. Review hardening preserves both sides of comparison citations,
 handles standalone body citations and rule locators, and resolves rerun findings
 only from matching source/claim coverage.
+
+Before source retrieval, cite-check resolves which connected Zotero library to
+use, offers available libraries by name when a choice is needed, and reports
+configured connections it cannot use. Supplied local PDFs remain usable without
+Zotero; automatic matching across a PDF folder is not yet implemented.
 
 ## Requirements
 

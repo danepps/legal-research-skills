@@ -1,5 +1,16 @@
 # Codex plugin changes
 
+## 1.6.0 — 2026-10-30
+
+- Address Claude's dialog follow-ups: select Zotero libraries from public runtime
+  metadata, preserve short digit-bearing descriptions such as `5A`, distinguish
+  unavailable connections from absent/unassessed libraries, and carry the resolved
+  choice through initialization, validation and source packets. Retain the
+  size-based coverage/depth/support picker. Clarify that the Web API helper uses
+  shell/Keychain credentials rather than parsing MCP config scopes, and that local
+  PDFs are already supported without automatic folder matching. Remove the stale
+  fixed support-cost multiplier from the Codex README.
+
 ## 1.5.0 — 2026-10-30
 
 - Add a Codex cite-check picker for whole-draft or sample coverage, review depth,

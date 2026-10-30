@@ -123,6 +123,8 @@ def main() -> int:
         options_path = args.run_dir / "run-options.json"
         options_path.write_text(json.dumps(options, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         manifest["run_options_sha256"] = sha256(options_path)
+        if "library_access" in options:
+            manifest["library_access"] = options["library_access"]
     (args.run_dir / "run-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
