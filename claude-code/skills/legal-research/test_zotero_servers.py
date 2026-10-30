@@ -69,5 +69,24 @@ check(m["match"] and m["match"]["server"] == "zotero-group" and "only one group"
 m = zs.match("", libs)
 check(m["match"] is None, "empty text never matches")
 
+m = zs.match("5A", [dict(l, name="5A General Law", label="Group: 5A General Law") if l["server"] == "zotero-fccl" else l for l in libs])
+check(m["match"] and m["match"]["server"] == "zotero-fccl", "a short token with a digit ('5A') matches the group named with it (%s)" % m["reason"])
+check("an" not in zs.words("an 5A ok"), "short words without a digit are still dropped")
+
+print("scopes and unusable servers")
+import tempfile
+with tempfile.TemporaryDirectory() as proj:
+    json.dump({"mcpServers": {"zotero-proj": {"env": {"ZOTERO_API_KEY": "k", "ZOTERO_LIBRARY_ID": "99", "ZOTERO_LIBRARY_TYPE": "group"}}}},
+              open(os.path.join(proj, ".mcp.json"), "w"))
+    cfg = dict(CFG, projects={os.path.abspath(proj): {"mcpServers": {
+        "zotero-desk": {"command": "uvx", "args": ["zotero-mcp"], "env": {"ZOTERO_LOCAL": "true"}}}}})
+    names = [r["server"] for r in zs.registered(cfg, project=proj)]
+    check("zotero-proj" in names and "zotero" in names, "project .mcp.json servers are listed with user-scope ones (%s)" % names)
+    check("zotero-proj" not in [r["server"] for r in zs.registered(cfg)], "without a project, only user scope")
+    bad = zs.unusable(cfg, project=proj)
+    check([b["server"] for b in bad] == ["zotero-desk"] and bad[0]["local"] and bad[0]["missing"] == ["ZOTERO_API_KEY", "ZOTERO_LIBRARY_ID"],
+          "a local-API Zotero server is reported as not usable, not ignored (%s)" % bad)
+    check(zs.unusable(cfg) == [], "courtlistener and keyed Zotero servers are never reported unusable")
+
 print("\n%s" % ("all tests passed" if not fails else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)

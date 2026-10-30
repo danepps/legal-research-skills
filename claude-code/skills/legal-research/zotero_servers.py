@@ -12,11 +12,15 @@ Usage:
     python3 zotero_servers.py                      # JSON list of registered libraries
     python3 zotero_servers.py --text               # one line per library
     python3 zotero_servers.py --match "<text>"     # resolve a description: {"match": ..., "candidates": [...]}
-    options: --timeout N (seconds per group lookup, default 5); --no-network (server names only)
+    options: --timeout N (seconds per group lookup, default 5); --no-network (server names only);
+             --project DIR (whose .mcp.json and local-scope servers count; default the current directory)
 
 Each library: {"server", "type" (user|group), "id", "name", "description", "label"} where `label`
-is the dialog option text. Credentials come from ~/.claude.json `mcpServers.<name>.env`
-(ZOTERO_API_KEY, ZOTERO_LIBRARY_ID, ZOTERO_LIBRARY_TYPE), the same entries the MCP tools use.
+is the dialog option text. Credentials come from the server entries' `env` (ZOTERO_API_KEY, ZOTERO_LIBRARY_ID,
+ZOTERO_LIBRARY_TYPE), the same entries the MCP tools use, in all three Claude Code scopes: user
+(~/.claude.json `mcpServers`), project (`<project>/.mcp.json`) and local (~/.claude.json
+`projects.<project>.mcpServers`). A Zotero server without those credentials (e.g. one using the
+desktop app's local API) is listed by `--text` as NOT USABLE rather than ignored.
 Stdlib only; read-only. Exit 0 always (an empty list means no server is registered).
 """
 from __future__ import annotations
@@ -33,20 +37,68 @@ TIMEOUT = 5
 STOP = set("a an the of and or in on at to for by with from my our its it this that one library lib group project paper article zotero".split())
 
 
-def registered(config: dict | None = None) -> list[dict]:
-    if config is None:
+def load_config() -> dict | None:
+    try:
+        return json.load(open(os.path.expanduser("~/.claude.json")))
+    except (OSError, ValueError):
+        return None
+
+
+def server_entries(config: dict | None, project: str | None = None) -> dict:
+    """Every MCP server Claude Code would load in `project`: user scope (~/.claude.json
+    `mcpServers`), then the project's `.mcp.json`, then local scope (~/.claude.json
+    `projects.<path>.mcpServers`); a later scope wins on a name clash, as in Claude Code."""
+    out = dict((config or {}).get("mcpServers") or {})
+    if project:
+        project = os.path.abspath(project)
         try:
-            config = json.load(open(os.path.expanduser("~/.claude.json")))
-        except (OSError, ValueError):
+            out.update(json.load(open(os.path.join(project, ".mcp.json"))).get("mcpServers") or {})
+        except (OSError, ValueError, AttributeError):
+            pass
+        out.update((((config or {}).get("projects") or {}).get(project) or {}).get("mcpServers") or {})
+    return out
+
+
+def looks_like_zotero(name: str, entry: dict) -> bool:
+    entry = entry or {}
+    env = entry.get("env") or {}
+    blob = " ".join([name, str(entry.get("command") or ""), str(entry.get("url") or "")] + [str(a) for a in entry.get("args") or []])
+    return "zotero" in blob.lower() or any(k.startswith("ZOTERO_") for k in env)
+
+
+def registered(config: dict | None = None, project: str | None = None) -> list[dict]:
+    if config is None:
+        config = load_config()
+        if config is None and not project:
             return []
     out = []
-    for name, entry in sorted((config.get("mcpServers") or {}).items()):
+    for name, entry in sorted(server_entries(config, project).items()):
         env = (entry or {}).get("env") or {}
         key, lib = env.get("ZOTERO_API_KEY"), env.get("ZOTERO_LIBRARY_ID") or env.get("ZOTERO_USER_ID")
         if not key or not lib:
             continue
         out.append({"server": name, "type": "group" if env.get("ZOTERO_LIBRARY_TYPE") == "group" else "user",
                     "id": str(lib), "key": key})
+    return out
+
+
+def unusable(config: dict | None = None, project: str | None = None) -> list[dict]:
+    """Zotero servers this skill cannot use: no Web API key and library id (typically a server
+    that talks to the Zotero desktop app's local API). Listed so the run can say so in one line
+    instead of silently checking scholarship on the web only."""
+    if config is None:
+        config = load_config()
+    out = []
+    for name, entry in sorted(server_entries(config, project).items()):
+        env = (entry or {}).get("env") or {}
+        if not looks_like_zotero(name, entry):
+            continue
+        key, lib = env.get("ZOTERO_API_KEY"), env.get("ZOTERO_LIBRARY_ID") or env.get("ZOTERO_USER_ID")
+        if key and lib:
+            continue
+        missing = [n for n, v in (("ZOTERO_API_KEY", key), ("ZOTERO_LIBRARY_ID", lib)) if not v]
+        out.append({"server": name, "missing": missing,
+                    "local": str(env.get("ZOTERO_LOCAL", "")).lower() in ("1", "true", "yes")})
     return out
 
 
@@ -64,9 +116,10 @@ def group_record(lib: dict, timeout: int = TIMEOUT, opener=None) -> dict:
     return {"name": data.get("name") or "", "description": re.sub(r"<[^>]+>", " ", data.get("description") or "").strip()}
 
 
-def libraries(config: dict | None = None, network: bool = True, timeout: int = TIMEOUT, opener=None) -> list[dict]:
+def libraries(config: dict | None = None, network: bool = True, timeout: int = TIMEOUT, opener=None,
+              project: str | None = None) -> list[dict]:
     libs = []
-    for lib in registered(config):
+    for lib in registered(config, project):
         rec = group_record(lib, timeout, opener) if (network and lib["type"] == "group") else {"name": "", "description": ""}
         short = lib["server"][len("zotero-"):] if lib["server"].startswith("zotero-") else lib["server"]
         name = rec["name"] or (short if lib["type"] == "group" else "Personal library")
@@ -77,7 +130,9 @@ def libraries(config: dict | None = None, network: bool = True, timeout: int = T
 
 
 def words(s: str) -> set[str]:
-    return {w for w in re.split(r"[^a-z0-9]+", (s or "").lower()) if len(w) >= 3 and w not in STOP}
+    # A short token counts when it carries a digit ("5A", "2L"), which is how groups get told apart.
+    return {w for w in re.split(r"[^a-z0-9]+", (s or "").lower())
+            if (len(w) >= 3 or (len(w) >= 2 and any(c.isdigit() for c in w))) and w not in STOP}
 
 
 def match(text: str, libs: list[dict]) -> dict:
@@ -110,7 +165,14 @@ def main(argv: list[str]) -> int:
             timeout = int(argv[argv.index("--timeout") + 1])
         except (IndexError, ValueError):
             pass
-    libs = libraries(network=network, timeout=timeout)
+    project = os.getcwd()
+    if "--project" in argv:
+        try:
+            project = argv[argv.index("--project") + 1]
+        except IndexError:
+            print("--project needs a directory", file=sys.stderr)
+            return 2
+    libs = libraries(network=network, timeout=timeout, project=project)
     if "--match" in argv:
         try:
             text = argv[argv.index("--match") + 1]
@@ -122,7 +184,11 @@ def main(argv: list[str]) -> int:
     if "--text" in argv:
         for l in libs:
             print(f"{l['server']:16} {l['type']:5} {l['id']:>8}  {l['label']}" + (f" — {l['description'][:80]}" if l["description"] else ""))
-        if not libs:
+        bad = unusable(project=project)
+        for u in bad:
+            how = "local desktop API" if u["local"] else "no Web API credentials"
+            print(f"{u['server']:16} NOT USABLE ({how}; missing {', '.join(u['missing'])}) — run /legal-research:setup to add an API key")
+        if not libs and not bad:
             print("no Zotero MCP server registered")
         return 0
     print(json.dumps(libs, ensure_ascii=False))

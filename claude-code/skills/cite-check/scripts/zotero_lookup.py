@@ -40,9 +40,11 @@ Per source the report gives:
                    page 1 is the article's first page — the agent confirms)
     candidates     the next-best items when nothing matched well enough (for the agent's note)
 
-Credentials: `--server NAME` reads the MCP server entry of that name in ~/.claude.json
-(`mcpServers.NAME.env`: ZOTERO_API_KEY, ZOTERO_LIBRARY_ID, ZOTERO_LIBRARY_TYPE — the same entry
-the Zotero MCP tools use, so nothing new to configure). `--server env` uses the environment.
+Credentials: `--server NAME` reads the MCP server entry of that name (`env`: ZOTERO_API_KEY,
+ZOTERO_LIBRARY_ID, ZOTERO_LIBRARY_TYPE — the same entry the Zotero MCP tools use, so nothing new
+to configure) from ~/.claude.json's user scope, the project's .mcp.json or ~/.claude.json's local
+scope for the project (`--project DIR`, default the current directory), later scope winning.
+`--server env` uses the environment.
 Library dumps are cached in the cache dir for the run; a text file already present is reused,
 so a re-run downloads nothing.
 
@@ -271,7 +273,22 @@ class ConfigError(Exception):
     pass
 
 
-def resolve_server(name: str, config: dict | None = None, environ: dict | None = None) -> dict:
+def _server_entries(config: dict, project: str | None) -> dict:
+    """User, project (.mcp.json) and local scope, later winning — zotero_servers.server_entries,
+    which the dialog lists libraries from, so a library the dialog offers always resolves here."""
+    for _p in reversed([os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "legal-research"),
+                        os.path.expanduser("~/.claude/skills/legal-research")]):
+        if os.path.isdir(_p) and _p not in sys.path:
+            sys.path.insert(0, _p)
+    try:
+        from zotero_servers import server_entries
+    except ImportError:                                      # degrade to user scope, never die
+        return config.get("mcpServers") or {}
+    return server_entries(config, project)
+
+
+def resolve_server(name: str, config: dict | None = None, environ: dict | None = None,
+                   project: str | None = None) -> dict:
     environ = os.environ if environ is None else environ
     if name == "env":
         key, lib = environ.get("ZOTERO_API_KEY"), environ.get("ZOTERO_LIBRARY_ID") or environ.get("ZOTERO_USER_ID")
@@ -284,11 +301,11 @@ def resolve_server(name: str, config: dict | None = None, environ: dict | None =
             config = json.load(open(os.path.expanduser("~/.claude.json")))
         except (OSError, ValueError) as e:
             raise ConfigError(f"cannot read ~/.claude.json: {e}")
-    entry = ((config.get("mcpServers") or {}).get(name)) or {}
+    entry = _server_entries(config, project).get(name) or {}
     env = entry.get("env") or {}
     key, lib = env.get("ZOTERO_API_KEY"), env.get("ZOTERO_LIBRARY_ID") or env.get("ZOTERO_USER_ID")
     if not key or not lib:
-        raise ConfigError(f'no Zotero MCP server "{name}" with ZOTERO_API_KEY and ZOTERO_LIBRARY_ID in ~/.claude.json '
+        raise ConfigError(f'no Zotero MCP server "{name}" with ZOTERO_API_KEY and ZOTERO_LIBRARY_ID in ~/.claude.json or the project\'s .mcp.json '
                           "(register it with /legal-research:setup, or pass --server env)")
     return {"name": name, "key": key, "id": str(lib), "type": env.get("ZOTERO_LIBRARY_TYPE", "user")}
 
@@ -543,6 +560,7 @@ def main(argv: list[str]) -> int:
     args: dict = {"server": [], "secondary": [], "support": [], "cites": []}
     global TIMEOUT
     cache_dir, allow_download, max_downloads, timeout = "", True, MAX_DOWNLOADS, TIMEOUT
+    project = os.getcwd()
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -550,6 +568,8 @@ def main(argv: list[str]) -> int:
             args[a[2:]].append(rest[i + 1]); i += 2
         elif a == "--cache-dir" and i + 1 < len(rest):
             cache_dir = rest[i + 1]; i += 2
+        elif a == "--project" and i + 1 < len(rest):
+            project = rest[i + 1]; i += 2
         elif a == "--no-download":
             allow_download = False; i += 1
         elif a == "--max-downloads" and i + 1 < len(rest):
@@ -564,7 +584,7 @@ def main(argv: list[str]) -> int:
         print("usage: at least one --server NAME (a Zotero MCP server in ~/.claude.json, or 'env')", file=sys.stderr)
         return 2
     try:
-        servers = [resolve_server(n) for n in args["server"]]
+        servers = [resolve_server(n, project=project) for n in args["server"]]
     except ConfigError as e:
         print(f"zotero_lookup: {e}", file=sys.stderr)
         return 2

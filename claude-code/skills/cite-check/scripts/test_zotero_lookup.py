@@ -100,6 +100,15 @@ try:
     check(False, "unknown server raises")
 except zl.ConfigError as e:
     check("nope" in str(e), "unknown server raises ConfigError naming it")
+import tempfile
+with tempfile.TemporaryDirectory() as proj:
+    json.dump({"mcpServers": {"zotero-proj": {"env": {"ZOTERO_API_KEY": "k2", "ZOTERO_LIBRARY_ID": "99", "ZOTERO_LIBRARY_TYPE": "group"}}}},
+              open(os.path.join(proj, ".mcp.json"), "w"))
+    s = zl.resolve_server("zotero-proj", config=cfg, project=proj)
+    check(s["id"] == "99" and s["type"] == "group", "a server in the project's .mcp.json resolves (the dialog lists it)")
+    local = dict(cfg, projects={os.path.abspath(proj): {"mcpServers": {"zotero-group": {"env": {"ZOTERO_API_KEY": "k3", "ZOTERO_LIBRARY_ID": "55", "ZOTERO_LIBRARY_TYPE": "group"}}}}})
+    s = zl.resolve_server("zotero-group", config=local, project=proj)
+    check(s["id"] == "55", "local scope wins over user scope on a name clash")
 s = zl.resolve_server("env", environ={"ZOTERO_API_KEY": "k", "ZOTERO_LIBRARY_ID": "5"})
 check(s["type"] == "user" and zl.base_url(s) == "https://api.zotero.org/users/5", "--server env")
 

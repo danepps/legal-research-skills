@@ -112,34 +112,56 @@ prose, cite-check verifies the authorities** — they now happen to share the ci
   reads the current/accepted text and skips tracked deletions, but a heavily-marked draft is worth a
   heads-up).
 
-### 1b. Ask up front — depth, support, Zotero — in ONE dialog (author's call 2026-08-09; expanded 2026-10-27, `DESIGN-upfront-dialog.md`)
+### 1b. Ask up front — coverage, depth, support, Zotero — in ONE dialog (author's call 2026-08-09; expanded 2026-10-27, `DESIGN-upfront-dialog.md`; coverage added 2026-10-30)
 
 The user is stopped **once**, before pre-flight and before the snapshot, with a single
-`AskUserQuestion` call that carries every choice a run needs — depth, the proposition-support
-pass, and (when it is open) which Zotero library — plus the tracked-changes heads-up from
-step 1 when it applies. Three questions in one call render as one interaction (tested live in
-the desktop app, 2026-10-27); asking the Zotero question later in pre-flight, as this skill once
-did, stopped a first-time user twice.
+`AskUserQuestion` call that carries every choice a run needs — coverage, depth, the
+proposition-support pass, and (when it is open) which Zotero library — plus the tracked-changes
+heads-up from step 1 when it applies. Three questions in one call render as one interaction
+(tested live in the desktop app, 2026-10-27); asking the Zotero question later in pre-flight, as
+this skill once did, stopped a first-time user twice. The tool takes at most four questions: if
+the tracked-changes question is needed too, drop Coverage (whole draft) and say in one line that
+a run on chosen footnotes can be asked for in words.
 
 **Before the call, two reads that cost nothing** (they decide whether the Zotero question is
 asked at all): look for a `Zotero library:` line in the project folder's `CLAUDE.md` (or
 `AGENTS.md`), and list the registered Zotero servers by their real names:
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/zotero_servers.py --text
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/zotero_servers.py --text --project "<project folder>"
 ```
 
 (one request per group server for its name and description, five-second timeout, the server's
-short name as the fallback; nothing is asked of the user yet).
+short name as the fallback; nothing is asked of the user yet). It lists servers from all three
+Claude Code scopes — user (`~/.claude.json`), project (`.mcp.json`) and local — so a library
+registered for this project only is offered too. A line marked `NOT USABLE` is a Zotero server
+with no Web API key and library id (usually one that talks to the Zotero desktop app's local
+API): never offer it, and say in one line before launch and again at deliver time that this
+Zotero library was found but cannot be searched until `/legal-research:setup` adds an API key,
+so scholarship in it is checked on the web this run.
 
 **Skip any question the request already settles, by dropping it from the call** — never ask it
-with a preselected default. "Deep", "thorough", "near-final", "pre-submission", "quick",
+with a preselected default. A footnote range ("footnotes 45–80"), "a sample", "a test run" or
+"the whole draft" settle Coverage. "Deep", "thorough", "near-final", "pre-submission", "quick",
 "standard" settle Depth; "check that the sources support what I cite them for", "support
 pass", "do the signal cites hold up" settle Support on, and "just the quotes" or "no support"
 settle it off; a request that names the library settles Zotero. A `+Nk` budget in the request
 does **not** settle Support (it lifts the cap; it does not choose the pass). Also skip a question
 on a partial re-run of a configuration already chosen this session. When every question is
 settled, make no call.
+
+**Question 0 — Coverage** (header `Coverage`), asked first. The same three choices as the Codex
+skill's picker.
+
+| Option | Args | Description shown |
+|---|---|---|
+| Whole draft | `footnotes` unset | Every footnote and every citation in the body. |
+| Sample: footnotes 1–10 | `footnotes: 1-10` | A small test run, to see the report and the cost before checking everything. Body citations outside those notes are not checked. |
+| Specific footnotes | `footnotes:` the range typed | Type the notes in the Other box, e.g. 45–80 or 3, 7, 12–20. |
+
+A Sample or Specific answer is a partial pass (step 3, `prepare_units.py --footnotes`), so the
+report titles itself as one and is labelled for the range. If the user picks Specific footnotes
+without typing a range, ask once for it.
 
 **Question 1 — Depth** (header `Depth`). No "(Recommended)" tag: the right tier depends on how
 near-final the draft is, which the user knows and you do not.
@@ -162,14 +184,15 @@ has no `Zotero library:` line AND there is a choice to make: at least one group 
 registered, or more than one library of any kind. If the only registered library is the
 personal one, do not ask — resolve to it, record it (below), and say so in one line of the
 deliver message (the author left this open in the design note; the lighter dialog won). If no
-Zotero server is registered at all, do not ask — pass `zotero:false`. The options are the
+usable Zotero server is registered at all (`NOT USABLE` lines do not count), do not ask — pass
+`zotero:false`. The options are the
 registered libraries themselves, by name, so nobody types:
 
 | Option | Where the label comes from |
 |---|---|
 | Personal library | the server registered with `ZOTERO_LIBRARY_TYPE=user` |
 | *Group: \<real group name\>* (one per registered group) | `zotero_servers.py` — the group's name from the Zotero API, or the server's short name when the lookup fails |
-| No Zotero this run | — |
+| No Zotero this run | — (description shown: *Articles and books are checked on the open web only. Claude will ask again next time.*) |
 
 Description text for a group option carries no technical content, e.g. for a group named
 Epps–Dave Federalism Project: *The shared library of that name. Claude will remember this choice
@@ -180,7 +203,7 @@ exceed four options: list the three most recently registered and let the Other b
 one for the federalism paper"), resolve it deterministically:
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/zotero_servers.py --match "<what they typed>"
+python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/zotero_servers.py --match "<what they typed>" --project "<project folder>"
 ```
 
 It matches the text against each library's group name, description and server name by shared
@@ -197,7 +220,7 @@ was never registered during setup is named and pointed at `/legal-research:setup
 silently falling back to the web.
 
 **When `AskUserQuestion` is unavailable** (a headless or scheduled run), use the defaults —
-Standard, support off, the `CLAUDE.md` library or web-only — and state them in the deliver
+whole draft, Standard, support off, the `CLAUDE.md` library or web-only — and state them in the deliver
 message and the report footer.
 
 **Do NOT reuse /proofread's rationale for Depth — the two `deep`s are different mechanisms.**
@@ -290,7 +313,7 @@ and any other registered Zotero server the sources may live in:
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/zotero_lookup.py "<scratch>/zotero_lookup.json" \
     --server <zoteroServer> [--server zotero ...] \
     --secondary "<scratch>/ledger_args.json" --support "<scratch>/support_args.json" \
-    --cache-dir "<scratch>/zotero-cache"
+    --cache-dir "<scratch>/zotero-cache" --project "<project folder>"
 python3 ${CLAUDE_PLUGIN_ROOT}/skills/cite-check/scripts/zotero_lookup.py "<scratch>/zotero_lookup.json" --compact > "<scratch>/zotero_hits.json"
 ```
 
