@@ -1,5 +1,46 @@
 # Codex plugin changes
 
+## 1.5.0 — 2026-10-30
+
+- Add a Codex cite-check picker for whole-draft or sample coverage, review depth,
+  and separately opt-in proposition support. Preview actual draft counts before
+  source work; use compatible reconciled inventories for cache/source counts,
+  otherwise mark them unknown. Skip settled choices, bind resolved options to
+  the draft snapshot, and preserve focused coverage when deep review is selected.
+
+- Reduce cite-check context overhead: prepare bounded source packets with full
+  relevant draft context and cache references, use fresh worker contexts, and
+  share retrieval records across quote, support and audit work. Add a usage
+  reporter for explicitly selected Codex sessions and time windows; subtract
+  cumulative counters and keep cached input/reasoning as subsets. Replace the
+  unsupported fixed support-cost multiplier with estimates of actual source work.
+
+- Fix focused sample-run findings: preserve background meaning in `see also
+  generally`, recognize dotted journal abbreviations without mistaking opening
+  pages for pincites, and require reviewed claim scope for mid-sentence anchors.
+  Authority-name prefixes can use the complete sentence after scope review;
+  title confirmation alone cannot count as proposition support.
+
+- Address Claude's fourteen review findings: close the support-only partial gate,
+  preserve comparison clauses and signals, reject nonproposition parentheticals
+  and false pins, locate rules, and retain prose after citations. Add standalone
+  body-cite claim context and prefix-page reading. Keep orphan DOCX notes out of
+  v6 coverage. Reconcile reruns per source/claim occurrence, recognize supported
+  report heading forms, require item-specific unread reasons and complete claims,
+  validate confirmed audit transitions, and count body siblings per paragraph.
+
+- Add an opt-in proposition-support pass to cite-check, with schema-v7 support
+  ledgers, deterministic footnote anchors and citation screening, inherited Id.
+  pins, bounded cached-page reading, and exact reconciled coverage counts.
+- Judge each unquoted citation through its signal and disclosed opinion posture.
+  Overstatement is a low-severity confirm item, never an error. Independently
+  re-derive every not-supported and contradicted finding before reporting.
+- Keep default runs on schema v6, including deep runs. Whole-work reading requires
+  explicit scope `all`; unread and unavailable instances remain disclosed.
+- Key support rerun findings by category/source/claim/verdict, preserving absent
+  findings as not rechecked when the pass is disabled or limited.
+- Add offline extraction, screening, page-reader, support-ledger and gate tests.
+
 ## 1.4.0 — 2026-10-19
 
 - Add cite-check subsequent-history and treatment advisories, a bounded RECAP
@@ -67,3 +108,4 @@
 
 - Package the six maintained Codex skills as a native marketplace plugin while
   preserving the manual installation paths.
+

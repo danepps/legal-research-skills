@@ -89,6 +89,20 @@ phrases with disclosed caps. They are discovery aids, not a commercial citator.
 Research memo authority tables distinguish adversarial review, existence plus a
 treatment probe, and authorities not validated to either tier.
 
+### Opt-in proposition support
+
+Ask “Check that the sources support what I cite them for” to enable the unquoted
+proposition-support pass. It is off by default, including for deep cite-checks.
+It reads pincited instances through their introductory signals and disclosed
+opinion posture; whole-work citations require a separate `all` scope. On long
+drafts it costs roughly two to four times a standard run. Every not-supported
+or contradicted finding receives an independent second derivation. Possible
+overstatement is a low-severity **confirm item**, never an error. Reports disclose
+read, unavailable and deliberately unread instances; ordinary v6 runs retain their
+existing behavior. Review hardening preserves both sides of comparison citations,
+handles standalone body citations and rule locators, and resolves rerun findings
+only from matching source/claim coverage.
+
 ## Requirements
 
 - Python 3.11 or newer for the included scripts.
@@ -177,3 +191,4 @@ commands require the plugin and catalog to be committed and pushed first.
 
 See OpenAI's [plugin packaging documentation](https://developers.openai.com/plugins/build/plugins)
 and [CLI plugin reference](https://learn.chatgpt.com/docs/cli/reference#codex-plugin).
+

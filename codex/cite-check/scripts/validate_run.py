@@ -15,6 +15,7 @@ from urllib.parse import urlparse, parse_qs
 from findings_diff import snapshot, diff, render
 from extract_cites import note_key
 from verify_docx_ooxml import VERIFICATION_METHOD
+from prepare_run_options import resolved_selection
 
 
 REQUIRED_FILES = (
@@ -255,17 +256,37 @@ def main() -> int:
 
     manifest = load_json(args.run_dir / "run-manifest.json", errors)
     extraction = load_json(args.run_dir / "extraction.json", errors)
+    if manifest.get("run_options_sha256"):
+        try:
+            options_path = args.run_dir / "run-options.json"
+            if file_sha256(options_path) != manifest["run_options_sha256"]:
+                errors.append("run-options.json changed since initialization")
+            options = json.loads(options_path.read_text(encoding="utf-8"))
+            chosen = resolved_selection(options, manifest.get("draft_sha256"))
+            expected_scope = "focused" if chosen["footnotes"] is not None else chosen["depth"]
+            expected_support = ({"enabled": False} if chosen["support"] == "off" else
+                                {"enabled": True, "scope": chosen["support"]})
+            if (manifest.get("scope") != expected_scope
+                    or manifest.get("review_depth") != chosen["depth"]
+                    or manifest.get("selected_footnotes") != chosen["footnotes"]
+                    or manifest.get("support_pass") != expected_support):
+                errors.append("run manifest differs from the resolved scope/depth/support choices")
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            errors.append(f"cannot validate run options: {exc}")
     prepared = load_jsonl(args.run_dir / "prepared-units.jsonl", errors)
     units = load_jsonl(args.run_dir / "citation-units.jsonl", errors)
     sources = load_jsonl(args.run_dir / "source-ledger.jsonl", errors)
     verdicts = load_jsonl(args.run_dir / "verdicts.jsonl", errors)
     audits = load_jsonl(args.run_dir / "verifier-audit.jsonl", errors)
     schema_version = manifest.get("schema_version")
-    if schema_version not in {2, 3, 4, 5, 6}:
+    if schema_version not in {2, 3, 4, 5, 6, 7}:
         errors.append("run-manifest.json: unsupported schema_version")
         schema_version = 2
     quote_check_path = args.run_dir / "quote-checks.jsonl"
     quote_checks: list[dict] = []
+    support_enabled = manifest.get("support_pass", {}).get("enabled") is True
+    if support_enabled and schema_version != 7:
+        errors.append("support pass requires schema_version 7")
     if schema_version >= 3:
         if not quote_check_path.is_file():
             errors.append("missing quote-checks.jsonl")
@@ -545,6 +566,12 @@ def main() -> int:
         unit_by_id_for_basis = {row.get("unit_id"): row for row in units}
         source_by_id = {row.get("source_id"): row for row in sources}
         unchecked_units = []
+        support_eligible_ids = set()
+        if support_enabled:
+            from prepare_support_units import build_support_units
+            from support_validation import read_overstatement
+            support_eligible_ids = {row['unit_id'] for row in build_support_units(
+                extraction, units, quote_checks, manifest['support_pass'].get('scope', 'pincited'))}
         for verdict in verdicts:
             unit = unit_by_id_for_basis.get(verdict.get("unit_id"), {})
             source = source_by_id.get(unit.get("source_id"), {})
@@ -579,13 +606,19 @@ def main() -> int:
                     errors.append(f"verified quotation, support, or pincite requires retrieved full text: {unit.get('unit_id')}")
                 if verdict.get("verification_basis") == "snippet_only" or source.get("verification_basis") == "snippet_only" or source.get("status") == "snippet_only":
                     errors.append(f"snippet-only evidence cannot fully verify a unit: {unit.get('unit_id')}")
-                if unit.get("pincite") and not has_quote and not confirmed_pin(verdict, unit["pincite"]):
+                # A v7 support judgment can rest on a nearby passage while
+                # disclosing the locator difference. It does not certify the pin.
+                support = verdict.get("support", {})
+                support_locator_note = (support_enabled and isinstance(support, dict)
+                                        and support.get("verdict") in {"supported", "supported_qualified"}
+                                        and nonempty_string(support.get("locator_read")))
+                if unit.get("pincite") and not has_quote and not support_locator_note and not confirmed_pin(verdict, unit["pincite"]):
                     errors.append(f"verified nonquotation unit requires pincite_verification: {unit.get('unit_id')}")
             unavailable_source = source.get("status") == "unavailable" or source.get("verification_basis") == "unavailable"
             # An unavailable sibling-source check does not erase a successful
             # assigned-source match. Unavailable assigned-source checks do.
             unavailable_assigned = any(c.get("unit_id") == unit.get("unit_id") and c.get("source_id") == unit.get("source_id") and c.get("status") == "unavailable" for c in quote_checks)
-            if status in {"unverified", "partial"} or verdict.get("verification_basis") == "unavailable" or unavailable_source or unavailable_assigned:
+            if (status in {"unverified", "partial"} and not (support_enabled and read_overstatement(verdict, support_eligible_ids))) or verdict.get("verification_basis") == "unavailable" or unavailable_source or unavailable_assigned:
                 unchecked_units.append(verdict)
         unavailable_sources = [row for row in sources if row.get("status") == "unavailable" or row.get("verification_basis") == "unavailable"]
         if (unchecked_units or unavailable_sources) and final_status != "complete_with_limits":
@@ -780,6 +813,7 @@ def main() -> int:
                 or verdict.get("category") == "not_found_in_sources_checked"
                 or exact_one_page
                 or unknown_page_delta
+                or (support_enabled and verdict.get("category") in {"support_mismatch", "support_contradicted"})
             )
             if needs_audit:
                 audit = audit_by_verdict.get(verdict.get("verdict_id"))
@@ -819,6 +853,12 @@ def main() -> int:
         if schema_version >= 6:
             validate_review(args.run_dir, manifest, units, sources, verdicts, corpus,
                             report.read_text(encoding="utf-8") if report.is_file() else "", final_status, errors)
+
+        if support_enabled:
+            from support_validation import validate_support
+            validate_support(manifest, extraction, units, quote_checks,
+                             load_jsonl(args.run_dir / "support-units.jsonl", errors), verdicts, audits, sources,
+                             report.read_text(encoding="utf-8") if report.is_file() else "", errors)
 
         publication_policy = manifest.get("publication_policy", "markdown_only")
         if publication_policy not in {"matched_pair", "markdown_only", "docx_only"}:
@@ -870,3 +910,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -1,12 +1,13 @@
 export const meta = {
   name: 'cite-check',
-  description: 'Verify every citation and quotation in an article draft against real sources — resolve Id./supra chains, collapse to unique sources, verify verbatim, re-verify high-severity findings, and grade a footnote-by-footnote report',
+  description: 'Verify every citation and quotation in an article draft against real sources — resolve Id./supra chains, collapse to unique sources, verify verbatim, optionally read unquoted cites for proposition support, re-verify high-severity findings, and grade a footnote-by-footnote report',
   phases: [
     { title: 'Segment', detail: 'resolve each quote to the specific source it hangs on (Id./supra chains, syllabus routing)' },
     { title: 'Existence', detail: 'CourtListener existence + caption check for every case cite (name-search fallback before any web escalation), plus existence/metadata check of every unique unquoted secondary source' },
     { title: 'History', detail: 'subsequent history (docket entries after the decision + later same-litigation opinions) for every lower-court case, and a two-route adverse-treatment probe for every case' },
     { title: 'Verify', detail: 'one agent per unique source: fetch once, check every quote verbatim + pincites + metadata' },
-    { title: 'Re-verify', detail: 'mandatory verify-the-verifier pass on every high-severity finding' },
+    { title: 'Support', detail: '(opt-in) read each unquoted cite at its pincite and judge whether it supports the sentence it hangs on, through its signal' },
+    { title: 'Re-verify', detail: 'mandatory verify-the-verifier pass on every high-severity finding (quote and support)' },
     { title: 'Form', detail: 'Bluebook typeface + short forms, decided from the draft alone (no sources)' },
     { title: 'Report', detail: 'assemble the graded, footnote-by-footnote cite-check report' },
   ],
@@ -21,6 +22,8 @@ export const meta = {
 //   ledger:[...], secondaryCites:[...]   (citation_ledger.py --compact)
 //   deep:boolean, footnotesOnly:[lo,hi]|null, zotero:boolean,
 //   history:boolean (default true) — the subsequent-history / treatment pass
+//   support:boolean (default FALSE — opt-in), supportUnits:[...] (prepare_support_units.py
+//   --compact), supportScope:'pincited'|'all' — the proposition-support pass (2026-10-24)
 // }
 let A = args || {}
 if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
@@ -38,8 +41,24 @@ const LEDGER = Array.isArray(A.ledger) ? A.ledger : []
 const SECONDARY_CITES = Array.isArray(A.secondaryCites) ? A.secondaryCites : []
 const DEEP = !!A.deep
 const HISTORY_ON = A.history !== false // subsequent-history + treatment pass (2026-10-19)
+// Proposition-support pass (2026-10-24) — OPT-IN. Reads every unquoted citation instance in
+// scope at its pincite and judges, through its Bluebook signal, whether the source supports
+// the sentence it hangs on. Off by default because it changes the cost profile from "sources
+// with quotes" to "every source"; "overstated" is a CONFIRM item by the author's decision.
+const SUPPORT_ON = !!A.support
+const SUPPORT_SCOPE = A.supportScope === 'all' ? 'all' : 'pincited' // whole-work cites only on 'all'
+const SUPPORT_UNITS = SUPPORT_ON && Array.isArray(A.supportUnits) ? A.supportUnits : []
 const ZOTERO_OK = A.zotero !== false // assume available unless SKILL.md says otherwise
 const ZOTERO_SERVER = A.zoteroServer || 'zotero' // per-project; SKILL.md pre-flight resolves it (setup registers "zotero" for a personal library, "zotero-<name>" for a group)
+// Deterministic Zotero pre-lookup (2026-10-27): SKILL.md runs scripts/zotero_lookup.py before
+// launching and passes its `--compact` map as zoteroHits ({ledger key: {lib, item, title, au,
+// year, vol, pp, text, pages, src, first, confirm}}) plus the report path as zoteroLookupPath.
+// Agents never call a Zotero tool: a matched source has its text on disk already, an unmatched
+// one is told so. The 2026-10-26 transcripts showed Zotero searches by hand were the single
+// largest source of agent turns (three libraries per verify agent, 12 searches per existence batch).
+const ZOTERO_HITS = (A.zoteroHits && typeof A.zoteroHits === 'object') ? A.zoteroHits : {}
+const ZOTERO_LOOKUP = A.zoteroLookupPath || ''
+const ZOTERO_PRELOOKED = ZOTERO_OK && !!ZOTERO_LOOKUP
 // Partial pass (DESIGN.md: `--footnotes 45-80`): SKILL.md resolves a footnote
 // range/list to explicit unit ids and passes them here. Empty => full draft.
 const UNIT_IDS = Array.isArray(A.unitIds) && A.unitIds.length ? A.unitIds.slice() : null
@@ -69,14 +88,21 @@ const PREPARE = `${SKILLS}/cite-check/scripts/prepare_units.py`
 const CHECK_CITE = `${SKILLS}/legal-research/check_cite.py`
 const FETCH_PAGE = `${SKILLS}/legal-research/fetch_page.py`
 const VERIFY_QUOTES = `${SKILLS}/cite-check/scripts/verify_quotes.py`
+const PREPARE_SUPPORT = `${SKILLS}/cite-check/scripts/prepare_support_units.py`
 const CL_TOOLS = `${SKILLS}/legal-research/cl_case_tools.py`
+const PROBE = `${SKILLS}/legal-research/probe_sources.py`
+const ZOTERO_LOOKUP_SCRIPT = `${SKILLS}/cite-check/scripts/zotero_lookup.py`
 
 // ---- knobs -------------------------------------------------------------------
 const SEGMENT_CHUNK = 28   // quote-units per resolver agent
 const EXIST_BATCH = 30     // case cites per existence agent (CL paces 60/min)
-const SECONDARY_BATCH = 12 // unique secondary sources per existence/metadata agent
+// Batch sizes (2026-10-27): an agent's cost is turns × context, and context grows with every
+// tool result, so a 12-source existence batch (30+ turns) cost more than three 4-source ones.
+// Sources already matched in Zotero never reach an existence agent at all.
+const SECONDARY_BATCH = 5  // unique secondary sources (not in Zotero) per existence/metadata agent (was 12)
 const HISTORY_BATCH = 8    // case cites per subsequent-history / treatment agent
-const VERIFY_CHUNK = 8     // small/quoteless sources bundled per verify agent
+const VERIFY_CHUNK = 4     // small/quoteless sources bundled per verify agent (was 8)
+const SUPPORT_TAIL = 3     // single-unit support sources bundled per agent under budget pressure (was 5)
 const MIRROR_CAP = 3       // max fetch attempts per source before "unverifiable"
 
 // Model map (house convention): mechanical/mid-volume work on Sonnet; the final
@@ -86,20 +112,126 @@ const RESOLVE_MODEL = 'sonnet'
 const VERIFY_MODEL = 'sonnet'
 const REVERIFY_MODEL = 'sonnet'
 
-// Budget: always-armed soft cap + graceful degradation (ported from
-// legal-research). The practice run burned ~2.2M without unique-source
-// bundling and Id./supra pre-resolution; with them the target is 400-700k.
+// Budget (rewritten 2026-10-27, recalibrated the same evening from two runs' transcripts).
+// The agent transcripts of the 2026-10-26 run (34 agents) showed output tokens were never the
+// cost: 278k for the whole run, in line with the old gates, which were therefore right not to
+// close. The cost was 486 agent turns, each re-reading 50-60k of context — 22.4M cache-read
+// tokens — and budget.spent() (output tokens, the only figure the runtime exposes) cannot see
+// it. The completion notification's "subagent_tokens" is the SUM OF EACH AGENT'S PEAK CONTEXT
+// (1,988,912 by the transcripts against 1,989,264 reported; 1,102,009 against 1,102,299 on the
+// next run), a measure of breadth, not cost. So the gates PROJECT, in a unit that the
+// transcripts measure after the run (scripts/run_usage.py): INPUT-EQUIVALENT TOKENS, i.e.
+// uncached input + cache writes + cache reads / 10 + output x 5, the Sonnet price ratios, so
+// 1M of this unit is about three dollars at Sonnet rates. Every agent kind has a cost in that
+// unit (the constants below are per-kind means from the 2026-10-26 and 2026-10-27 runs,
+// rounded up), the run adds up what it launches, and a phase whose projection would pass the
+// cap degrades before launching. The report footer prints the projection beside the measured
+// figure so the constants get recalibrated run over run (`costModel` arg overrides any).
+const COST = Object.assign({
+  segment: 150_000,       // one resolver chunk (SEGMENT_CHUNK units; 7 turns)
+  exist: 90_000,          // case-existence batch (one deterministic script call + reasoning)
+  existWeb: 130_000,      // 5 secondary sources not in Zotero, located on the web (7-10 turns)
+  history: 110_000,
+  verify: 150_000,        // one source fetched from the web (2026-10-26 mean 176k with Zotero searches by hand; 2026-10-27 run 2: 105-180k, 7-17 turns)
+  verifyZotero: 80_000,   // one source whose text zotero_lookup.py already put on disk (run 2: 72-86k, 3-5 turns)
+  verifyTail: 130_000,    // a VERIFY_CHUNK batch of single-quote web sources
+  support: 200_000,       // one web source read for proposition support (medium effort)
+  supportZotero: 100_000, // the same with the text already on disk
+  supportTail: 210_000,   // a SUPPORT_TAIL batch of single-unit web sources (run 2: 153-290k at 3 per batch, 7-20 turns)
+  reverify: 100_000,      // second-derivation agent (196k on an unbounded one; 75-95k once tool-capped)
+  form: 130_000,
+  report: 250_000,
+}, (A.costModel && typeof A.costModel === 'object') ? A.costModel : {})
 const RESERVE_REPORT = 60_000
 const RESERVE_REVERIFY = 40_000
-let SOFT_CAP = DEEP ? 900_000 : 650_000  // +100k (2026-09-06) for the secondary-source existence pass
-// budget.spent() is TURN-GLOBAL (main loop + every workflow this turn). Baseline
-// it at workflow start so the soft cap governs THIS workflow's own output — else
-// invoking the skill late in a busy session spuriously degrades from agent one.
-// A user "+Nk" budget (budget.total) is a real hard ceiling, so honor it directly.
-const SPENT0 = budget.spent()
-const remaining = () => budget.total ? budget.remaining() : Math.max(0, SOFT_CAP - (budget.spent() - SPENT0))
+const RESERVE_SUPPORT_AUDIT = 30_000 // kept back from the support pass so its adverse verdicts can be re-derived
+const MAX_WAVE = Number(A.maxWave) || 12 // agents per wave in gatedFanout (near the concurrency cap, so the barrier is cheap)
+// Caps in the same unit. The 2026-10-26 run (30 footnotes, support on, agents searching Zotero
+// by hand) measured 7.4M; the 2026-10-27 run after the fixes measured 2.7M with the support pass
+// mostly degraded. These defaults let a 30-footnote run with the support pass complete; a full
+// draft will project past them and degrade unless the request carries a "+Nk" budget.
+let SOFT_CAP = DEEP ? 6_000_000 : 4_000_000
+if (SUPPORT_ON) SOFT_CAP += 3_000_000     // the support pass reads sources the quote pass never fetched
+// A user "+Nk" budget (budget.total) is read in the same unit as the cap. The runtime also
+// enforces it as an output-token ceiling, which is far looser (output is a few percent of this
+// unit), so the projection binds first.
+const CAP = budget.total || SOFT_CAP
+let projected = 0
+const remaining = () => Math.max(0, CAP - projected)
 const tight = (need) => remaining() < need
 const degradation = []
+// Output tokens, for the footer only (budget.spent() is turn-global; baseline at start).
+const SPENT0 = budget.spent()
+const spentHere = () => budget.spent() - SPENT0
+
+// ---- spend instrumentation --------------------------------------------------
+// Every agent goes through spawn(): the cost kind is inferred from the label (or given as
+// opts.cost for the Zotero variants), added to the projection and to the phase record.
+let agentsSoFar = 0
+let currentPhase = 'Setup'
+let phaseStart = 0
+const spendByPhase = {}
+const phaseRec = (t) => spendByPhase[t] || (spendByPhase[t] = { agents: 0, projected: 0, tokens: 0 })
+const mark = (title) => {
+  const now = spentHere()
+  const rec = phaseRec(currentPhase)
+  rec.tokens += now - phaseStart
+  if (rec.agents) log(`Spend — ${currentPhase}: ${rec.agents} agent(s), projected ${rec.projected.toLocaleString()}; run so far ${projected.toLocaleString()} of ${CAP.toLocaleString()} (output tokens ${now.toLocaleString()}).`)
+  phaseStart = now
+  currentPhase = title
+  if (title !== 'Done') phase(title)
+}
+const costKind = (opts) => {
+  if (opts && opts.cost) return opts.cost
+  const L = (opts && opts.label) || ''
+  if (L.startsWith('segment')) return 'segment'
+  if (L.startsWith('exist-secondary')) return 'existWeb'
+  if (L.startsWith('exist')) return 'exist'
+  if (L.startsWith('history')) return 'history'
+  if (L.startsWith('verify-tail')) return 'verifyTail'
+  if (L.startsWith('verify')) return 'verify'
+  if (L.startsWith('support-tail')) return 'supportTail'
+  if (L.startsWith('support')) return 'support'
+  if (L.startsWith('re-verify')) return 'reverify'
+  const P = (opts && opts.phase) || currentPhase
+  return P === 'Form' ? 'form' : P === 'Report' ? 'report' : 'verify'
+}
+const spawn = (prompt, opts) => {
+  const { cost, ...rest } = opts || {}
+  const c = COST[costKind(opts)] || 0
+  agentsSoFar++
+  projected += c
+  const rec = phaseRec(rest.phase || currentPhase)
+  rec.agents++
+  rec.projected += c
+  return agent(prompt, rest)
+}
+const perAgentProjected = () => (agentsSoFar ? Math.round(projected / agentsSoFar) : 0)
+// Launch `jobs` (thunks) in waves sized to the budget left after `reserve`; `costs[i]` is each
+// job's projected cost. Results align with jobs (null where a job was never launched); `dropped`
+// lists the indexes that were not launched. A wave always holds at least one job while any
+// budget beyond the reserve remains, so a phase that passed its gate is never dropped whole.
+async function gatedFanout(jobs, costs, reserve) {
+  const results = new Array(jobs.length).fill(null)
+  const dropped = []
+  let i = 0
+  while (i < jobs.length) {
+    let room = remaining() - reserve
+    const wave = []
+    while (i + wave.length < jobs.length && wave.length < MAX_WAVE) {
+      const c = costs[i + wave.length] || 0
+      if (room - c < 0 && wave.length) break
+      if (room - c < 0 && room <= 0) break
+      room -= c
+      wave.push(jobs[i + wave.length])
+    }
+    if (!wave.length) { for (let j = i; j < jobs.length; j++) dropped.push(j); break }
+    const outs = await parallel(wave)
+    outs.forEach((o, k) => { results[i + k] = o })
+    i += wave.length
+  }
+  return { results, dropped }
+}
 
 const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 
@@ -116,6 +248,56 @@ function sourceKey(citation, kind) {
   return norm(s).split(' ').slice(0, 8).join(' ')
 }
 
+// Zotero, per source (2026-10-27). The lookup ran before launch; agents get a one-line verdict
+// per source and never call a Zotero tool. Hits are joined by ledger key, then by title words
+// + author for a resolved quote source whose JS key differs from the ledger's.
+const STOPW = new Set('a an the of and or in on at to for by with from as is are be this that its it their into over under about between among upon vs v law review rev journal j'.split(' '))
+const cwords = (s) => norm(s).split(' ').filter((w) => w.length >= 3 && !STOPW.has(w) && !/^\d+$/.test(w))
+const zoteroHitFor = (key, source) => {
+  if (!ZOTERO_PRELOOKED) return null
+  if (key && ZOTERO_HITS[key]) return ZOTERO_HITS[key]
+  const toks = new Set(norm(source || '').split(' '))
+  for (const h of Object.values(ZOTERO_HITS)) {
+    const au = (h.au || []).some((n) => toks.has(norm(n).split(' ').pop()))
+    if (!au) continue
+    const tw = cwords(h.title || '')
+    if (tw.length >= 2 && tw.filter((w) => toks.has(w)).length / tw.length >= 0.85) return h
+    // the draft cites the short title of a record that carries a subtitle ("Justice Abandoned"
+    // vs "Justice Abandoned: How the Supreme Court ..."): the main title, before the colon
+    const mw = cwords((h.title || '').split(':')[0])
+    if (mw.length >= 2 && mw.length < tw.length && mw.every((w) => toks.has(w))) return h
+  }
+  return null
+}
+const ZOTERO_POLICY = ZOTERO_PRELOOKED
+  ? `ZOTERO: the user's Zotero libraries were searched DETERMINISTICALLY before this run (zotero_lookup.py)
+for every secondary source the draft cites, and every source below carries a "ZOTERO:" line with the
+result. NEVER call a Zotero MCP tool (no zotero_search_items / zotero_item_metadata /
+zotero_item_fulltext): a source marked not in Zotero is not there, and a matched source already has
+its text on disk. Full record of a matched source, if you need it:
+  python3 "${ZOTERO_LOOKUP_SCRIPT}" "${ZOTERO_LOOKUP}" --get "<ledger key>"`
+  : ZOTERO_OK
+    ? `ZOTERO: no pre-lookup was run this time — do NOT search Zotero by hand either (it cost more than
+every fetch in the 2026-10-26 run); verify scholarship via the open web, probe first.`
+    : `ZOTERO: unavailable this run — verify scholarship via the open web, probe first.`
+const zoteroLine = (key, source) => {
+  if (!ZOTERO_PRELOOKED) return ZOTERO_OK ? 'ZOTERO: not pre-checked; do not search it — open web, probe first.' : 'ZOTERO: not available this run.'
+  const h = zoteroHitFor(key, source)
+  if (!h) return "ZOTERO: NOT in any of the user's Zotero libraries (checked before this run) — do not search Zotero; open web, probe first."
+  const rec = `in Zotero (${h.lib} item ${h.item}: ${(h.au || []).join(', ')}, "${h.title}"${h.year ? ', ' + h.year : ''}${h.vol ? ', vol. ' + h.vol : ''}${h.pp ? ', pp. ' + h.pp : ''})`
+  const confirm = (h.confirm && h.confirm.length) ? ` Record vs draft: ${h.confirm.join('; ')}.` : ''
+  if (h.text) {
+    return `ZOTERO: ${rec}. Its FULL TEXT is already on disk at ${h.text} (${h.pages || '?'} page${h.pages === 1 ? '' : 's'}, from ${h.src === 'pdf' ? 'the PDF attachment — form feeds mark page breaks' : "Zotero's full-text index — no page boundaries, so pincites are unverifiable from it"}). Do NOT fetch or search anything first: run the verifier straight against that file${h.first ? `, with --first-page ${h.first} when page 1 of the file is the article's first page (check its footer; a cover page shifts the count by one or more)` : ''}. Go to the web only if the verifier's hint shows the file is a different work.${confirm}`
+  }
+  return `ZOTERO: ${rec}, but NO readable attachment — the record settles existence and metadata; for the text go to the open web (probe first). Do not search Zotero.${confirm}`
+}
+// Tool-call budget (2026-10-27): an agent's cost is turns × context, so the calls are the cost.
+const TOOL_CAP = (n) => `TOOL-CALL BUDGET: at most ${n} tool calls for this whole task, ToolSearch included — load every
+tool you need in ONE ToolSearch call. Each call re-reads your entire context, so the calls, not your
+words, are what this costs. Plan them before the first one; never read a whole source file into
+context (use the scripts and targeted excerpts); when the budget is spent, return what you have and
+mark the rest unverifiable with the unlock path.`
+
 const SOURCES = `FREE / OPEN-WEB SOURCES ONLY (no Westlaw/Lexis):
 - Cases: CourtListener (HTML opinion view), Cornell LII, Justia, Google Scholar case law.
   OFFICIAL reporter text with star pagination (best for verbatim quotes + pincites):
@@ -125,14 +307,26 @@ const SOURCES = `FREE / OPEN-WEB SOURCES ONLY (no Westlaw/Lexis):
     fetcher script, NEVER raw WebFetch). Authoritative, and — CRITICAL — the ONLY free source that
     carries the SYLLABUS and front matter; CourtListener/CAP opinion text does NOT.
 - Statutes/rules: uscode.house.gov, Cornell LII, official state legislature sites.
-- Scholarship: the user's Zotero library FIRST (see per-agent instructions), then SSRN, Google
-  Scholar, law-school digital-commons repositories, HeinOnline open content, journal sites, author
-  faculty pages, Google Books / archive.org snippet search for book quotes.
-- KNOWN FETCH BLOCKS: Justia and SSRN often return HTTP 403 to scripted fetches; bepress/
-  digital-commons and some university repositories block too. Mirror chain that works: journal's own
-  site → non-bepress repository → Wayback Machine → Google Books snippet. Cap attempts per source at
-  ${MIRROR_CAP}; then mark the item unverifiable with the unlock path (Hein/JSTOR pull), do NOT burn
-  retries.
+- Scholarship: the ZOTERO line given with each source decides the first step (text already on disk,
+  or not in Zotero at all — never search Zotero yourself); then the journal's own website, the
+  author's faculty page, the Wayback Machine, Google Books / archive.org snippet search for book quotes.
+- KNOWN FETCH BLOCKS (every one confirmed in live runs): HeinOnline, JSTOR, Westlaw and Lexis are
+  subscription-only — never fetchable. SSRN, Justia and every bepress Digital Commons repository
+  (digitalcommons.*, scholarship.law.*, ir.lawnet.fordham.edu, repository.law.umich.edu and the
+  like) return 403 to scripted fetches; openYLS is a Yale sign-in page. Do not search for copies on
+  those hosts and never try URL variants on them; a bot-blocked URL is "presumptively live", not
+  dead. Cap attempts per source at ${MIRROR_CAP}; then mark the item unverifiable with the unlock
+  path, do NOT burn retries.
+- PROBE BEFORE YOU FETCH (2026-10-27 — most of a run's cost was agents fetching URLs one at a
+  time and reasoning between 403s and 404s on sources that ended unverifiable anyway). Gather every
+  candidate URL for a source first, then test them ALL in ONE Bash call:
+    python3 "${PROBE}" "<url1>" "<url2>" ...
+  It returns, per URL, fetchable true/false, the HTTP status, the host rule that applies, and a
+  Wayback Machine snapshot URL when one exists for an unreachable page. Fetch ONLY the URLs it
+  marks fetchable (or the snapshot it returns), through the capped fetcher below. Every URL it
+  marks not fetchable counts as one of your ${MIRROR_CAP} attempts without a fetch; nothing it
+  marks blocked, not-found or subscription is fetched or retried with a variant. No fetchable
+  candidate and no snapshot = unverifiable: report the probe's unlock path and stop.
 - PDFs: never WebFetch a PDF and never \`open\`/GUI-view one. Run the capped fetcher via Bash
   (load Bash with ToolSearch "select:Bash" if needed): python3 "${FETCH_PAGE}" "<url>"
 TOOLS: WebSearch and WebFetch. If not callable, first run ToolSearch query "select:WebSearch,WebFetch".`
@@ -214,6 +408,77 @@ each was violated once and produced a FALSE accusation against the draft):
 - Opinions, articles and dockets that POSTDATE your training data are real. A 2025 or 2026
   decision you do not recognize is not a hallucination signal; CourtListener and the open web
   are the record, your recall is not.`
+
+// Proposition-support judgment rules (opt-in pass, 2026-10-24). Hardwired into the fold-in
+// block, the dedicated support agents and the support re-verify agent, so the three cannot
+// apply different tests. "Overstated" is a CONFIRM item by the author's decision.
+const SUPPORT_RULES = `WHAT THE DRAFT CLAIMS. Each unit carries the body sentence its footnote marker sits in
+(anchor.sentence); when the marker is MID-SENTENCE, anchor.clause (the text before the marker)
+is usually the claim, not the whole sentence — but decide, and say so in claimBasis: when the
+clause is only an authority's name or a framing phrase ("As Smith argued,", "In Roe,", "Under
+the Act,"), the marker attributes the whole sentence and the claim is anchor.sentence; when the
+sentence joins claims cited to different sources and this cite's share is unclear, use the
+parenthetical or the footnote's prose, or report unverifiable with the unlock path — never
+invent a shorter claim or strengthen the draft's wording. Confirming that a source exists or
+has the title the draft gives is NOT proposition support. If the footnote's OWN prose states
+the proposition ("For the contrary view, see ..."; note_prose), that governs. A proposition parenthetical ("holding that
+...") says precisely what the source is cited for — check that. An opinion_note the draft itself
+supplies ("Thomas, J., concurring") is the posture the draft claims: judge against that opinion.
+Judge the claim in the DRAFT'S words, with its own hedges ("arguably", "has suggested"); never
+substitute a stronger paraphrase and then find it unsupported.
+
+READ THE CLAIM THROUGH THE SIGNAL (Bluebook R. 1.2) — the verdict is relative to it:
+- (no signal) / see / see, e.g. / accord — the source directly states or clearly implies the
+  proposition. "e.g." means others do too; check only this one.
+- see also — additional support; same test.
+- cf. — the source supports a DIFFERENT proposition that is analogous; the question is whether
+  the analogy is fair, never whether the source says the sentence.
+- compare ... with — a comparison; each side is its own unit (signal "compare" for the first
+  authority, "compare with" for the second); the question is whether that side says what the
+  comparison implies about it, read with the other side in view (same footnote).
+- see generally (and "see also generally", normalized to see generally) — background; supported if
+  the source treats the topic at the level the draft suggests. NEVER not_supported merely because
+  the page does not state the sentence.
+- but see / but cf. / contra — cited as CONTRARY authority; the test is whether it actually
+  contradicts (cf.: is contrary by analogy to) the proposition. A "but see" source that does NOT
+  contradict the sentence is not_supported (the cite fails its job) — never "contradicted".
+
+VERDICTS (one per unit):
+- supported — at the pincite (or, for a whole-work cite, in the work's holding/argument) the
+  source says what the draft cites it for, through the signal.
+- supported_qualified — supports it, but from a POSTURE the draft does not disclose: dicta, a
+  concurrence or dissent, a plurality, an arguendo assumption, the syllabus, a party's argument
+  the court recites, an author REPORTING someone else's view. Name the posture. Advisory.
+- overstated — the source supports a NARROWER or WEAKER version: one court cited for "courts have
+  uniformly held"; "may" cited for "must"; a fact-bound holding cited for a general rule. This is a
+  CONFIRM item for the author, never an error: give the source's actual scope in reason and the
+  passage in sourceText, so the author can decide whether to soften the sentence.
+- not_supported — the pincited page (and, after a search of the source for the proposition's key
+  terms, nothing nearby) does not address the proposition. Say in reason what the page DOES say.
+- contradicted — the source says the OPPOSITE of what the draft cites it for, through the signal.
+  Requires the FULL footnote in view and the contradicting passage verbatim in sourceText.
+- unverifiable — the source could not be fetched or read; give the unlock path in reason.
+- unread — a unit you deliberately did not read (whole-work scope / budget); say so.
+Per unit, always fill: claim (the proposition you judged, VERBATIM from the unit — never your
+paraphrase) and claimBasis (anchor.sentence / anchor.clause / parenthetical / note_prose); posture;
+locator (the page you actually read; if the pincited page does not exist or holds nothing relevant,
+say so); sourceText (verbatim, <= 400 chars) for every verdict except unverifiable/unread; reason
+(one line, claim vs source); basis; and for not_supported / contradicted, searched (the key terms
+you searched the fetched source for, and what came back). A verdict that arrives without a
+full-text basis, a passage and a locator (or an adverse one without the search) is NOT accepted:
+the unit is reported unverifiable, so fill them.
+
+DISCIPLINE (each rule mirrors a false finding the quote pass once produced):
+- A supporting passage a page or two off the pincite is a pincite NOTE inside a supported verdict
+  ("passage at 437, cited 436" in locator), not not_supported.
+- not_supported and contradicted need the pincited page read AND a search of the fetched source
+  for the proposition's key terms. Name what you searched.
+- Pages: use the verifier's --page output, not footer/star markers by eye; if the file has no
+  page boundaries, say so in locator and read a targeted excerpt instead.
+- Scholarship cited for "scholars argue X": a source that reports X is supported; cited for X
+  itself, a source that only REPORTS X is supported_qualified (reported view).
+- Never judge from memory. Sources that postdate your training data are real. A paywall or bot
+  wall means unverifiable with the unlock path, not a guess.`
 
 // ---------------------------------------------------------------------------
 // SCHEMAS
@@ -326,6 +591,54 @@ const VERIFY_SCHEMA = {
   },
 }
 
+// Proposition-support verdicts (opt-in pass, 2026-10-24). Shared by the fold-in on a verify
+// agent (the source is already on disk) and the dedicated support agents.
+const SUPPORT_VERDICTS = ['supported', 'supported_qualified', 'overstated', 'not_supported', 'contradicted', 'unverifiable', 'unread']
+const SUPPORT_VERDICT_ITEM = {
+  type: 'object',
+  required: ['id', 'verdict'],
+  properties: {
+    id: { type: 'integer', description: 'the support-unit id, echoed exactly' },
+    verdict: { type: 'string', enum: SUPPORT_VERDICTS },
+    posture: { type: 'string', description: 'what the supporting passage IS: holding / dicta / concurrence / dissent / plurality / arguendo / syllabus / party argument recited / author\'s thesis / reported view / statutory text / other' },
+    locator: { type: 'string', description: 'the page/section you actually read, and any offset from the pincite ("passage at 437, cited 436")' },
+    sourceText: { type: 'string', description: 'the source passage, VERBATIM (<= 400 chars) — the evidence for the verdict; required for every verdict except unverifiable/unread' },
+    reason: { type: 'string', description: 'one line: what the draft claims (through its signal) vs what the source says' },
+    claim: { type: 'string', description: 'the proposition you actually judged, VERBATIM from the unit (anchor.clause, anchor.sentence, the parenthetical, or the footnote\'s own prose) — never a paraphrase' },
+    claimBasis: { type: 'string', enum: ['anchor.sentence', 'anchor.clause', 'parenthetical', 'note_prose'], description: 'where the claim came from' },
+    searched: { type: 'string', description: 'not_supported / contradicted only: the key terms you searched the fetched source for, and what came back' },
+    basis: { type: 'string', enum: ['direct-full-text', 'authoritative-reproduction', 'secondary-corroboration', 'citation-only', 'not-fetched'] },
+  },
+}
+const SUPPORT_SCHEMA = {
+  type: 'object',
+  required: ['sourceKey', 'supportVerdicts'],
+  properties: {
+    sourceKey: { type: 'string', description: 'the source-bundle key, echoed' },
+    sourceIdentified: { type: 'string', description: 'the source as you actually located and read it (URL/edition/version)' },
+    fetchBasis: { type: 'string', enum: ['direct-full-text', 'authoritative-reproduction', 'secondary-corroboration', 'citation-only', 'not-fetched'] },
+    supportVerdicts: { type: 'array', items: SUPPORT_VERDICT_ITEM },
+  },
+}
+VERIFY_SCHEMA.properties.supportVerdicts = {
+  type: 'array', items: SUPPORT_VERDICT_ITEM,
+  description: 'ONLY when the prompt lists SUPPORT UNITS for this source: one verdict per support-unit id',
+}
+const SUPPORT_REVERIFY_SCHEMA = {
+  type: 'object',
+  required: ['id', 'upheld', 'verdict'],
+  properties: {
+    id: { type: 'integer' },
+    upheld: { type: 'boolean', description: 'false if the first support verdict was a checker artifact' },
+    verdict: { type: 'string', enum: SUPPORT_VERDICTS },
+    posture: { type: 'string' },
+    locator: { type: 'string' },
+    sourceText: { type: 'string' },
+    searched: { type: 'string', description: 'the key terms you searched the source for, and what came back' },
+    reason: { type: 'string', description: 'why the original stands or was an artifact — name the artifact class (paraphrased-claim / signal-misread / wrong-antecedent / wrong-page / clause-vs-sentence / footnote-prose / posture)' },
+  },
+}
+
 // verify-the-verifier: re-derive one high-severity finding from full context.
 const REVERIFY_SCHEMA = {
   type: 'object',
@@ -357,7 +670,7 @@ async function must(label, fn) {
 // ===========================================================================
 // Phase 1 — SEGMENT & RESOLVE (highest-care stage)
 // ===========================================================================
-phase('Segment')
+mark('Segment')
 // Chunk the work as contiguous id ranges (full draft) or explicit id picks
 // (partial pass). Each chunk is [loadArg, ids] where loadArg is the exact
 // prepare_units flags the agent runs.
@@ -426,7 +739,7 @@ do NOT judge accuracy — only resolve WHICH source and WHERE. Never invent a ci
 source is genuinely unresolvable from the context given, set source to the verbatim draft text
 and kind "unknown".`
 
-const segAgent = (ch) => agent(segPrompt(ch), {
+const segAgent = (ch) => spawn(segPrompt(ch), {
   label: `segment:${ch.label}`,
   phase: 'Segment',
   schema: SEGMENT_SCHEMA,
@@ -456,7 +769,7 @@ log(`Resolved ${resolutions.length}/${segTarget} quotes to their specific source
 // ===========================================================================
 // Phase 2 — CASE EXISTENCE (deterministic CourtListener + web escalation)
 // ===========================================================================
-phase('Existence')
+mark('Existence')
 const existBatches = []
 for (let i = 0; i < CASE_CITES.length; i += EXIST_BATCH) existBatches.push(CASE_CITES.slice(i, i + EXIST_BATCH))
 
@@ -506,8 +819,14 @@ ${SOURCES}`
 // Secondary sources (articles / books / statutes / internet) cited WITHOUT a quotation never
 // reach the verify stage, so this is the only pass that touches them: existence + metadata,
 // no substance. One batch per SECONDARY_BATCH unique sources.
+// Secondary sources the Zotero pre-lookup matched are settled here, deterministically: they
+// exist (the record is the evidence), and the lookup's draft-vs-record differences travel as
+// "confirm:" notes, never as fixes (a Zotero record can be wrong too). Only the rest go to agents.
+const secZotero = ZOTERO_PRELOOKED ? SECONDARY_CITES.filter((s) => ZOTERO_HITS[s.key]) : []
+const secWeb = ZOTERO_PRELOOKED ? SECONDARY_CITES.filter((s) => !ZOTERO_HITS[s.key]) : SECONDARY_CITES
 const secBatches = []
-for (let i = 0; i < SECONDARY_CITES.length; i += SECONDARY_BATCH) secBatches.push(SECONDARY_CITES.slice(i, i + SECONDARY_BATCH))
+for (let i = 0; i < secWeb.length; i += SECONDARY_BATCH) secBatches.push(secWeb.slice(i, i + SECONDARY_BATCH))
+if (secZotero.length) log(`Secondary sources: ${secZotero.length} of ${SECONDARY_CITES.length} matched in Zotero before launch (no agent needed); ${secWeb.length} go to the web in batches of ${SECONDARY_BATCH}.`)
 const secPrompt = (batch) => `You are confirming that SECONDARY sources cited in a law-review draft exist and are
 cited with the right metadata. Do NOT read them for substance, do NOT check any quotation, and do NOT
 assess whether they support anything — existence + bibliographic metadata only.
@@ -515,10 +834,14 @@ assess whether they support anything — existence + bibliographic metadata only
 SOURCES (echo each key exactly; the cite text is verbatim from the draft's footnote):
 ${batch.map((s) => `- key ${s.key} | ${s.kind} | ${s.cite}`).join('\n')}
 
+${ZOTERO_PRELOOKED ? `ZOTERO: none of these sources is in the user's Zotero libraries (checked before this run) — do NOT search
+Zotero; every one is a web lookup.` : ZOTERO_POLICY}
+${TOOL_CAP(2 + 3 * batch.length)}
+
 For EACH source:
-- article: locate it (${ZOTERO_OK ? `the "${ZOTERO_SERVER}" Zotero MCP tools first — search by author/title — then` : ''} Google
-  Scholar, SSRN, HeinOnline citation page, the journal's site, a digital-commons repository) and confirm
-  author, title, journal, volume, first page, year. basis "zotero" or "web".
+- article: locate it (Google Scholar, the journal's site, the HeinOnline or SSRN citation page, a
+  digital-commons repository — one WebSearch, then at most one page opened) and confirm
+  author, title, journal, volume, first page, year. basis "web".
 - book: a catalog / publisher / Open Library / Google Books record confirming author, title, edition,
   publisher, year.
 - statute / rule: the current official text (uscode.house.gov, LII, official state source) exists at
@@ -549,19 +872,28 @@ from an opencasebook.org URL slug; the Stanford Law Review's own page showed the
 - Author ORDER specifically is never a finding without the source's own title page or landing page.
 ${SOURCES}`
 
-const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + (existBatches.length + secBatches.length) * 4000)
+const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + existBatches.length * COST.exist + secBatches.length * COST.existWeb)
 const casePassRan = !CASE_CITES.length || existGate
-const secondaryPassRan = !SECONDARY_CITES.length || existGate
-if (!secondaryPassRan) degradation.push(`secondary-source existence pass skipped for ${SECONDARY_CITES.length} sources (budget) — they are UNCHECKED in the ledger`)
+const secondaryPassRan = !secWeb.length || existGate
+if (!secondaryPassRan) degradation.push(`secondary-source existence pass skipped for ${secWeb.length} sources not in Zotero (budget) — they are UNCHECKED in the ledger`)
 const existJobs = []
 if (casePassRan) for (const b of existBatches) existJobs.push(() =>
-  agent(existPrompt(b), { label: `exist:${b.length}`, phase: 'Existence', schema: EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' }))
+  spawn(existPrompt(b), { label: `exist:${b.length}`, phase: 'Existence', schema: EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' }))
 if (secondaryPassRan) for (const b of secBatches) existJobs.push(() =>
-  agent(secPrompt(b), { label: `exist-secondary:${b.length}`, phase: 'Existence', schema: SECONDARY_EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' })
+  spawn(secPrompt(b), { label: `exist-secondary:${b.length}`, phase: 'Existence', schema: SECONDARY_EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' })
     .then((o) => o && o.sources ? { _secondary: o.sources } : o))
 const existRaw = existJobs.length ? await parallel(existJobs) : []
 const existence = []
 const secondaryExistence = []
+for (const s of secZotero) {
+  const h = ZOTERO_HITS[s.key]
+  secondaryExistence.push({
+    key: s.key, exists: true, basis: 'zotero',
+    identified: `Zotero ${h.lib} item ${h.item}: ${(h.au || []).join(', ')}, "${h.title}"${h.year ? ' (' + h.year + ')' : ''}`,
+    metadataFindings: [],
+    note: (h.confirm && h.confirm.length) ? h.confirm.join('; ') + ` [Zotero record ${h.lib}/${h.item}; the draft may be right — check the source itself]` : '',
+  })
+}
 for (const r of existRaw.filter(Boolean)) {
   if (r._secondary) secondaryExistence.push(...r._secondary)
   else for (const e of (r.results || [])) existence.push(e)
@@ -597,7 +929,7 @@ log(`Case existence: ${existence.length} checked, ${existBad.length} unconfirmed
 // two-route citing probe (graph + name phrase) flags adverse treatment. Advisory: findings go in
 // their own report section, never in "Needs your attention", and never enter the ledger.
 // ===========================================================================
-phase('History')
+mark('History')
 const HISTORY_RE = /\b(aff'd|affirmed|rev'd|reversed|vacated|cert\.?\s*(denied|granted|dismissed)|overruled|abrogated|superseded|modified|reh'g|rehearing|en banc|withdrawn|amended|substituted|remanded|appeal (dismissed|docketed|filed)|petition for cert)/i
 const SCOTUS_RE = /\b\d+\s+(U\.?\s?S\.?|S\.?\s?Ct\.?|L\.?\s?Ed\.?(\s?2d)?)\s+\d+/i
 const existByCite = new Map(existence.map((e) => [norm(e.citation), e]))
@@ -706,9 +1038,9 @@ const historyTargets = HISTORY_ON ? historyCases.filter((c) => c.exists) : []
 for (let i = 0; i < historyTargets.length; i += HISTORY_BATCH) historyBatches.push(historyTargets.slice(i, i + HISTORY_BATCH))
 let historyResults = []
 let historyRan = false
-if (historyBatches.length && !tight(RESERVE_REPORT + RESERVE_REVERIFY + historyBatches.length * 5000)) {
+if (historyBatches.length && !tight(RESERVE_REPORT + RESERVE_REVERIFY + historyBatches.length * COST.history)) {
   historyRan = true
-  const hAgent = (b, i) => agent(historyPrompt(b), { label: `history:${i * HISTORY_BATCH}-${i * HISTORY_BATCH + b.length}`, phase: 'History', schema: HISTORY_SCHEMA, model: VERIFY_MODEL, effort: DEEP ? 'medium' : 'low' })
+  const hAgent = (b, i) => spawn(historyPrompt(b), { label: `history:${i * HISTORY_BATCH}-${i * HISTORY_BATCH + b.length}`, phase: 'History', schema: HISTORY_SCHEMA, model: VERIFY_MODEL, effort: DEEP ? 'medium' : 'low' })
   const outs = await parallel(historyBatches.map((b, i) => async () => {
     let r = await hAgent(b, i)
     if (!r) { log(`history batch ${i} died — retrying once`); r = await hAgent(b, i) }
@@ -758,9 +1090,13 @@ log(`Collapsed ${resolutions.length} quotes onto ${bundleList.length} unique sou
 
 // Budget degradation: if a full verify won't fit, verify multi-quote sources
 // individually and batch the single-quote long tail; never drop a source silently.
-const PER_SOURCE = 9_000
+// Join the Zotero pre-lookup: a bundle whose text is on disk costs a fraction of a web fetch.
+for (const b of bundleList) b.zotero = (b.kind === 'case' || b.kind === 'statute') ? null : zoteroHitFor(b.key, b.source)
+const zText = bundleList.filter((b) => b.zotero && b.zotero.text).length
+if (ZOTERO_PRELOOKED) log(`Verify: ${zText} of ${bundleList.length} unique sources have their text on disk from Zotero; ${bundleList.filter((b) => b.zotero && !b.zotero.text).length} more are in Zotero without an attachment.`)
 let verifyBundles = bundleList
-if (bundleList.length && tight(RESERVE_REPORT + RESERVE_REVERIFY + bundleList.length * PER_SOURCE)) {
+const fullVerifyCost = bundleList.reduce((n, b) => n + (b.zotero && b.zotero.text ? COST.verifyZotero : COST.verify), 0)
+if (bundleList.length && tight(RESERVE_REPORT + RESERVE_REVERIFY + fullVerifyCost)) {
   const heavy = bundleList.filter((b) => b.quotes.length >= 2)
   const light = bundleList.filter((b) => b.quotes.length < 2)
   degradation.push(`verify degraded: ${light.length} single-quote sources batched, ${heavy.length} read individually (budget)`)
@@ -770,23 +1106,43 @@ if (bundleList.length && tight(RESERVE_REPORT + RESERVE_REVERIFY + bundleList.le
   verifyBundles._light = light
 }
 
+// ---------------------------------------------------------------------------
+// Proposition-support units (opt-in). Scope: `pincited` units always; `whole-work` units only
+// when supportScope is 'all'. Units whose source a verify agent fetches anyway are FOLDED INTO
+// that agent (the text is already on disk); the rest get dedicated support agents below.
+// ---------------------------------------------------------------------------
+const supportInScope = SUPPORT_UNITS.filter((u) => u.scope === 'pincited' || SUPPORT_SCOPE === 'all')
+const supportOutOfScope = SUPPORT_UNITS.filter((u) => !(u.scope === 'pincited' || SUPPORT_SCOPE === 'all'))
+const supportByKey = new Map()
+for (const u of supportInScope) {
+  if (!supportByKey.has(u.key)) supportByKey.set(u.key, [])
+  supportByKey.get(u.key).push(u)
+}
+const supportUnitById = new Map(SUPPORT_UNITS.map((u) => [u.id, u]))
+if (SUPPORT_ON) log(`Support pass ON (scope ${SUPPORT_SCOPE}): ${supportInScope.length} unquoted citation instances in scope across ${supportByKey.size} unique sources; ${supportOutOfScope.length} whole-work cites out of scope.`)
+const supportUnitLine = (u) => `  [support id ${u.id}] n.${u.n} | signal: ${u.sig || '(none — direct support)'} | ${u.pin ? 'at ' + u.pin : 'WHOLE WORK (no pincite)'} | ${u.k}`
+// The fold-in block appended to a verify agent's prompt when its source carries support units.
+const supportFoldBlock = (b) => {
+  const units = supportByKey.get(b.key)
+  if (!units || !units.length) return ''
+  return `
+=== SUPPORT UNITS (opt-in proposition-support pass) — ${units.length} unquoted cite(s) to the SAME source ===
+Besides the quotes, the draft cites this source WITHOUT a quotation in the places below. Since you
+have the text on disk, read each cited page and judge whether it supports what the draft cites it
+for. Load the units (proposition sentence, full footnote, signal, parenthetical) via Bash:
+  python3 "${PREPARE_SUPPORT}" "${EXTRACT_PATH}" --pick ${units.map((u) => u.id).join(' ')}
+${units.map(supportUnitLine).join('\n')}
+Read a pincited page from your saved source file with:
+  python3 "${VERIFY_QUOTES}" /tmp/src-<slug>.txt --page <pincite> [--first-page <printed no. of the PDF's first page>]
+Return one entry per support id in supportVerdicts (separate from the quote verdicts).
+${SUPPORT_RULES}
+`
+}
+
 // ===========================================================================
 // Phase 3 — VERIFY (one agent per unique source; path per kind)
 // ===========================================================================
-phase('Verify')
-const zoteroHint = ZOTERO_OK
-  ? `SCHOLARSHIP (article/book): try the user's Zotero library FIRST. This project's library is
-  served by the "${ZOTERO_SERVER}" MCP server. Load with
-  ToolSearch "select:mcp__${ZOTERO_SERVER}__zotero_search_items,mcp__${ZOTERO_SERVER}__zotero_item_metadata,mcp__${ZOTERO_SERVER}__zotero_item_fulltext"
-  (if those tools are absent, fall back to the mcp__zotero__* personal-library equivalents, knowing
-  a co-authored project's sources usually live in its group library). Search by author/title; if the item is there, use
-  zotero_item_metadata for existence/volume/page and zotero_item_fulltext to check the quote and
-  pincite verbatim. Item keys can also be read from the draft's own Word field codes (CSL_CITATION
-  blobs contain zotero.org/groups/<id>/items/<KEY>). If the Zotero tools error or the item is
-  absent, fall back to the web mirror chain. If the item exists in Zotero WITHOUT an attached PDF,
-  verify existence/metadata there and the quote via the web.`
-  : `SCHOLARSHIP: the Zotero library is unavailable this run — verify articles/books via the open-web
-  mirror chain (repository copy over SSRN; Google Books / archive.org snippet search for book quotes).`
+mark('Verify')
 
 const verifyPrompt = (b) => `You are a cite-checker verifying ONE source that a law-review draft
 relies on. Fetch it ONCE and check every quotation the draft pins to it. ${b.quotes.length} quote(s)
@@ -797,9 +1153,12 @@ the draft's own footnote text, which you can fetch with the prepare command belo
 authoritative record of what the draft says): ${b.source}
 KIND: ${b.kind}${b.manuscript ? '  [MANUSCRIPT — run the version-drift check]' : ''}${b.syllabus ? '  [SYLLABUS pincite present — see syllabus rule]' : ''}
 SOURCE-BUNDLE KEY (echo it back exactly): ${b.key}
+${b.kind === 'case' || b.kind === 'statute' ? '' : zoteroLine(b.key, b.source)}
 
 QUOTES TO CHECK (echo each id exactly):
 ${b.quotes.map((q) => `  [id ${q.id}]${q.syllabus ? ' [syllabus pincite]' : ''} @ ${q.pincite || '(no pincite)'} — "${q.quote}"`).join('\n')}
+
+${TOOL_CAP(b.zotero && b.zotero.text ? 8 : 12)}
 
 HOW TO FETCH (stop after ${MIRROR_CAP} attempts; then mark remaining quotes "unverifiable" with the
 unlock path — do NOT keep retrying):
@@ -809,7 +1168,9 @@ unlock path — do NOT keep retrying):
   pincite's plausibility (best-effort — if there is no star pagination, say "pincite unverifiable",
   never guess a page).
 - STATUTE/RULE: uscode.house.gov / LII / official source; verify the operative text verbatim.
-- ${zoteroHint.trim()}
+- SCHOLARSHIP (article/book): follow the ZOTERO line above. Text on disk => verify from it. Otherwise
+  the open web: the journal's own site, the author's faculty page, a repository copy, the Wayback
+  Machine, Google Books / archive.org snippet search for book quotes — probe every candidate first.
 - MANUSCRIPT (working paper / forthcoming / SSRN / slip op.): verify the quote against the CURRENT
   public version. If a quoted passage is ABSENT or MOVED in the current version, set the quote's
   verdict "superseded_source" and fill versionDrift with the current revision date and the new
@@ -870,7 +1231,7 @@ METADATA-FINDING DISCIPLINE (violations of each caused false report findings in 
   logic to a footer-numbered PDF and "corrected" two accurate pincites to one page too low.) State
   which convention you used. If you cannot tell, or your proposed correction is off-by-exactly-one,
   report it as "possible off-by-one — confirm marker convention", never as a confident correction.
-
+${supportFoldBlock(b)}
 ${CALIBRATION}
 ${SOURCES}`
 
@@ -881,15 +1242,19 @@ For EACH, fetch the source once (${MIRROR_CAP} attempts max), check the one quot
 verdict per the schema. Echo each sourceKey and each quote id exactly.
 
 SOURCES:
-${chunk.map((b) => `- key ${b.key} | ${b.kind} | ${b.source}\n    [id ${b.quotes[0].id}] @ ${b.quotes[0].pincite || '(no pincite)'} — "${b.quotes[0].quote}"`).join('\n')}
+${chunk.map((b) => `- key ${b.key} | ${b.kind} | ${b.source}\n    [id ${b.quotes[0].id}] @ ${b.quotes[0].pincite || '(no pincite)'} — "${b.quotes[0].quote}"${b.kind === 'case' || b.kind === 'statute' ? '' : `\n    ${zoteroLine(b.key, b.source)}`}`).join('\n')}
+
+${TOOL_CAP(2 + 3 * chunk.length)}
 
 ${DETERMINISTIC_CHECK}
 
 ${CALIBRATION}
 ${SOURCES}`
 
-const verifyAgent = (b) => agent(verifyPrompt(b), {
+const verifyCost = (b) => (b.zotero && b.zotero.text ? COST.verifyZotero : COST.verify)
+const verifyAgent = (b) => spawn(verifyPrompt(b), {
   label: `verify:${(b.source || b.key).slice(0, 44)}`,
+  cost: b.zotero && b.zotero.text ? 'verifyZotero' : 'verify',
   phase: 'Verify',
   schema: VERIFY_SCHEMA,
   model: VERIFY_MODEL,
@@ -901,11 +1266,15 @@ const verifyJobs = verifyBundles.map((b) => async () => {
   if (!r) { log(`verify:${b.key} died — retrying once`); r = await verifyAgent(b) }
   return r
 })
+const verifyJobKeys = verifyBundles.map((b) => [b.key]) // job index -> source keys, for budget accounting
+const verifyJobCosts = verifyBundles.map((b) => verifyCost(b)) // job index -> projected cost, for the wave gate
 // Degraded long-tail: chunk single-quote sources VERIFY_CHUNK at a time.
 const light = verifyBundles._light || []
 for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
   const chunk = light.slice(i, i + VERIFY_CHUNK)
-  verifyJobs.push(() => agent(tailPrompt(chunk), {
+  verifyJobKeys.push(chunk.map((b) => b.key))
+  verifyJobCosts.push(COST.verifyTail)
+  verifyJobs.push(() => spawn(tailPrompt(chunk), {
     label: `verify-tail:${i}`,
     phase: 'Verify',
     // the tail schema is the same shape but one object per source; ask for an array wrapper
@@ -915,12 +1284,24 @@ for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
   }).then((o) => o && o.sources ? { _multi: o.sources } : o))
 }
 
-const verifyRaw = await parallel(verifyJobs)
+// Waves sized to the budget: a verify phase can no longer launch every source at once and
+// overshoot the cap. Sources never launched are disclosed, by name, as NOT CHECKED (budget).
+const { results: verifyRaw, dropped: verifyDropped } = await gatedFanout(verifyJobs, verifyJobCosts, RESERVE_REPORT + RESERVE_REVERIFY)
+const budgetDroppedKeys = new Set(verifyDropped.flatMap((j) => verifyJobKeys[j]))
+if (budgetDroppedKeys.size) degradation.push(`verify: ${budgetDroppedKeys.size} source(s) never fetched — the budget ran out mid-phase (ask for a "+Nk" budget to lift the cap); their quotes are listed as NOT CHECKED`)
 // Flatten (tail batches return {_multi:[...]}).
 const verifyResults = []
 for (const v of verifyRaw.filter(Boolean)) {
   if (v._multi) verifyResults.push(...v._multi)
   else verifyResults.push(v)
+}
+
+// Support verdicts the verify agents returned for folded-in units (the source was on disk).
+const supportRaw = []
+const foldedKeys = new Set(verifyBundles.filter((b) => supportByKey.has(b.key) && !budgetDroppedKeys.has(b.key)).map((b) => b.key))
+for (const v of verifyResults) {
+  if (!foldedKeys.has(v.sourceKey)) continue
+  for (const sv of (v.supportVerdicts || [])) supportRaw.push({ ...sv, sourceKey: v.sourceKey, sourceIdentified: v.sourceIdentified || '', basis: sv.basis || v.fetchBasis || '' })
 }
 
 // Flatten to per-quote findings keyed by unit id, joined back to resolution + bundle.
@@ -954,13 +1335,180 @@ const highSev = findings.filter((f) => f.severity === 'high')
 // verdict list that skipped ids). Disclosed in the report as NOT CHECKED, never dropped.
 const verdictIds = new Set(findings.map((f) => f.id))
 const unverifiedUnits = resolutions.filter((r) => !verdictIds.has(r.id))
-if (unverifiedUnits.length) degradation.push(`${unverifiedUnits.length} resolved quote(s) got no verdict from the verify pass (agent failure or skipped ids) — listed as NOT CHECKED`)
+const budgetUnits = new Set(unverifiedUnits.filter((r) => budgetDroppedKeys.has(sourceKey(r.source, r.kind))).map((r) => r.id))
+const lostUnits = unverifiedUnits.length - budgetUnits.size
+if (lostUnits) degradation.push(`${lostUnits} resolved quote(s) got no verdict from the verify pass (agent failure or skipped ids) — listed as NOT CHECKED`)
 log(`Verified ${findings.length} quotes across ${verifyResults.length} sources; ${highSev.length} high-severity findings to re-verify${unverifiedUnits.length ? `; ${unverifiedUnits.length} quotes got no verdict` : ''}.`)
+
+// ===========================================================================
+// Phase 3b — SUPPORT (opt-in; dedicated agents for sources no verify agent fetched)
+// ===========================================================================
+mark('Support')
+const supportPrompt = (bundles) => `You are checking whether sources a law-review draft cites WITHOUT quoting them
+actually SUPPORT the propositions they are cited for (the opt-in proposition-support pass). This is a
+judgment call, so the discipline below matters more than speed. ${bundles.length === 1 ? 'ONE source; fetch it once.' : `${bundles.length} sources, one unit each; fetch each once.`}
+
+${bundles.map((b) => `SOURCE (resolved from the draft's footnotes; the footnote text you load below is the authoritative record): ${b.source}
+KIND: ${b.kind}   SOURCE-BUNDLE KEY (echo exactly): ${b.key}${b.kind === 'case' || b.kind === 'statute' ? '' : `\n${zoteroLine(b.key, b.source)}`}
+UNITS:
+${b.units.map(supportUnitLine).join('\n')}`).join('\n\n')}
+
+${TOOL_CAP(4 + bundles.reduce((n, b) => n + (b.zotero && b.zotero.text ? 4 : 8), 0))}
+
+STEP 1 — load the units (proposition sentence, preceding sentence, full footnote, signal,
+parenthetical, opinion note), via Bash (load it with ToolSearch "select:Bash" if needed):
+  python3 "${PREPARE_SUPPORT}" "${EXTRACT_PATH}" --pick ${bundles.flatMap((b) => b.units.map((u) => u.id)).join(' ')}
+
+STEP 2 — fetch each source ONCE (stop after ${MIRROR_CAP} attempts; then every unit on it is
+"unverifiable" with the unlock path). Save the FULL text with --out (never cat it into context):
+  python3 "${FETCH_PAGE}" "<url>" --out /tmp/sup-<slug>.txt
+A source whose ZOTERO line says its text is on disk needs no fetch at all: use that file as
+/tmp/sup-<slug>.txt and go straight to reading the pincited page.
+For a case, CourtListener's HTML opinion or CAP static HTML carries star pagination; for a journal
+PDF, pass the printed number of its first page. Then read the PINCITED page of each unit:
+  python3 "${VERIFY_QUOTES}" /tmp/sup-<slug>.txt --page <pincite> [--first-page <printed first page>]
+(a range "512-514" works; if the file has no page boundaries the tool says so — then grep -n the
+proposition's key terms and read a targeted excerpt with sed -n). For a WHOLE-WORK unit, read the
+holding / abstract / introduction and the part that bears on the claim; cap your effort.
+
+STEP 3 — one verdict per unit, per the rules below. Echo each support id and sourceKey exactly.
+
+${SUPPORT_RULES}
+${SOURCES}`
+
+let supportDedicated = [...supportByKey.entries()]
+  .filter(([key]) => !foldedKeys.has(key))
+  .map(([key, units]) => ({ key, units, kind: units[0].k, source: units[0].src, zotero: (units[0].k === 'case' || units[0].k === 'statute') ? null : zoteroHitFor(key, units[0].src) }))
+let supportRan = false
+const supportSkippedUnits = []
+// Projected cost of a dedicated support bundle: text on disk is cheap; a single-unit web source
+// rides a SUPPORT_TAIL batch, so it carries a share of that batch's cost.
+const supportCost = (b) => (b.zotero && b.zotero.text) ? COST.supportZotero : (b.units.length >= 2 ? COST.support : Math.ceil(COST.supportTail / SUPPORT_TAIL))
+if (SUPPORT_ON && supportDedicated.length) {
+  // Budget ladder: whole-work units first (if 'all'), then secondary sources, then skip.
+  const need = () => RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT + supportDedicated.reduce((n, b) => n + supportCost(b), 0)
+  if (tight(need()) && SUPPORT_SCOPE === 'all') {
+    const dropped = supportDedicated.filter((b) => b.units.every((u) => u.scope === 'whole-work'))
+    supportDedicated = supportDedicated.filter((b) => !b.units.every((u) => u.scope === 'whole-work'))
+    supportSkippedUnits.push(...dropped.flatMap((b) => b.units))
+    if (dropped.length) degradation.push(`support: ${dropped.length} whole-work source(s) not read (budget)`)
+  }
+  if (tight(need())) {
+    const dropped = supportDedicated.filter((b) => b.kind !== 'case')
+    supportDedicated = supportDedicated.filter((b) => b.kind === 'case')
+    supportSkippedUnits.push(...dropped.flatMap((b) => b.units))
+    if (dropped.length) degradation.push(`support: ${dropped.length} secondary source(s) not read (budget) — cases kept`)
+  }
+  if (tight(need())) {
+    supportSkippedUnits.push(...supportDedicated.flatMap((b) => b.units))
+    degradation.push(`support: dedicated support agents skipped for ${supportDedicated.length} source(s) (budget) — only units folded into verify agents were read`)
+    supportDedicated = []
+  }
+}
+if (SUPPORT_ON && (supportDedicated.length || foldedKeys.size)) {
+  supportRan = true
+  // Multi-unit sources get their own agent; single-unit sources ride SUPPORT_TAIL per agent.
+  const heavy = supportDedicated.filter((b) => b.units.length >= 2)
+  const light = supportDedicated.filter((b) => b.units.length < 2)
+  const jobUnits = heavy.map((b) => b.units) // job index -> units, for budget accounting
+  const jobCosts = heavy.map((b) => (b.zotero && b.zotero.text ? COST.supportZotero : COST.support))
+  const jobs = heavy.map((b) => () => spawn(supportPrompt([b]), {
+    label: `support:${(b.source || b.key).slice(0, 44)}`, cost: b.zotero && b.zotero.text ? 'supportZotero' : 'support',
+    phase: 'Support', schema: SUPPORT_SCHEMA,
+    model: VERIFY_MODEL, effort: 'medium', // a judgment, not a string match: never low
+  }))
+  for (let i = 0; i < light.length; i += SUPPORT_TAIL) {
+    const chunk = light.slice(i, i + SUPPORT_TAIL)
+    jobUnits.push(chunk.flatMap((b) => b.units))
+    jobCosts.push(chunk.every((b) => b.zotero && b.zotero.text) ? COST.supportZotero : COST.supportTail)
+    jobs.push(() => spawn(supportPrompt(chunk), {
+      label: `support-tail:${i}`, phase: 'Support',
+      schema: { type: 'object', required: ['sources'], properties: { sources: { type: 'array', items: SUPPORT_SCHEMA } } },
+      model: VERIFY_MODEL, effort: 'medium',
+    }).then((o) => o && o.sources ? { _multi: o.sources } : o))
+  }
+  const { results: outs, dropped: supportDropped } = jobs.length
+    ? await gatedFanout(jobs, jobCosts, RESERVE_REPORT + RESERVE_REVERIFY + RESERVE_SUPPORT_AUDIT)
+    : { results: [], dropped: [] }
+  if (supportDropped.length) {
+    const units = supportDropped.flatMap((j) => jobUnits[j])
+    supportSkippedUnits.push(...units)
+    degradation.push(`support: ${units.length} unit(s) on ${supportDropped.length} source bundle(s) not read — the budget ran out mid-phase (ask for a "+Nk" budget to lift the cap)`)
+  }
+  for (const o of outs.filter(Boolean)) {
+    const list = o._multi ? o._multi : [o]
+    for (const v of list) for (const sv of (v.supportVerdicts || [])) supportRaw.push({ ...sv, sourceKey: v.sourceKey, sourceIdentified: v.sourceIdentified || '', basis: sv.basis || v.fetchBasis || '' })
+  }
+}
+// Join verdicts to units, VALIDATING each agent result before accepting it (Codex review,
+// 2026-10-25, item 2). A result for an id outside the in-scope units, or under a source key
+// that is not the unit's, is dropped; a read verdict without a full-text basis, a source
+// passage and a locator, or an adverse verdict without the search it rests on, is not a
+// completed read: it becomes "unverifiable" with the rejection as its reason, so the unit is
+// disclosed in section I instead of counted as checked. The claim text is accepted only when
+// it occurs verbatim in the unit; otherwise the unit's own anchor is shown and the swap noted.
+const supportFindings = []
+const seenSupport = new Set()
+const supportRejected = []
+const supportSeverity = (v) => (v === 'contradicted' ? 'high' : v === 'not_supported' ? 'medium' : v === 'overstated' ? 'confirm' : 'low')
+const READ_VERDICTS = new Set(['supported', 'supported_qualified', 'overstated', 'not_supported', 'contradicted'])
+const ADVERSE_VERDICTS = new Set(['not_supported', 'contradicted'])
+const FULL_TEXT_BASES = new Set(['direct-full-text', 'authoritative-reproduction'])
+const inScopeSupportIds = new Set(supportInScope.map((u) => u.id))
+const claimBasisOf = (u, claim) => {
+  const n = norm(claim)
+  if (!n) return ''
+  for (const [field, basis] of [['cl', 'anchor.clause'], ['sent', 'anchor.sentence'], ['par', 'parenthetical'], ['prose', 'note_prose'], ['claim', 'anchor'], ['src', 'citation']]) {
+    if (u[field] && norm(u[field]).includes(n)) return basis
+  }
+  return ''
+}
+// Evidence gaps in a support result, as the agent (or the reviewer) reported it.
+const checkSupportResult = (u, r, reviewer = false) => {
+  const gaps = []
+  if (!reviewer && r.sourceKey && r.sourceKey !== u.key) gaps.push('returned under a different source key')
+  if (READ_VERDICTS.has(r.verdict)) {
+    if (!reviewer && !FULL_TEXT_BASES.has(r.basis || '')) gaps.push(`basis "${r.basis || 'unstated'}" is not full text`)
+    if (!(r.sourceText || '').trim()) gaps.push('no source passage')
+    if (!(r.locator || '').trim()) gaps.push('no locator')
+  }
+  if (ADVERSE_VERDICTS.has(r.verdict) && !(r.searched || '').trim()) gaps.push('no source search reported')
+  return gaps
+}
+for (const sv of supportRaw) {
+  const u = supportUnitById.get(sv.id)
+  if (!u || !inScopeSupportIds.has(sv.id)) { supportRejected.push({ id: sv.id, footnote: u ? u.n : undefined, reason: u ? 'unit is out of scope' : 'unknown support unit id' }); continue }
+  if (seenSupport.has(sv.id)) continue
+  seenSupport.add(sv.id)
+  let verdict = SUPPORT_VERDICTS.includes(sv.verdict) ? sv.verdict : 'unverifiable'
+  let reason = sv.reason || ''
+  let rejected = false
+  const gaps = verdict === 'unread' ? [] : checkSupportResult(u, { ...sv, verdict })
+  if (gaps.length) {
+    rejected = true
+    supportRejected.push({ id: sv.id, footnote: u.n, reason: gaps.join('; ') })
+    reason = `agent result not accepted (${gaps.join('; ')})${reason ? ' — agent said: ' + reason.slice(0, 160) : ''}`
+    verdict = 'unverifiable'
+  }
+  const basis = sv.claim ? claimBasisOf(u, sv.claim) : ''
+  supportFindings.push({
+    id: sv.id, i: u.i, footnote: u.n, kind: u.k, signal: u.sig, pincite: u.pin, scope: u.scope,
+    source: u.src, claim: basis ? sv.claim : (u.claim || ''), claimBasis: basis || (u.claim ? 'anchor' : ''),
+    claimNote: sv.claim && !basis ? 'the agent\'s claim text was not verbatim in the unit; the unit\'s own anchor is shown' : '',
+    searched: sv.searched || '', sourceIdentified: sv.sourceIdentified || '', rejected,
+    verdict, posture: sv.posture || '', locator: sv.locator || '', sourceText: sv.sourceText || '',
+    reason, basis: sv.basis || '', severity: supportSeverity(verdict),
+  })
+}
+if (supportRejected.length) degradation.push(`${supportRejected.length} support result(s) not accepted (missing evidence, wrong source key or unknown unit) — those units are unverifiable this run`)
+const supportNoVerdict = supportInScope.filter((u) => !seenSupport.has(u.id) && !supportSkippedUnits.some((s) => s.id === u.id))
+if (supportRan && supportNoVerdict.length) degradation.push(`${supportNoVerdict.length} support unit(s) got no verdict (agent failure or skipped ids) — listed as NOT CHECKED`)
+if (SUPPORT_ON) log(`Support: ${supportFindings.length} verdicts — ${supportFindings.filter((f) => f.verdict === 'contradicted').length} contradicted, ${supportFindings.filter((f) => f.verdict === 'not_supported').length} not supported, ${supportFindings.filter((f) => f.verdict === 'overstated').length} overstated (confirm), ${supportFindings.filter((f) => f.verdict === 'supported_qualified').length} qualified, ${supportFindings.filter((f) => f.verdict === 'supported').length} supported; ${supportNoVerdict.length} no verdict, ${supportSkippedUnits.length} skipped (budget), ${supportOutOfScope.length} out of scope.`)
 
 // ===========================================================================
 // Phase 4 — VERIFY-THE-VERIFIER (mandatory; the anti-artifact gate)
 // ===========================================================================
-phase('Re-verify')
+mark('Re-verify')
 const reverifyPrompt = (f) => `You are the SECOND, independent check on a HIGH-SEVERITY cite-check
 finding. Five of the six gravest findings in the practice run were checker ARTIFACTS, not draft
 errors — your job is to catch that before it reaches the report. Re-derive the verdict from the FULL
@@ -989,15 +1537,17 @@ STEP 2 — independently determine the truth, checking specifically for these ar
 Open the source yourself (${MIRROR_CAP} attempts max) to confirm. If the original finding holds after
 all this, upheld=true and restate it with the source text. Fill sourceText whenever you read it.
 
+${TOOL_CAP(10)}
+
 ${DETERMINISTIC_CHECK}
 
 ${CALIBRATION}
 ${SOURCES}`
 
 let reverified = new Map()
-if (highSev.length && !tight(highSev.length * 6000)) {
+if (highSev.length && !tight(highSev.length * COST.reverify)) {
   const outs = await parallel(highSev.map((f) => () =>
-    agent(reverifyPrompt(f), {
+    spawn(reverifyPrompt(f), {
       label: `re-verify:n.${f.footnote ?? '?'}#${f.id}`,
       phase: 'Re-verify',
       schema: REVERIFY_SCHEMA,
@@ -1027,12 +1577,96 @@ for (const f of findings) {
   f.reverifyReason = rv.reason || ''
 }
 
+// Support findings are the most judgment-laden verdicts in the run, so contradicted and
+// not_supported get the same independent second derivation. Overstated is a confirm item and
+// is not re-verified (the author decides); supported/qualified are not findings.
+const supportReverifyPrompt = (f) => `You are the SECOND, independent check on a proposition-SUPPORT finding from a
+cite-check run: the first checker said this cite does NOT support (or contradicts) the sentence it is
+cited for. Support verdicts are judgment calls and the quote pass showed five of six grave findings
+were checker artifacts; re-derive this one from the FULL context and do not defer to the first checker.
+
+STEP 1 — load the unit (proposition sentence, preceding sentence, clause before a mid-sentence
+marker, FULL footnote, footnote prose, signal, parenthetical, opinion note), via Bash:
+  python3 "${PREPARE_SUPPORT}" "${EXTRACT_PATH}" --pick ${f.id}
+
+FIRST CHECKER SAID: verdict "${f.verdict}" — ${f.reason || '(no reason)'}
+Source it read: ${f.sourceIdentified || f.source}; locator: ${f.locator || '(none)'}; posture: ${f.posture || '(none)'}
+Source text it reported: ${f.sourceText ? `"${f.sourceText}"` : '(none reported)'}
+
+STEP 2 — open the source yourself (${MIRROR_CAP} attempts max; --out to /tmp/resup-${f.id}.txt, then
+  python3 "${VERIFY_QUOTES}" /tmp/resup-${f.id}.txt --page <pincite> [--first-page N])
+and check specifically for these artifact classes:
+- PARAPHRASED CLAIM: did the first checker test a stronger claim than the draft's own words (its
+  hedges, its framing verb)? Judge the draft's sentence as written.
+- SIGNAL MISREAD: a cf. / see generally / but see / compare cite judged as if it were a bare "see".
+- CLAUSE VS SENTENCE: a mid-sentence marker supports the clause before it (anchor.clause), not the
+  whole sentence; a footnote whose own prose states the proposition is judged against THAT.
+- WRONG ANTECEDENT / WRONG PAGE: an Id. resolved to the wrong source, or a page read under the wrong
+  marker convention (footer-numbered PDF vs star pagination) — re-read the right page.
+- NEARBY PASSAGE: the supporting passage a page or two off the pincite = supported, with a locator note.
+- POSTURE: support from a concurrence/dissent/dicta/reported view is supported_qualified, not
+  not_supported; a narrower-than-claimed holding is overstated (a CONFIRM item), not contradicted.
+If the finding holds after all this, upheld=true and restate it with the passage verbatim in
+sourceText. If it is an artifact, upheld=false with the corrected verdict.
+
+${TOOL_CAP(10)}
+
+${SUPPORT_RULES}
+${SOURCES}`
+const supportToReverify = supportFindings.filter((f) => f.verdict === 'contradicted' || f.verdict === 'not_supported')
+const supportReverified = new Map()
+if (supportToReverify.length && !tight(supportToReverify.length * COST.reverify)) {
+  const outs = await parallel(supportToReverify.map((f) => () =>
+    spawn(supportReverifyPrompt(f), { label: `re-verify-support:n.${f.footnote}#${f.id}`, phase: 'Re-verify', schema: SUPPORT_REVERIFY_SCHEMA, model: REVERIFY_MODEL, effort: 'medium' })))
+  for (const o of outs.filter(Boolean)) supportReverified.set(o.id, o)
+  const lost = supportToReverify.filter((f) => !supportReverified.has(f.id)).length
+  if (lost) degradation.push(`${lost} adverse support verdict(s) got no re-verify result (agent failure) — listed as not re-derived, not as findings`)
+  log(`Support re-verify: ${supportReverified.size} findings re-derived, ${[...supportReverified.values()].filter((r) => r.upheld === false).length} were checker artifacts (corrected).`)
+} else if (supportToReverify.length) {
+  degradation.push(`support re-verify skipped for ${supportToReverify.length} adverse verdict(s) (budget) — listed as not re-derived, not as findings`)
+}
+for (const f of supportFindings) {
+  const rv = supportReverified.get(f.id)
+  if (!rv) continue
+  const corrected = SUPPORT_VERDICTS.includes(rv.verdict) ? rv.verdict : null
+  const final = rv.upheld === false ? corrected : f.verdict
+  // The reviewer's result is held to the same evidence rule as the first checker's: an upheld
+  // adverse verdict needs the reviewer's own passage and the search it rests on; a corrected
+  // read verdict needs a passage and a locator. Otherwise the finding counts as NOT re-verified.
+  const gaps = final ? checkSupportResult(supportUnitById.get(f.id), { verdict: final, sourceText: rv.sourceText, locator: rv.locator || f.locator, searched: rv.searched || f.searched }, true) : ['no valid verdict']
+  if (gaps.length) { f.reverifyGaps = gaps.join('; '); continue }
+  f.reverified = true
+  // an "artifact" means the finding dissolved entirely (the cite supports the claim); a downgrade
+  // to overstated or qualified support is a corrected verdict that stays reported in its new place
+  f.artifact = rv.upheld === false && final === 'supported'
+  f.firstVerdict = f.verdict
+  f.verdict = final
+  f.severity = supportSeverity(f.verdict)
+  if (rv.sourceText) f.sourceText = rv.sourceText
+  if (rv.posture) f.posture = rv.posture
+  if (rv.locator) f.locator = rv.locator
+  if (rv.searched) f.searched = rv.searched
+  f.reverifyReason = rv.reason || ''
+}
+// The author's rule: an adverse support verdict reaches the report only after an independent
+// second derivation. One that got none (budget, a dead or evidence-less reviewer) is NOT a
+// finding: it is listed in section I as not re-derived this run, and the ledger records the
+// instance as unverifiable rather than as a support finding.
+for (const f of supportFindings) if (ADVERSE_VERDICTS.has(f.verdict) && !f.reverified) f.unaudited = true
+const supportByInstance = new Map(supportFindings.map((f) => [f.i, f.artifact ? 'supported' : f.unaudited ? 'unverifiable' : f.verdict]))
+
 // ===========================================================================
 // Citation-instance LEDGER JOIN — mirror of citation_ledger.assign_dispositions()
 // (the Python function is the reference implementation and is what the test covers;
 // keep the two in step). Every instance ends with a disposition `d`:
 //   verified | finding | existence-only | unverifiable | unchecked | xref | unresolved-xref | not-a-citation
+//   + (opt-in support pass) supported | support-confirm | support-finding | support-unverifiable
 // ===========================================================================
+const supportDisposition = (v) => (
+  v === 'contradicted' || v === 'not_supported' ? 'support-finding'
+    : v === 'overstated' ? 'support-confirm'
+      : v === 'supported' || v === 'supported_qualified' ? 'supported'
+        : v === 'unverifiable' ? 'support-unverifiable' : null)
 const XREF_KINDS = new Set(['id', 'supra', 'case-short'])
 const VERIFIED_V = new Set(['verbatim', 'altered_marked', 'fragment_framing'])
 const FINDING_V = new Set(['mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off', 'misattributed'])
@@ -1071,11 +1705,13 @@ for (const f of findings) {
 }
 for (const x of LEDGER) {
   const vs = instVerdicts.get(x.i) || []
+  const sd = supportDisposition(supportByInstance.get(x.i))
   if (x.k === 'text') { x.d = 'not-a-citation'; continue }
   if (x.k === 'internal') { x.d = 'internal-ref'; continue }
   if (XREF_KINDS.has(x.k)) {
     x.d = x.xs === 'resolved' ? 'xref' : 'unresolved-xref'
     if (vs.some((v) => FINDING_V.has(v))) x.d = 'finding'
+    else if (sd && x.xs === 'resolved') x.d = sd
     continue
   }
   const ex = x.k === 'case' ? (x.case ? caseExist.get(norm(x.case)) : undefined) : secExist.get(x.key)
@@ -1083,8 +1719,11 @@ for (const x of LEDGER) {
   let exists = null
   if (ex) exists = ex.exists === true ? true : (ex.exists === false && ex.basis !== 'unconfirmed' ? false : null)
   if (vs.some((v) => FINDING_V.has(v)) || exists === false) x.d = 'finding'
+  else if (sd === 'support-finding' || sd === 'support-confirm') x.d = sd
   else if (vs.some((v) => VERIFIED_V.has(v))) x.d = 'verified'
+  else if (sd === 'supported') x.d = 'supported'
   else if (vs.length && vs.every((v) => v === 'unverifiable')) x.d = 'unverifiable'
+  else if (sd === 'support-unverifiable') x.d = 'support-unverifiable'
   else if (exists === true) x.d = 'existence-only'
   else if (ex) x.d = 'unverifiable'
   else x.d = ran ? 'unchecked' : 'unchecked'
@@ -1102,7 +1741,7 @@ log(`Ledger: ${LEDGER.length} citation instances — ${JSON.stringify(ledgerCoun
 // this phase spends ONE agent, and only when there is a formatting layer and a
 // case-name judgment to make. Everything else ships as-is. Runs after re-verify
 // so it never competes with the verification stages for budget.
-phase('Form')
+mark('Form')
 const FORM_SCHEMA = {
   type: 'object',
   required: ['findings'],
@@ -1136,8 +1775,8 @@ const FORM_SCHEMA = {
 }
 let formAgentFindings = []
 let formAgentConventions = []
-if (FORM_FMT_OK && FORM_CANDIDATES.length && !tight(RESERVE_REPORT + 15_000)) {
-  const fr = await agent(
+if (FORM_FMT_OK && FORM_CANDIDATES.length && !tight(RESERVE_REPORT + COST.form)) {
+  const fr = await spawn(
     `You are settling CASE-NAME TYPEFACE questions in the law review draft "${DRAFT_NAME}".
 
 Bluebook R. 2.1(a) for law review FOOTNOTES (not the Bluepages practitioner rule, which
@@ -1195,7 +1834,7 @@ log(`form: ${formAll.length} findings (${formAll.filter((f) => f.kind === 'short
 // ===========================================================================
 // Phase 5 — REPORT (session model; assembles the graded report)
 // ===========================================================================
-phase('Report')
+mark('Report')
 const bySeverity = (s) => findings.filter((f) => f.severity === s && !f.artifact)
 const counts = {
   quotesChecked: findings.length,
@@ -1220,6 +1859,27 @@ const counts = {
   secondaryChecked: secondaryExistence.length,
   secondaryNotFound: secBad.length,
   misattributed: findings.filter((f) => f.verdict === 'misattributed' && !f.artifact).length,
+  support: {
+    on: SUPPORT_ON,
+    ran: supportRan,
+    scope: SUPPORT_SCOPE,
+    unitsTotal: SUPPORT_UNITS.length,
+    unitsInScope: supportInScope.length,
+    unitsOutOfScope: supportOutOfScope.length,
+    unitsChecked: supportFindings.filter((f) => READ_VERDICTS.has(f.verdict) && !f.unaudited).length,
+    supported: supportFindings.filter((f) => f.verdict === 'supported').length, // includes retracted adverse verdicts (artifacts)
+    qualified: supportFindings.filter((f) => f.verdict === 'supported_qualified').length,
+    overstated: supportFindings.filter((f) => f.verdict === 'overstated').length,
+    notSupported: supportFindings.filter((f) => f.verdict === 'not_supported' && !f.unaudited).length,
+    contradicted: supportFindings.filter((f) => f.verdict === 'contradicted' && !f.unaudited).length,
+    unverifiable: supportFindings.filter((f) => f.verdict === 'unverifiable').length,
+    rejected: supportRejected.length,
+    unread: supportFindings.filter((f) => f.verdict === 'unread').length + supportSkippedUnits.length,
+    notChecked: supportNoVerdict.length,
+    artifactsCaught: supportFindings.filter((f) => f.artifact).length,
+    unauditedAdverse: supportFindings.filter((f) => f.unaudited).length,
+    singleChecker: supportFindings.filter((f) => f.unaudited).length, // same figure; kept for SKILL.md
+  },
   history: {
     ran: historyRan,
     casesTargeted: historyTargets.length,
@@ -1244,6 +1904,19 @@ const fmtFinding = (f) => {
     `\n    basis: ${f.basis || 'unstated'}`
 }
 
+const fmtSupport = (f) => `- n.${f.footnote} [${f.verdict}${f.severity === 'high' ? ', HIGH' : ''}${['contradicted', 'not_supported'].includes(f.verdict) && !f.reverified ? ', SINGLE-CHECKER — not re-verified' : ''}] ` +
+  `${f.signal ? f.signal + ' ' : ''}${(f.source || '').slice(0, 120)}${f.pincite ? ' at ' + f.pincite : ''}` +
+  `\n    cited for (draft${f.claimBasis ? ', ' + f.claimBasis : ''}): "${(f.claim || '').slice(0, 260)}"` +
+  (f.claimNote ? `\n    note: ${f.claimNote}` : '') +
+  (f.sourceText ? `\n    source says: "${f.sourceText.slice(0, 400)}"` : '') +
+  (f.searched ? `\n    searched: ${f.searched.slice(0, 200)}` : '') +
+  (f.posture ? `\n    posture: ${f.posture}` : '') +
+  (f.locator ? `\n    locator: ${f.locator}` : '') +
+  (f.reason ? `\n    reason: ${f.reason}` : '') +
+  (f.reverifyReason ? `\n    re-verify: ${f.reverifyReason}${f.firstVerdict && f.firstVerdict !== f.verdict ? ` (first checker said ${f.firstVerdict})` : ''}` : '') +
+  `\n    basis: ${f.basis || 'unstated'}`
+const supportSec = (pred) => supportFindings.filter((f) => !f.artifact && !f.unaudited && pred(f)).map(fmtSupport).join('\n') || '(none)'
+
 const metaFindingsFlat = [...new Set(verifyResults.flatMap((v) => v.metadataFindings || []))]
 // Same evidence gate as the existence pass: a verify agent's metadata correction is a fix only
 // when it names the record it read; untagged lines are "confirm" items.
@@ -1252,23 +1925,38 @@ const metaFindingsSoft = metaFindingsFlat.filter((m) => !EVIDENCED.test(m))
 const urlFindings = verifyResults.map((v) => v.urlFinding).filter(Boolean)
 const supraReport = SUPRA_PROBLEMS.map((s) => `- n.${s.footnote}: "${s.claims}, supra note ${s.supra_note}" — target note ${s.supra_note} does not name ${s.claims} (holds: "${(s.target_excerpt || '').slice(0, 90)}…")`).join('\n')
 
-const report = await must('Report', () => agent(
+// A partial pass (SKILL.md resolved a footnote range to unitIds and filtered supportUnits) must
+// say so in the title and TL;DR: the 2026-10-26 sample run of footnotes 1–30 came back headed
+// "293 footnotes swept", which reads as a whole-draft check.
+const partialNotes = UNIT_IDS
+  ? [...new Set(UNIT_IDS.map((i) => UNIT_NOTES.get(Number(i))).filter((n) => n != null))].sort((a, b) => a - b)
+  : []
+const supportNotes = SUPPORT_ON ? [...new Set(SUPPORT_UNITS.map((u) => u.n).filter((n) => n != null))].sort((a, b) => a - b) : []
+const partialRange = (ns) => (ns.length ? (ns.length === ns[ns.length - 1] - ns[0] + 1 ? `${ns[0]}–${ns[ns.length - 1]}` : ns.join(', ')) : '')
+const partialNote = UNIT_IDS
+  ? `PARTIAL PASS. This run checked ONLY the quote units for footnotes ${partialRange(partialNotes)}${supportNotes.length ? ` (support units for footnotes ${partialRange(supportNotes)})` : ''} of the draft's ${FOOTNOTE_COUNT} footnotes. The title must read "partial pass — footnotes ${partialRange(partialNotes)} of ${FOOTNOTE_COUNT}" instead of "${FOOTNOTE_COUNT} footnotes swept", the TL;DR must open by saying the same, and every count below describes that range only. Never imply the rest of the draft was checked.`
+  : ''
+
+const report = await must('Report', () => spawn(
   `You are assembling the final cite-check report for a law professor's article draft ("${DRAFT_NAME}",
-${FOOTNOTE_COUNT} footnotes). Write it in Markdown, in the professor's own report style: a decisive
+${FOOTNOTE_COUNT} footnotes). ${partialNote} Write it in Markdown, in the professor's own report style: a decisive
 TL;DR line with counts, then findings ordered by how much they would hurt IN PRINT, each with the
 draft's text and the source's actual text side by side, keyed to footnote numbers. Be direct and
 substantive; this reader is sophisticated. Do NOT invent anything — use only the findings below.
 
 REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sections):
-- Title + TL;DR: "${FOOTNOTE_COUNT} footnotes swept" and the counts (verbatim / marked-alteration /
+- Title + TL;DR: ${UNIT_IDS ? `"partial pass — footnotes ${partialRange(partialNotes)} of ${FOOTNOTE_COUNT}"` : `"${FOOTNOTE_COUNT} footnotes swept"`} and the counts (verbatim / marked-alteration /
   mismatch / unverifiable; case cites checked; broken supras; pincite/metadata issues; missing
   subsequent history and treatment flags). The TL;DR MUST also carry one plain sentence with the
   ledger figure for citations that were confirmed to exist but NOT read for whether they support
   the proposition ("N of M citation instances are existence-only"), so the reader sees the
-  unchecked share before the findings. State the verification basis honestly (everything rests
+  unchecked share before the findings.${SUPPORT_ON ? ` The support pass RAN this time (opt-in): add one
+  sentence with its counts — units read, supported, qualified, overstated (confirm), not supported,
+  contradicted, unverifiable, and how many unquoted cites were NOT read (out of scope or budget).` : ` The
+  support pass did NOT run (it is opt-in: support:true); say so in that sentence.`} State the verification basis honestly (everything rests
   on a fetched source; nothing judged from memory).
 - **A. Needs your attention first** — the HIGH-severity findings (mismatches, not-found, syllabus
-  quotes, superseded-source), each with draft text vs. source text and the fix. These are the ones
+  quotes, superseded-source${SUPPORT_ON ? ', and CONTRADICTED support findings' : ''}), each with draft text vs. source text and the fix. These are the ones
   that would embarrass in print.
 - **B. Verbatim slips (smaller)** — real but minor (a dropped word, a spelling, an unmarked comma).
 - **C. Broken supra references** — from the deterministic supra check below (a renumbering artifact).
@@ -1287,17 +1975,27 @@ REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sect
   give the scope as far as known, and say the author must confirm how the draft uses the case).
   Then one line each for cases not checked. Keep this section ADVISORY in tone: the docket is
   the clerk's language, RECAP is incomplete, and no hits is not proof of good law.
-- **H. Couldn't check (what would unlock each)** — unverifiable items, each with its unlock path
+- **H. Proposition support (opt-in)** — ${SUPPORT_ON ? `from the SUPPORT block below. Four lists, in this
+  order: "Not supported (fix or re-cite)" (medium: the pincited page does not address the claim —
+  give the claim, what the page does say, and the locator); "Confirm: possible overstatement"
+  (the source supports a narrower or weaker version — phrase EVERY item as something to confirm,
+  give the source's actual scope and the passage, and NEVER call it an error or put it in A);
+  "Qualified support (posture)" (advisory: dicta, concurrence, dissent, reported view — one line
+  each); then one sentence each for not read (out of scope / budget) and unverifiable (with unlock
+  paths). Contradicted items go in A, not here (cross-reference them in one line).` : `ONE sentence: the
+  pass did not run (opt-in; \`support:true\` reads every unquoted cite at its pincite), so unquoted
+  cites were existence-checked only.`}
+- **I. Couldn't check (what would unlock each)** — unverifiable items, each with its unlock path
   (Hein/JSTOR pull, add PDF to Zotero, physical copy).
-- **I. Citation coverage ledger** — REQUIRED, from the ledger block below: what every citation
+- **J. Citation coverage ledger** — REQUIRED, from the ledger block below: what every citation
   instance got, and above all what did NOT get checked.
 - A short method note: deterministic extraction + supra/existence checks; quotes verified by agents
   against fetched sources; a mandatory verify-the-verifier pass on high-severity findings; free/
   open-web sources only, so a Westlaw/Lexis + manual Bluebook pass is still recommended. State
-  the coverage limits plainly: every citation instance is inventoried in section H; quoted
+  the coverage limits plainly: every citation instance is inventoried in section J; quoted
   passages were verified against fetched text; case cites and unquoted secondary sources were
-  existence/metadata-checked ONLY — whether an unquoted cite actually supports its proposition
-  was NOT assessed; subsequent history and treatment were checked against CourtListener's
+  existence/metadata-checked${SUPPORT_ON ? `, and the unquoted cites in scope (${SUPPORT_SCOPE === 'all' ? 'pincited and whole-work' : 'pincited or parenthetical cites; bare whole-work cites were not read'}) were read for proposition support through their signals — a judgment, re-derived by a second checker for every not-supported/contradicted verdict` : ` ONLY — whether an unquoted cite actually supports its proposition
+  was NOT assessed (the opt-in support pass did not run)`}; subsequent history and treatment were checked against CourtListener's
   opinion index and the RECAP docket archive (federal, incomplete), not Shepard's/KeyCite.
 
 CRITICAL — do not resurrect checker artifacts: ${counts.artifactsCaught} high-severity findings were
@@ -1321,11 +2019,18 @@ REPORT DISCIPLINE (each rule below is standing feedback from the professor on a 
   agent failure). Keep it in section A but say in its line that it rests on one checker and should
   be confirmed against the source before acting.
 - QUOTES NOT CHECKED (listed below, if any) are quotes the run never verified because an agent
-  failed. They are not findings; list them in section H as "not checked this run — re-run", by
+  failed. They are not findings; list them in section I as "not checked this run — re-run", by
   footnote, so the author knows the gap.
 - A "misattributed" finding means the words are in the source but spoken by someone the draft
   does not name (a party, a dissent, a lower court). Section B or D, medium: give the actual
   speaker from the finding's note and the source's attribution.
+- SUPPORT findings are judgments. "overstated" is a CONFIRM item by the author's standing
+  instruction: it never appears in A, is never called an error, and is phrased "confirm that <source>
+  supports <claim>; it says <scope>". "supported_qualified" is advisory. Every support line keeps
+  the claim (the draft's sentence or clause) and the source passage side by side; a support
+  finding with no source passage is by construction unverified — move it to section I, do not
+  present it as a finding. An adverse support verdict listed below as NOT RE-DERIVED is not a
+  finding either: section I only, as "not checked this run — re-run", never A or H.
 
 COUNTS: ${JSON.stringify(counts)}
 
@@ -1359,33 +2064,53 @@ ${treatmentFlags.filter((h) => !h.historyFinding).map(histLine).join('\n') || '(
 NOT CHECKED / NOT RESOLVED:
 ${historyUnchecked.map((h) => `- ${h.cite} — ${h.status}: ${h.coverage || h.note || ''}`).join('\n') || '(none)'}
 
-=== UNVERIFIABLE (section H) ===
+=== PROPOSITION SUPPORT (section H${SUPPORT_ON ? '; contradicted items ALSO go in A' : ''}) ===
+${SUPPORT_ON ? `Pass ran: ${supportRan ? 'yes' : 'NO (' + (degradation.find((d) => /^support/.test(d)) || 'no units in scope') + ')'}; scope ${SUPPORT_SCOPE}; ${counts.support.unitsInScope} unquoted instances in scope (${counts.support.unitsOutOfScope} whole-work cites out of scope, not read); ${counts.support.unitsChecked} read; ${counts.support.artifactsCaught} first-checker findings re-derived as artifacts (EXCLUDED below); ${counts.support.unauditedAdverse} adverse verdict(s) not re-derived (NOT findings — section I); ${counts.support.rejected} agent result(s) not accepted.
+CONTRADICTED (section A — the source says the opposite; each survived or awaits re-verify as labelled):
+${supportSec((f) => f.verdict === 'contradicted')}
+NOT SUPPORTED (section H first list; medium):
+${supportSec((f) => f.verdict === 'not_supported')}
+CONFIRM — POSSIBLE OVERSTATEMENT (section H second list; never an error):
+${supportSec((f) => f.verdict === 'overstated')}
+QUALIFIED SUPPORT — POSTURE (section H third list; advisory, one line each):
+${supportSec((f) => f.verdict === 'supported_qualified')}
+SUPPORTED: ${counts.support.supported} (counts only — never list them).
+ADVERSE VERDICTS NOT INDEPENDENTLY RE-DERIVED (section I ONLY — NOT findings; one line each by footnote, "adverse support verdict not re-derived this run — re-run", naming the first checker's verdict):
+${supportFindings.filter((f) => f.unaudited).map(fmtSupport).join('\n') || '(none)'}
+AGENT RESULTS NOT ACCEPTED (section I; the unit is unverifiable this run — give the reason):
+${supportRejected.map((r) => `- n.${r.footnote ?? '?'} support unit ${r.id} — ${r.reason}`).join('\n') || '(none)'}
+UNVERIFIABLE (section I, with unlock paths):
+${supportSec((f) => f.verdict === 'unverifiable')}
+NOT READ — out of scope (${supportOutOfScope.length} whole-work cites; one sentence) / budget (${supportSkippedUnits.length}) / agent failure (${supportNoVerdict.length}; list by footnote in section I):
+${supportNoVerdict.map((u) => `- n.${u.n} support unit ${u.id} — no verdict: ${(u.src || '').slice(0, 100)}`).join('\n') || '(none)'}` : 'PASS DID NOT RUN (opt-in). One sentence in section H.'}
+
+=== UNVERIFIABLE (section I) ===
 ${findings.filter((f) => f.verdict === 'unverifiable').map(fmtFinding).join('\n') || '(none)'}
 
-=== QUOTES NOT CHECKED — agent failure, not a finding (section H; list by footnote) ===
-${[...unresolvedIds.map((i) => `- n.${UNIT_NOTES.get(i) ?? '?'} unit ${i} — no source resolution`), ...unverifiedUnits.map((r) => `- n.${r.footnote ?? '?'} unit ${r.id} — no verdict: "${(r.quote || '').slice(0, 120)}"`)].join('\n') || '(none)'}
+=== QUOTES NOT CHECKED — agent failure, not a finding (section I; list by footnote) ===
+${[...unresolvedIds.map((i) => `- n.${UNIT_NOTES.get(i) ?? '?'} unit ${i} — no source resolution`), ...unverifiedUnits.map((r) => `- n.${r.footnote ?? '?'} unit ${r.id} — ${budgetUnits.has(r.id) ? 'source never fetched (budget)' : 'no verdict'}: "${(r.quote || '').slice(0, 120)}"`)].join('\n') || '(none)'}
 
 === SECONDARY-SOURCE EXISTENCE (sections E/G) ===
 ${secondaryExistence.length}/${SECONDARY_CITES.length} unique unquoted secondary sources existence-checked${secondaryPassRan ? '' : ' — PASS SKIPPED (budget); list them as UNCHECKED in section H'}.
 NOT FOUND (draft cites a source no catalog/site could locate — section E, phrase as "not found in the sources checked"):
 ${secBad.map((s) => `- key ${s.key}: ${s.note || ''}`).join('\n') || '(none)'}
-UNCONFIRMED (section H, with what would unlock each):
+UNCONFIRMED (section I, with what would unlock each):
 ${secUnconfirmed.map((s) => `- key ${s.key}: ${s.note || ''}`).join('\n') || '(none)'}
 METADATA DISCREPANCIES — EVIDENCED (section E "Errors (fix)"; from the existence agents, each line names the source record the agent opened):
 ${secMeta.map((m) => `- ${m}`).join('\n') || '(none)'}
 METADATA DISCREPANCIES — UNEVIDENCED (section E "Confirm" ONLY — untagged findings and "confirm: …" notes, derived from search snippets or third-party listings, never from the source's own page; phrase each as "confirm …", never as a correction, and never promote one to the TL;DR):
 ${secMetaSoft.map((m) => `- ${m}`).join('\n') || '(none)'}
 
-=== CITATION COVERAGE LEDGER (section I — REQUIRED; place it AFTER section H and BEFORE Citation form) ===
+=== CITATION COVERAGE LEDGER (section J — REQUIRED; place it AFTER section I and BEFORE Citation form) ===
 ${LEDGER.length} citation instances inventoried across ${FOOTNOTE_COUNT} footnotes. Dispositions: ${JSON.stringify(ledgerCounts)}.
-Write section I as: (1) one sentence with the counts; (2) one plain sentence that "existence-only"
+Write section J as: (1) one sentence with the counts; (2) one plain sentence that "existence-only"
 instances were confirmed to exist but were NOT read for whether they support the proposition they
-are cited for, and that "xref" instances (Id./supra/short forms) inherit their antecedent's status;
+are cited for${SUPPORT_ON ? ' (the support pass read the "supported" / "support-confirm" / "support-finding" / "support-unverifiable" ones)' : ''}, and that "xref" instances (Id./supra/short forms) inherit their antecedent's status;
 (3) the three lists below, each item as "n.N — cite text", so the author can see exactly what was
 not checked. An empty list is written as "none". Do not pad, do not summarize the lists away.
 UNCHECKED (no pass reached them):
 ${LEDGER.filter((x) => x.d === 'unchecked').map(ledgerLine).join('\n') || '(none)'}
-UNVERIFIABLE (existence could not be confirmed from free sources; quote-level unverifiables are already in section G):
+UNVERIFIABLE (existence could not be confirmed from free sources; quote-level unverifiables are already in section I):
 ${LEDGER.filter((x) => x.d === 'unverifiable').map(ledgerLine).join('\n') || '(none)'}
 UNRESOLVED CROSS-REFERENCES (Id./supra/short form with no findable antecedent — usually a renumbering break; overlaps section C where the deterministic supra check also fired):
 ${LEDGER.filter((x) => x.d === 'unresolved-xref').map(ledgerLine).join('\n') || '(none)'}
@@ -1412,7 +2137,7 @@ Return ONLY the finished report in Markdown via the report field.`,
 
 const exitState = degradation.length
   ? 'complete_with_limits'
-  : (counts.unverifiable || existBad.length || ledgerCounts.unchecked || secUnconfirmed.length || historyUnchecked.length ? 'complete_with_limits' : 'complete')
+  : (counts.unverifiable || existBad.length || ledgerCounts.unchecked || secUnconfirmed.length || historyUnchecked.length || counts.support.unverifiable || counts.support.notChecked ? 'complete_with_limits' : 'complete')
 
 // Structured findings for `scripts/findings_diff.py` (2026-10-19): a re-run after edits leads
 // with what is new / still open / resolved. Identity is by content, never by footnote number.
@@ -1428,20 +2153,52 @@ const findingItems = [
   ...secBad.map((s) => ({ kind: 'secondary', source: s.key, label: `not found: ${s.key} ${s.note || ''}`.slice(0, 200) })),
   ...formAll.map((f) => ({ kind: 'form', location: f.location, find: f.find, problem: f.problem, label: `${f.problem} — "${(f.find || '').slice(0, 80)}"` })),
   ...historyFindings.map((h) => ({ kind: 'history', cite: h.cite, label: h.historyFinding.slice(0, 200) })),
+  ...supportFindings.filter((f) => !f.artifact && !f.unaudited && ['contradicted', 'not_supported', 'overstated'].includes(f.verdict)).map((f) => ({
+    kind: f.verdict === 'overstated' ? 'support-confirm' : 'support', footnote: f.footnote, verdict: f.verdict, severity: f.severity,
+    source: f.source, claim: f.claim, label: `${f.verdict}: ${(f.source || '').slice(0, 60)}${f.pincite ? ' at ' + f.pincite : ''} — "${(f.claim || '').slice(0, 100)}"`,
+  })),
   ...treatmentFlags.map((h) => ({ kind: 'treatment', cite: h.cite, label: h.treatment.slice(0, 200) })),
 ]
+
+mark('Done')
+// What this run cost. `projected` is the gates' figure (cost model × agents launched, in the
+// completion notification's unit); `measured` is budget.spent() output tokens, which the
+// 2026-10-26 transcripts showed is about a seventh of the notification's number and never the
+// cost. SKILL.md prints projected beside the notification's actual so the model gets recalibrated.
+const spend = {
+  projected,
+  agents: agentsSoFar,
+  perAgent: perAgentProjected(),
+  measured: spentHere(),
+  softCap: CAP,
+  hardCeiling: !!budget.total,
+  unit: 'input-equivalent tokens (uncached input + cache writes + cache reads/10 + output x 5); run scripts/run_usage.py on the transcript dir for the measured figure. measured = output tokens only. The completion notification\'s subagent_tokens is the sum of each agent\'s peak context, not a cost.',
+  costModel: COST,
+  byPhase: Object.fromEntries(Object.entries(spendByPhase).filter(([, v]) => v.agents || v.tokens)),
+}
 
 return {
   draftName: DRAFT_NAME,
   exitState,
   degradation,
   counts,
+  spend,
   artifactsCaught: findings.filter((f) => f.artifact).map((f) => ({ id: f.id, footnote: f.footnote, reason: f.reverifyReason })),
   formFindings: formAll,
   formConventions,
   ledger: LEDGER,                 // every instance with its disposition `d` — render with citation_ledger.py --render
   secondaryExistence,
   history: historyResults,        // per-case subsequent-history / treatment results (section G)
-  findings: { items: findingItems }, // for scripts/findings_diff.py — SKILL.md adds snapshotSha256 + date and saves it next to the report
+  support: supportFindings,       // per-unit proposition-support verdicts (section H; opt-in)
+  findings: {
+    items: findingItems,
+    // what the support pass actually read this run, so a later diff can tell "resolved" from
+    // "not rechecked" per item (Codex review, 2026-10-25, item 4) rather than by scope name
+    support: {
+      on: SUPPORT_ON, ran: supportRan, scope: SUPPORT_SCOPE,
+      complete: supportRan && !supportSkippedUnits.length && !supportNoVerdict.length && !supportRejected.length,
+      read: supportFindings.filter((f) => READ_VERDICTS.has(f.verdict) && !f.unaudited).map((f) => ({ source: f.source, claim: f.claim })),
+    },
+  }, // for scripts/findings_diff.py — SKILL.md adds snapshotSha256 + date and saves it next to the report; `support` lets a later diff tell "resolved" from "not rechecked"
   report: report.report,
 }

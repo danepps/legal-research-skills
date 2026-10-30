@@ -28,7 +28,9 @@ def without_note_number(value):
 def key_of(item):
     # Recompute; trusting a stale caller-supplied key would hide content changes.
     kind = item.get("kind", "")
-    if kind == "quote":
+    if kind == "support":
+        fields = [item.get("category"), item.get("resolved_source_label", item.get("source")), item.get("claim"), item.get("verdict")]
+    elif kind == "quote":
         fields = [kind, item.get("quote"), item.get("source"), item.get("verdict")]
     elif kind == "form":
         fields = [kind, without_note_number(item.get("find")), item.get("source"), item.get("problem")]
@@ -53,6 +55,38 @@ def read_rows(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def support_coverage(run, verdicts):
+    """Preserve actual checked claims, including unread duplicate occurrences."""
+    from prepare_support_units import claim_bases
+    by_unit = {v.get('unit_id'): v for v in verdicts}
+    coverage = []
+    for row in read_rows(run / 'support-units.jsonl'):
+        verdict = by_unit.get(row['unit_id'], {})
+        support = verdict.get('support') or {}
+        candidates = sorted({text for values in claim_bases(row).values() for text in values if text})
+        coverage.append({
+            'source': row.get('resolved_source_label'), 'signal': row.get('signal', ''),
+            'claims': candidates, 'checked_claim': support.get('claim'),
+            'read': not row.get('unread_reason') and verdict.get('support_read') is True
+                    and support.get('verdict') in {'supported', 'supported_qualified', 'overstated', 'not_supported', 'contradicted'},
+        })
+    return coverage
+
+
+def support_rechecked(item, current):
+    if current.get('support_pass', {}).get('enabled') is not True:
+        return False
+    source = norm(item.get('resolved_source_label', item.get('source')))
+    claim = norm(item.get('claim'))
+    matching = [row for row in current.get('support_coverage', [])
+                if norm(row.get('source')) == source and claim in [norm(c) for c in row.get('claims', [])]
+                and ('signal' not in item or row.get('signal') == item['signal'])]
+    # All duplicate occurrences must have been read for this claim; one read
+    # instance cannot silently clear another skipped instance of the same finding.
+    return (len(matching) >= len(item.get('occurrences', [item]))
+            and bool(matching) and all(row.get('read') is True and norm(row.get('checked_claim')) == claim for row in matching))
+
+
 def snapshot(run):
     manifest = json.loads((run / "run-manifest.json").read_text())
     units = {u["unit_id"]: u for u in read_rows(run / "citation-units.jsonl")}
@@ -63,11 +97,21 @@ def snapshot(run):
         if check["quote"] not in bucket:
             bucket.append(check["quote"])
     items = []
-    for verdict in read_rows(run / "verdicts.jsonl"):
-        if verdict["status"] not in {"mismatch", "partial", "unverified"}:
+    verdicts = read_rows(run / "verdicts.jsonl")
+    for verdict in verdicts:
+        if verdict["status"] not in {"mismatch", "partial", "unverified"} and verdict.get("category") != "support_qualified":
             continue
         unit = units[verdict["unit_id"]]
         source = sources[unit["source_id"]]["canonical_citation"]
+        if isinstance(verdict.get("support"), dict):
+            support = verdict["support"]
+            items.append({"kind": "support", "category": verdict["category"],
+                          "resolved_source_label": unit["resolved_source_label"], "source": source,
+                          "claim": support["claim"], "verdict": support["verdict"], "signal": support.get("signal", ""),
+                          "label": verdict["suggested_action"], "unit_id": unit["unit_id"],
+                          "footnote": unit.get("footnote_number"), "note_id": unit.get("note_id"),
+                          "paragraph_number": unit.get("paragraph_number")})
+            continue
         items.append({"kind": "quote" if unit["unit_id"] in quotes else "citation",
                       "quote": "\n".join(sorted(quotes.get(unit["unit_id"], []))), "source": source, "cite": source,
                       "verdict": verdict["category"], "find": verdict.get("draft_find_string"),
@@ -87,6 +131,9 @@ def snapshot(run):
         item["key"] = key_of(item)
     return {"schema_version": 1, "snapshotSha256": manifest["draft_sha256"],
             "date": manifest.get("created_at"), "scope": manifest["scope"],
+            **({"support_pass": manifest["support_pass"],
+                "support_coverage": support_coverage(run, verdicts)}
+               if manifest.get("support_pass", {}).get("enabled") is True else {}),
             "coverage_complete": manifest.get("completion_target", manifest.get("status")) == "complete"
                 and manifest["scope"] in {"standard", "deep"},
             "items": items}
@@ -96,10 +143,13 @@ def diff(previous, current):
     before, after = index_items(previous["items"]), index_items(current["items"])
     absent = [before[k] for k in before.keys() - after.keys()]
     comparable = previous.get("coverage_complete") is True and current.get("coverage_complete") is True
+    resolved = [item for item in absent if comparable and (item.get("kind") != "support"
+                or support_rechecked(item, current))]
+    not_rechecked = [item for item in absent if item not in resolved]
     return {"new": [after[k] for k in sorted(after.keys() - before.keys())],
             "still_open": [after[k] for k in sorted(after.keys() & before.keys())],
-            "resolved": sorted(absent, key=lambda r: r["key"]) if comparable else [],
-            "not_rechecked": [] if comparable else sorted(absent, key=lambda r: r["key"]),
+            "resolved": sorted(resolved, key=lambda r: r["key"]),
+            "not_rechecked": sorted(not_rechecked, key=lambda r: r["key"]),
             "renumbered": [after[k] for k in sorted(after.keys() & before.keys())
                            if [o.get("footnote") for o in before[k]["occurrences"]] != [o.get("footnote") for o in after[k]["occurrences"]]]}
 
@@ -145,3 +195,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

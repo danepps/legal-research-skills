@@ -91,13 +91,13 @@ When you finish, show me the report and explain how to open it.
 
 Claude may ask permission to run its checks or divide the work among several AI assistants. Read the request and approve it to continue.
 
-When it finishes, the report is saved beside your draft as a file whose name ends in `Cite Check.md`, and Claude's reply says where it is. If you cannot open it from the reply, ask Claude to show you the report. Read the **needs your attention** section first. The report should distinguish confirmed problems from items it could not verify. Use the quoted words and footnote numbers to locate each issue in Word.
+When it finishes, the report is saved beside your draft as a file whose name ends in `Cite Check (Claude).md` (the Codex version of the skill saves its report as `Cite Check.md`, so the two never overwrite each other), and Claude's reply says where it is. If you cannot open it from the reply, ask Claude to show you the report. Read the **needs your attention** section first. The report should distinguish confirmed problems from items it could not verify. Use the quoted words and footnote numbers to locate each issue in Word.
 
 For future work, choose the relevant folder and ask in ordinary English. You do not need to repeat installation.
 
 ## What you can ask for
 
-- **“Cite-check My Article.docx.”** Check citations, quotations, and footnote cross-references against sources, with a report showing problems and anything that could not be checked. It also flags, in an advisory section, lower-court cases whose citation omits later history (affirmed, reversed, cert. denied) and cases a later decision overruled or limited, and on a re-run it opens with what changed since the last report.
+- **“Cite-check My Article.docx.”** Check citations, quotations, and footnote cross-references against sources, with a report showing problems and anything that could not be checked. It also flags, in an advisory section, lower-court cases whose citation omits later history (affirmed, reversed, cert. denied) and cases a later decision overruled or limited, and on a re-run it opens with what changed since the last report. When you start a cite-check, Claude asks three things in one dialog: how deep to go, whether to add a **support check** (each unquoted citation read at its cited page, which costs more and reports possible overstatement as something to confirm rather than as an error), and, the first time in a folder, which of your Zotero libraries to use. Unquoted citations are otherwise confirmed to exist but not read.
 - **“Find me a cite for the proposition that…”** Find a few verified authorities, with specific pages and short explanations you can use in a footnote.
 - **“Proofread My Article.docx.”** Find typos, missing or repeated words, and inconsistent terminology or cross-references.
 - **“Build a Zotero collection on…”** Find sources, create records, check for duplicates, and attach available PDFs. Requires a connected Zotero library.

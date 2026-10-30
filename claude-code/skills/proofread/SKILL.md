@@ -73,20 +73,22 @@ Model map: proofers **Opus** (Fable with the flag); consistency, verify, and rep
 inherit the session model — verify is the false-positive gate and the report is the
 deliverable, so those never run on a smaller model.
 
-### 1b. Ask how deep to go (author's call, 2026-08-09)
+### 1b. Ask up front — depth and style — in ONE dialog (author's call 2026-08-09; style added 2026-10-27, `../DESIGN-upfront-dialog.md`)
 
-**Unless the request already settles it, ASK before doing anything else** — one
-`AskUserQuestion`, up front, so the choice is made before the snapshot rather than
-surfaced as an offer after a standard run has already finished. Depth changes the
+**Unless the request already settles both, ASK before doing anything else** — one
+`AskUserQuestion` carrying up to two questions, up front, so the choices are made before the
+snapshot rather than surfaced as an offer after a standard run has already finished. Depth changes the
 extraction (step 3 runs the extractor once or twice), so it cannot be changed later
 without re-running.
 
-**Skip the ask** when the user's wording already picks a tier — "deep", "thorough",
-"near-final", "pre-submission", "call in fable", "use the big model", "quick pass",
-"standard". Don't re-ask what they just told you. Also skip it on an explicit re-run of
-a tier already chosen this session.
+**Skip a question the request already settles, by dropping it from the call** — never ask it
+with a preselected default. "Deep", "thorough", "near-final", "pre-submission", "call in
+fable", "use the big model", "quick pass", "standard" settle Depth; "style", "flag confusing
+sentences", "editing too" settle Style on, and "just proofread" or "typos only" settle it off.
+Don't re-ask what they just told you. Also skip on an explicit re-run of a configuration
+already chosen this session. When both are settled, make no call.
 
-Ask ONE question, header `Depth`, three options in escalating order:
+**Question 1 — Depth** (header `Depth`), three options in escalating order:
 
 | Option | Args | What to say |
 |---|---|---|
@@ -100,8 +102,21 @@ real errors the other catches), so **depth buys recall that a better per-pass mo
 not**. Don't tag a default "(Recommended)" — the right tier depends on how near-final the
 draft is, which the user knows and you don't. If they say, note it and move on.
 
-`style` stays out of this question — it's a different axis (proofreading vs. editing) and
-adding it taxes every run with a second decision. Honor it when the request asks for it.
+**Question 2 — Style** (header `Style`), in the same call:
+
+| Option | Args | Description shown |
+|---|---|---|
+| Off (default) | `style:false` | Proofreading only: typos, grammar, missing or doubled words, consistency. |
+| On | `style:true` | Also flags confusing sentences and unintended repetition, in a clearly separated section. This is editing, not proofreading, and it is opinion; turn it on when you want a second reader's reactions. |
+
+An earlier version of this step kept `style` out of the dialog because a second decision
+"taxes every run." That reasoning predated multi-question dialogs: one `AskUserQuestion` call
+now holds up to four questions in a single interaction, so the tax is one more row in a dialog
+that already appears, not a second interruption — and a user who does not know the option
+exists never finds it otherwise. Fable stays inside the Depth ladder, not a question of its own.
+
+**When `AskUserQuestion` is unavailable** (a headless or scheduled run), use the defaults —
+Standard, style off — and state them in the deliver message and the report footer.
 
 ### 2. Snapshot the draft (always)
 Live OneDrive/Word co-authoring changes the file between reads — the smoke-test draft

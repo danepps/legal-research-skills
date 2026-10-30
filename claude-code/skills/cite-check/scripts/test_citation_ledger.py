@@ -148,5 +148,39 @@ check(all(x["disposition"] == "unresolved-xref" and "renumbered" in x.get("reaso
       "name-mismatch -> unresolved-xref disposition with a renumbering reason")
 check(cl.compact(R)[1]["c"] == LONG, "compact form carries the full clause text")
 
+print("regressions 2026-10-26 (journal abbreviations with several periods; unabbreviated journals)")
+J = cl.build_ledger({"footnotes": {
+    "1": {"number": 1, "text": "See, e.g., Ingrid V. Eagly, Gideon's Migration, 122 Yale L.J. 2282, 2300–13 (2013)."},
+    "2": {"number": 2, "text": "Daryl J. Levinson, Rights and Votes, 121 Yale L.J. 1286 (2012)."},
+    "3": {"number": 3, "text": "See generally Ann Abraham, The Future in International Perspective: The Ombudsman as Agent of Rights, Justice and Democracy, 61 Parliamentary Affairs 681 (2008)."},
+    "4": {"number": 4, "text": "See, e.g., Terry Skolnik, Criminal Justice and the Erosion of Constitutional Rights, 66 B.C. L. Rev. 1679, 1723 (2025)."},
+    "5": {"number": 5, "text": "Brandon Garrett, Defending Due Process 6 (2025) (cataloguing threats to due process)."},
+    "6": {"number": 6, "text": "Rachel Kleinman, Housing Gideon: The Right to Counsel in Eviction Cases, 31 Fordham Urb. L.J. 1507, 1532 (2004)."},
+    "7": {"number": 7, "text": "Gordon S. Wood, The Creation of the American Republic, 1776–1787, at 403–09 (1998)."},
+    "8": {"number": 8, "text": "See generally Levinson, supra note 2. Levinson treats “exit” as a distinct third mechanism, separate from rights or votes."},
+    "9": {"number": 9, "text": "See Barkow, Prisoners of Politics, supra."},
+}, "body_quotes": []})
+jn = {}
+for x in J["instances"]:
+    jn.setdefault(x["note"], []).append(x)
+check(jn[1][0]["kind"] == "article" and jn[1][0]["pincite"] == "2300–13",
+      "'122 Yale L.J. 2282, 2300–13' is an ARTICLE pincited at 2300–13 (got %s / %r)" % (jn[1][0]["kind"], jn[1][0]["pincite"]))
+check(jn[2][0]["kind"] == "article" and jn[2][0]["pincite"] == "",
+      "'121 Yale L.J. 1286 (2012)' is an ARTICLE with NO pincite — the first page is not a page cite (got %s / %r)" % (jn[2][0]["kind"], jn[2][0]["pincite"]))
+check(jn[3][0]["kind"] == "article" and jn[3][0]["pincite"] == "",
+      "'61 Parliamentary Affairs 681 (2008)' (no period in the journal name) is an ARTICLE, whole work (got %s / %r)" % (jn[3][0]["kind"], jn[3][0]["pincite"]))
+check(jn[4][0]["kind"] == "article" and jn[4][0]["pincite"] == "1723",
+      "'66 B.C. L. Rev. 1679, 1723' is an ARTICLE pincited at 1723 (got %s / %r)" % (jn[4][0]["kind"], jn[4][0]["pincite"]))
+check(jn[5][0]["kind"] == "book" and jn[5][0]["pincite"] == "6",
+      "'Defending Due Process 6 (2025)' is still a BOOK at page 6 (got %s / %r)" % (jn[5][0]["kind"], jn[5][0]["pincite"]))
+check(jn[6][0]["kind"] == "article" and jn[6][0]["pincite"] == "1532",
+      "'31 Fordham Urb. L.J. 1507, 1532' is an ARTICLE at 1532 (got %s / %r)" % (jn[6][0]["kind"], jn[6][0]["pincite"]))
+check(jn[7][0]["kind"] == "book" and jn[7][0]["pincite"] == "403–09",
+      "'The Creation of the American Republic, 1776–1787, at 403–09' is a BOOK at 403–09 (got %s / %r)" % (jn[7][0]["kind"], jn[7][0]["pincite"]))
+check([x["kind"] for x in jn[8]] == ["supra", "text"],
+      "footnote prose after a cite ('Levinson treats exit as ...') is TEXT, not a citation (%s)" % [x["kind"] for x in jn[8]])
+check([x["kind"] for x in jn[9]] == ["other"],
+      "a no-digit clause that carries a signal and 'supra' is still inventoried as OTHER (%s)" % [x["kind"] for x in jn[9]])
+
 print("\n%s" % ("all tests passed" if not fails else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)

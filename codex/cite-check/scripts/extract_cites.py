@@ -145,6 +145,30 @@ def sentence_context(paragraph: str, start: int, end: int) -> str:
     return normalize(paragraph[left:right])
 
 
+def footnote_anchors(paragraphs: list[str], blocks=()) -> dict[str, dict]:
+    """Locate markers using the same sentence boundaries as quote extraction."""
+    result = {}
+    clean = lambda text: normalize(FN_MARKER.sub("", text))
+    for number, paragraph in enumerate(paragraphs, 1):
+        for marker in FN_MARKER.finditer(paragraph):
+            left, right = sentence_bounds(paragraph, marker.start(), marker.end())
+            previous = ""
+            if left:
+                previous = clean(sentence_context(paragraph, left - 1, left))
+            elif number > 1:
+                prior = paragraphs[number - 2]
+                previous = clean(sentence_context(prior, len(prior) - 1, len(prior)))
+            tail = clean(paragraph[marker.end():right])
+            mid = bool(re.search(r"[^\s.,;:!?\"'’”()\]}>—–-]", tail))
+            result.setdefault(marker.group(1), {
+                "paragraph_number": number, "sentence": clean(paragraph[left:right]),
+                "previous": previous, "position": "mid-sentence" if mid else "sentence-end",
+                "clause": clean(paragraph[left:marker.start()]) if mid else "",
+                "paragraph_end": not paragraph[right:].strip(), "block_quote": number in blocks,
+            })
+    return result
+
+
 def rendered_marker(text: str, id_to_number: dict) -> str:
     return FN_MARKER.sub(lambda m: f"[[FN:{id_to_number.get(m.group(1), m.group(1))}]]", text)
 
@@ -296,9 +320,20 @@ def parse_docx(path: Path, include_deleted: bool) -> dict[str, object]:
         if xml_id in marks:
             row["custom_mark"] = marks[xml_id]
         footnotes.append(row)
+    # Unreferenced notes have no defensible printed number. Preserve their stable
+    # IDs and content so an absent body anchor is visible rather than dropping it.
+    unreferenced = []
+    all_reference_ids = {n.get(W + "id") for n in document_root.iter(W + "footnoteReference")}
+    for xml_id, node in notes_by_id.items():
+        if xml_id in all_reference_ids or node.get(W + "type") in {"separator", "continuationSeparator", "continuationNotice"} or xml_id in {"-1", "0"}:
+            continue
+        text = normalize(" ".join(element_text(n, include_deleted) for n in visible_nodes(node, include_deleted) if n.tag == W + "p"))
+        unreferenced.append({"number": None, "note_id": f"fn:{xml_id}", "xml_id": xml_id,
+                             "text": text, "unreferenced": True, "anchor": None})
+        warnings.append(f"Footnote fn:{xml_id} has no body anchor (unreferenced); excluded from citation coverage.")
     tracked_roots = [root for name, root in roots.items() if name in {"word/document.xml", "word/footnotes.xml", "word/endnotes.xml"}]
     return {
-        "paragraphs": paragraphs, "footnotes": footnotes,
+        "paragraphs": paragraphs, "footnotes": footnotes, "unreferenced_footnotes": unreferenced,
         "block_quote_paragraphs": blocks, "block_quote_candidates": block_candidates,
         "blocking_issues": issues, "warnings": warnings,
         "tracked_changes": {
@@ -375,6 +410,12 @@ def extract_document(path: Path, min_quote_words: int = 8, include_deleted: bool
 
     paragraphs = list(parsed["paragraphs"])
     id_to_number = dict(parsed["id_to_rendered_number"])
+    anchors = footnote_anchors(paragraphs, set(parsed.get("block_quote_paragraphs", []))
+                               | set(parsed.get("block_quote_candidates", [])))
+    for note in parsed["footnotes"]:
+        note["anchor"] = anchors.get(str(note_key(note)))
+        if note["anchor"] is None:
+            parsed.setdefault("warnings", []).append(f"Footnote {note_key(note)} has no body anchor (marker not found).")
     body_quotes = quote_rows(paragraphs, id_to_number, min_quote_words, parsed["footnotes"], set(parsed.get("block_quote_paragraphs", [])))
     footnote_quotes: list[dict[str, object]] = []
     for footnote in parsed["footnotes"]:
@@ -431,6 +472,7 @@ def extract_document(path: Path, min_quote_words: int = 8, include_deleted: bool
         "block_quote_candidates": parsed.get("block_quote_candidates", []),
         "paragraphs": paragraphs,
         "footnotes": parsed["footnotes"],
+        "unreferenced_footnotes": parsed.get("unreferenced_footnotes", []),
         "body_quotes": body_quotes,
         "footnote_quotes": footnote_quotes,
         "unique_case_cites": unique_case_cites,
@@ -470,3 +512,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

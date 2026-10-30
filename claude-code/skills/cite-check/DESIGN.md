@@ -34,7 +34,7 @@ Splits each footnote into citation units and classifies: case / statute-rule / l
 - **Quotes:** verbatim or flagged. Bracketed alterations and ellipses are matched against the source with the alteration masked — the check is "does the marked-up quote honestly map to the source text," not deeper Bluebook alteration style.
 
 **4. Report — session model.**
-`<Draft name> — Cite Check.md` next to the draft. Structure:
+`<Draft name> — Cite Check (Claude).md` next to the draft (the Codex skill publishes `<Draft name> — Cite Check.md`; distinct names so neither run overwrites the other, 2026-10-27). Structure:
 - TL;DR counts: N verified / M partial / K mismatches / J unverifiable.
 - **Needs your attention** (mismatches + broken supra/id. + dead URLs first, each with the draft's text and the source's actual text side by side, footnote-numbered).
 - Full footnote-by-footnote ledger with per-authority verification basis.
@@ -84,3 +84,118 @@ The full manual pipeline ran end-to-end and caught real errors (a fabricated quo
 6. **WAF reality:** SSRN, bepress/digital-commons, and several university repositories block scripted fetches outright. Mirror chain that worked: journal's own site → non-bepress repositories → Wayback → Google Books snippet search (rescued every bookseller-checkable book quote). Cap attempts per source; mark unverifiable with the unlock path (Hein/JSTOR pull) rather than burning retries.
 7. **Agent hygiene rules to hardwire in prompts:** never `open`/GUI-view a PDF (popped the user's PDF reader mid-run); never install software without asking (an agent Homebrew-installed `tesseract` — useful, but ask; consider bundling OCR as a declared optional dependency instead); dedupe quote rows before chunking.
 8. **Cost estimate revised:** the practice run spent ~2.2M subagent tokens — way over the 150–350k spec estimate — driven by cross-chunk re-fetching, WAF retry loops, and unresolved *Id.* dead ends. With fixes 1, 2, and 6, a realistic target is **400–700k for a ~400-footnote draft**; keep legal-research's soft-cap/degradation ladder armed regardless.
+
+## Addendum 2026-10-24 — proposition support (opt-in)
+
+The 2026-09-06 ledger made the gap explicit (`existence-only` = real source, unread). The
+support pass closes it on request. Design decisions, in the author's words where they were his:
+**opt-in** (`support:true`), because reading every source is a different cost profile from
+matching quotations; **"overclaiming should be a confirm"** — `overstated` never enters "Needs
+your attention" and is phrased as something to check; a verdict is judged **through the signal**
+(the ledger now records it per instance) and from the draft's own anchor sentence, which
+`extract_cites.py` now emits for every footnote; `not_supported` / `contradicted` get the same
+verify-the-verifier pass as high-severity quote findings; default scope is pincited cites, because
+a bare whole-work cite is the expensive, artifact-prone read. The calibration run on a real draft
+is the step that settles whether these verdicts are trustworthy; the first such run should be
+read the way the 2026-07-12 practice run was, with every finding checked against the source.
+
+## Addendum 2026-10-27 — cost, measured
+
+The first live run of the support pass (2026-10-26, footnotes 1–30 of a 293-note draft; the
+report is in `Sample/`) reported 1,989,264 subagent tokens across 34 agents: about 58k per agent,
+against the 9k per verify source and 10k per support source the budget ladder had assumed since
+July. Every gate therefore passed, nothing degraded, and the run finished at twice its 1,000,000
+soft cap with "0 dropped for budget." The report's own "couldn't check" section showed where the
+tokens went: 17 of roughly 30 sources ended unverifiable, each after an agent had guessed and
+fetched repository URLs one at a time, reasoning between the 403s and 404s. Sources that Zotero
+held were cheap; sources that produced nothing were the expensive ones. Lesson 6 of the July run
+(the WAF reality) had named the problem; capping attempts at three did not contain it, because
+the cost was in finding and testing the candidates, not in the three fetches.
+
+Three changes, all on the Claude Code side:
+
+1. **Probe before fetch.** `legal-research/probe_sources.py` tests every candidate URL for a
+   source in one call — HTTP status, a table of hosts with known behaviour (subscription-only
+   services are marked without a request; SSRN, Justia and bepress repositories are expected to
+   403; openYLS is a sign-in page), and a Wayback snapshot for anything unreachable. Agents fetch
+   only what the probe marks fetchable. The failures that dominated the bill now cost no model
+   tokens.
+2. **The run measures itself.** Agents and `budget.spent()` tokens per phase are logged at each
+   phase boundary and returned as `spend`; the gates' per-agent estimates are floors that the
+   run's measured mean replaces once agents report. The report footer prints the workflow's own
+   figure next to the completion notification's, because the two have not been reconciled: the
+   gates in the 2026-10-26 run saw less than half the notification's number, or the Re-verify and
+   Form phases could not have run.
+3. **Waves, not a single launch.** The verify and support fan-outs go out in waves sized to the
+   budget left (`gatedFanout`), so a phase can no longer overshoot the cap once its gate opens.
+   What a wave never launches is disclosed by source as NOT CHECKED (budget), with the `+Nk`
+   budget that lifts the cap.
+
+What this does not do: lower the caps' meaning. A default run on a long draft will now degrade
+honestly where it used to overspend silently, and SKILL.md step 3c has the orchestrator say the
+expected cost and the cap before launching so the user can choose a `+Nk` budget instead. Not
+built, by decision: splitting support agents into a low-effort fetch half and a medium-effort
+judgment half. With the probe in place the fetch half is cheap, and the split would add a file
+handoff between agents for a gain that cannot be measured until the next live run reports its
+`spend`.
+
+## Addendum 2026-10-27, later — the diagnosis above was wrong, and what replaced it
+
+The agent transcripts of the 2026-10-26 run (34 `agent-*.jsonl` files with per-turn usage)
+settle what the addendum above guessed at. Output tokens for the whole run: 278,245, about 8,200
+per agent, in line with the 9–10k the gates had assumed since July; the gates were right not to
+close. The notification's 1,989,264 is a different, unlabeled aggregate. The cost was 486 agent
+turns, each re-reading 50–60k of context (22.4M cache-read tokens), and the turn-heavy agents were
+not the URL-guessers: the two 12-source secondary-existence batches (30 and 34 turns, 12 Zotero
+searches plus web searches each) and the support-tail agents (25–33 turns), with every verify
+agent spending three turns searching three Zotero libraries before it fetched anything.
+`budget.spent()` is output tokens and cannot see any of this, so "the run measures itself" measured
+the wrong currency, and waves sized by it could never bind. Both are gone. What replaced them:
+
+1. **Zotero before launch, deterministically.** `scripts/zotero_lookup.py` dumps each configured
+   library once, matches every article/book the draft cites to a record (volume + first page
+   settle an article; the whole title plus the author settles a book across editions; a short
+   cited title inside a longer record title plus author and year catches an omitted subtitle; a
+   partial title overlap with the right author is not enough — the test file keeps the real cases
+   that set each rule), compares the record's metadata to the cite as "confirm" notes (never a
+   fix: a record can be wrong too), downloads each match's PDF and extracts its text with form
+   feeds between pages. The workflow settles matched secondary sources without an agent, and
+   every agent gets one line per source: text on disk at this path, or not in Zotero at all.
+   No agent calls a Zotero tool. First live run: 1,453 + 402 + 117 items dumped, 146 sources,
+   41 matched, 30 with text, three and a half minutes, nearly all of it downloads.
+2. **The gates project; they do not measure.** Each agent kind has a cost in the unit the
+   completion notification reports (from the transcripts, scaled to that run's figure; the
+   on-disk variants from their expected turn counts), the run sums what it launches, and a phase
+   whose projection would pass the cap degrades before launching, by the existing ladder. A
+   `+Nk` budget is read in the same unit. The footer prints the projection beside the
+   notification's actual so the constants are recalibrated run over run (`costModel` overrides).
+3. **Fewer turns per agent.** Secondary-existence batches of 5 (was 12), verify tails of 4 (was
+   8), support tails of 3 (was 5); every fetching agent carries a tool-call budget stated in its
+   prompt, sized to whether its text is already on disk.
+
+The wave launcher stays as a backstop, but under a consistent projection a phase that passes its
+gate completes, so the harness scenario that exercised a mid-phase stop now exercises the ladder
+degrading up front; a second scenario checks the Zotero join end to end.
+
+**Same evening, after the first live run with these changes (footnotes 1–30 again, support on).**
+Two more facts from the transcripts. The completion notification's `subagent_tokens` is the sum
+of each agent's peak context (1,988,912 by the transcripts against 1,989,264 reported on the
+first run; 1,102,009 against 1,102,299 on this one): it grows with agent count, not with work,
+so a cost model in that unit would have been wrong in the other direction. The gates now project
+in **input-equivalent tokens** — uncached input + cache writes + cache reads ÷ 10 + output × 5,
+the Sonnet price ratios — and `scripts/run_usage.py` measures the same unit from the transcripts
+after every run, per phase and per cost kind, so the constants are recalibrated against what
+actually happened. By that measure the 2026-10-26 run cost 7.4M (34 agents, 486 turns, dozens of Zotero tool
+calls) and this one 2.7M (20 agents, 144 turns, none), with the support pass mostly dropped by
+the old gates. The re-run on the same run id with the recalibrated gates completed every phase:
+40 agents, 310 turns, 5.28M measured against 5.08M projected (ratio 1.04), 18 of 21 quotes
+settled against 11 the day before, the same support coverage (8 units read, 10 unreachable), and
+two not-supported verdicts re-derived — about 29% less than the 2026-10-26 run for more
+coverage. The caps moved to the new
+unit (4M standard, 6M deep, +3M with support), sized so that a 30-footnote run with the support
+pass completes. This run's gates, still in the old unit, had degraded the verify phase into tail
+batches and dropped the support pass; the tail agents, told to be efficient and capped at three
+calls per source, gave up on four sources the first run had reached by trying harder, and a
+record whose subtitle the draft omits (Barkow, *Justice Abandoned*) was on disk but not joined
+to its verify bundle — the join now also matches a record's main title plus author. Re-verify
+agents carry a tool-call budget too (one had run 17 turns on a single quote).
