@@ -1,6 +1,6 @@
 # Codex plugin changes
 
-## 1.5.0 — 2026-10-25
+## 1.5.0 — 2026-10-30
 
 - Add a Codex cite-check picker for whole-draft or sample coverage, review depth,
   and separately opt-in proposition support. Preview actual draft counts before
