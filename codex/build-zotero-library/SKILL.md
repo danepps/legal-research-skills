@@ -46,6 +46,16 @@ python3 <skill-dir>/scripts/zotero_api.py collection-items --library user:<id> -
 
 For a new installation, configure the recipient’s own `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` securely in the host environment. The helper reads those variables first; its macOS Keychain fallback is specific to an existing Codex Zotero setup and is optional. Resolve the recipient’s destination from the API and current request; never copy another researcher’s library IDs or credentials. Never read Claude configuration as a credential source. Pass `--library group:<id>` explicitly for a group library.
 
+The helper does not read MCP configuration files at any scope. A library exposed
+by a project-specific connected tool can therefore be usable for reads while the
+shell helper has no credentials for writes. Discover libraries through the active
+runtime, show their real names, and verify the chosen destination through the
+route that will perform the operation. Missing shell credentials do not prove
+that no library exists. If the write route is unavailable, report that limitation
+and its remedy before preparing a write; do not substitute the Keychain's default
+library for the requested destination or claim that a read-only connection can
+perform the write.
+
 Before any write:
 
 1. Confirm the target library and collection key.

@@ -10,6 +10,8 @@ import argparse
 import json
 from pathlib import Path
 
+from library_options import validate_library_access
+
 SOURCE_FIELDS = (
     "source_id", "source_type", "canonical_citation", "status", "verification_basis",
     "url", "doi", "zotero_item_key", "source_path", "source_sha256", "retrieval_notes",
@@ -78,8 +80,16 @@ def build_bundle(run: Path, source_id: str) -> dict:
         raise ValueError("a linked prepared quotation is missing")
     relevant_sources = {source_id} | {u.get("source_id") for u in siblings}
     relevant_sources.update(q.get("source_id") for q in checks)
+    library_selection = None
+    manifest_path = run / "run-manifest.json"
+    if manifest_path.is_file():
+        access = json.loads(manifest_path.read_text(encoding="utf-8")).get("library_access")
+        if access is not None:
+            validate_library_access(access)
+            library_selection = access["selection"]
     return {
         "run_dir": str(run), "source_id": source_id,
+        "library_selection": library_selection,
         "source_record_available": bool(source),
         "path_base": "Resolve relative source paths against run_dir; read only needed excerpts.",
         "citation_units": selected,

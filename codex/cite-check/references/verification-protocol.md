@@ -23,7 +23,7 @@ Use the official code, legislature, agency, rule publisher, or court. Verify sec
 
 ### Scholarship and books
 
-Search the connected project library before the web, including group libraries when the project uses one. If none is connected, disclose that once and continue to authoritative web sources. Verify that an attached file actually matches its metadata. Then use journal, repository, SSRN, author, institutional, publisher, Google Books, or Internet Archive copies. Compare the cited and current versions of manuscripts. Metadata-only or snippet-only access cannot verify a quotation or pincite.
+Search the library selected in the run manifest before the web, including group libraries when selected. Honor an explicit decision to skip Zotero. Distinguish no connected library, access not assessed, and a configured but inaccessible library; disclose the actual state and any access remedy. Record the library type/ID alongside each Zotero item key. Verify that an attached file actually matches its metadata. Then use journal, repository, SSRN, author, institutional, publisher, Google Books, or Internet Archive copies. Compare the cited and current versions of manuscripts. Metadata-only or snippet-only access cannot verify a quotation or pincite.
 
 ### Internet sources
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from extract_cites import extract_document, sha256
 from prepare_units import build_prepared_units
 from prepare_support_units import build_support_units
+from library_options import library_options, validate_library_access
 
 SAMPLE_NOTES = 10
 FULL_TEXT = {"primary_full_text", "authoritative_reproduction", "repository_full_text", "local_library_full_text"}
@@ -108,7 +109,8 @@ def source_estimate(extraction: dict, selected: list[int] | None, support: str,
 def prepare_options(extraction: dict, *, coverage: str | None = None, depth: str | None = None,
                     support: str | None = None, footnotes: list[str] | None = None,
                     ask: bool = False, defaults: bool = False, inventory: Path | None = None,
-                    min_quote_words: int = 8) -> dict:
+                    min_quote_words: int = 8, libraries: list[dict] | None = None,
+                    library: str | None = None, no_zotero: bool = False) -> dict:
     numbers = sorted(n["number"] for n in extraction.get("footnotes", [])
                      if isinstance(n.get("number"), int))
     if coverage not in {None, "all", "sample"} or depth not in {None, "standard", "deep"} or support not in {None, "off", "pincited", "all"}:
@@ -148,6 +150,9 @@ def prepare_options(extraction: dict, *, coverage: str | None = None, depth: str
                               "options": [{"label": "Off", "value": "off", "description": "Keep the dedicated proposition-support pass off."},
                                           {"label": "Pincited citations", "value": "pincited", "description": "Read unquoted cites with a page, section, URL or relevant parenthetical; adds source work."},
                                           {"label": "All citations", "value": "all", "description": "Also read bare whole-work citations; the broadest and most costly coverage."}]})
+    access, library_question = library_options(libraries, library=library, no_zotero=no_zotero, defaults=defaults)
+    if library_question:
+        questions.append(library_question)
     blockers = extraction.get("blocking_issues", [])
     if blockers:
         questions = []
@@ -156,6 +161,7 @@ def prepare_options(extraction: dict, *, coverage: str | None = None, depth: str
             "selection": chosen, "explicit_fields": explicit,
             "resolution": "defaults" if defaults else "choices_or_small_run_defaults",
             "min_quote_words": min_quote_words, "counts": counts, "sources": estimate,
+            "library_access": access,
             "questions": questions, "blocking_issues": blockers,
             "budget_basis": "Coverage and source-work counts, not a dollar estimate or a hard token cap. Deep review adds audits; support is enabled only by an explicit choice."}
 
@@ -167,6 +173,8 @@ def resolved_selection(plan: dict, draft_hash: str) -> dict:
         raise ValueError("run options must be resolved and unblocked before initialization")
     if plan.get("draft_sha256") != draft_hash:
         raise ValueError("draft changed since the options preview; regenerate the preview")
+    if "library_access" in plan:
+        validate_library_access(plan["library_access"])
     value = plan.get("selection") or {}
     if not isinstance(value, dict):
         raise ValueError("run selection must be a JSON object")
@@ -201,6 +209,10 @@ def main() -> int:
     parser.add_argument("--support", choices=("off", "pincited", "all"))
     parser.add_argument("--footnotes", nargs="+")
     parser.add_argument("--inventory", type=Path, help="optional reconciled run for this exact draft")
+    parser.add_argument("--libraries", type=Path, help="public library inventory from the current runtime; never raw config")
+    library_choice = parser.add_mutually_exclusive_group()
+    library_choice.add_argument("--library", help="observed library id, name or unambiguous description")
+    library_choice.add_argument("--no-zotero", action="store_true", help="use supplied files and web sources this run")
     choice = parser.add_mutually_exclusive_group()
     choice.add_argument("--ask", action="store_true", help="offer any unsettled choices even on a short draft")
     choice.add_argument("--defaults", action="store_true", help="resolve unspecified choices to whole draft, standard, support off")
@@ -209,12 +221,16 @@ def main() -> int:
     try:
         if args.output.resolve() == args.draft.resolve():
             raise ValueError("output must not overwrite the draft")
+        if args.libraries and args.output.resolve() == args.libraries.resolve():
+            raise ValueError("output must not overwrite the library inventory")
         if args.min_quote_words < 1:
             raise ValueError("quotation threshold must be positive")
         data = extract_document(args.draft, args.min_quote_words)
         plan = prepare_options(data, coverage=args.coverage, depth=args.depth, support=args.support,
                                footnotes=args.footnotes, ask=args.ask, defaults=args.defaults,
-                               inventory=args.inventory, min_quote_words=args.min_quote_words)
+                               inventory=args.inventory, min_quote_words=args.min_quote_words,
+                               libraries=json.loads(args.libraries.read_text(encoding="utf-8")) if args.libraries else None,
+                               library=args.library, no_zotero=args.no_zotero)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except (OSError, ValueError, KeyError, TypeError) as exc:

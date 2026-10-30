@@ -58,6 +58,11 @@ Resolve source identity yourself from the complete draft. If a prepared row has
 Record actual retrieval scope. An unavailable source requires `reason` or
 `retrieval_notes`, plus a concrete `unlock_path`.
 
+For a Zotero source, keep `zotero_item_key` together with `library_id` in
+`user:<id>` or `group:<id>` form; an item key alone does not identify its library.
+Local full text uses `source_path` and `source_sha256`. Preserve the supplied
+PDF and record the cached extracted text separately with its pagination basis.
+
 `verdicts.jsonl` requires `verdict_id`, `unit_id`, `status`, `severity`, `category`,
 `verification_basis`, `evidence`, and `suggested_action` (use `none` if appropriate).
 Use the protocol's status, severity, and basis values. Positive categories are
