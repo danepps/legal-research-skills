@@ -57,7 +57,19 @@ Use an independent critic when risk justifies it: high-stakes advice, conflictin
 
 The lead agent should resolve the critique, run the final checklist, and produce the deliverable. Use a fast/low model for a last mechanical citation pass only after the substantive draft is stable.
 
-For deep or high-stakes work, a bounded fresh-context verifier may try to refute the quotation, pinpoint, holding attribution, and use of the three to five load-bearing authorities. Give it the source and claim, not the draft's defense of the claim. Treat a correction as a correction rather than forcing an artificial disagreement. Skip this lane when a distinct lead-agent pass provides adequate assurance or the independence benefit does not justify the cost.
+### Bounded refutation pass
+
+For deep or high-stakes work, a bounded fresh-context verifier may try to refute the quotation, pinpoint, holding attribution, and use of the three to five load-bearing authorities. Give it the source and claim, not the draft's defense of the claim. Treat a correction as a correction rather than forcing an artificial disagreement. Skip this lane when a distinct lead-agent pass provides adequate assurance or the independence benefit does not justify the cost. The same checks apply when the lead performs that distinct pass.
+
+Examine each assigned source through three lenses within the existing pass:
+
+1. **Record:** establish identity, version, citation, and relevant locator; check any quoted words with applicable deterministic helpers. Use case-lookup tools for cases, publisher or repository records for scholarship, and the appropriate official record for other sources. A metadata match establishes identity, not proposition support.
+2. **Context:** read the relied-on passage and enough surrounding text to identify the speaker, posture, scope, and limiting facts. Test the proposition as written against what the source actually establishes, including whether it decides, assumes, or merely reports the point.
+3. **Adverse reading:** test the strongest source-grounded reason the proposed use could fail: a narrower holding, omitted fact, contrary evidence, or competing interpretation. For cases whose current force matters, examine relevant later treatment and litigation history through the existing bounded currentness routes; for scholarship, examine contrary findings and interpretations. Do not apply case-specific tools to other source types.
+
+Use the existing evidence and source-access limits; these lenses do not require additional agents, votes, or an automatic expansion of research scope. Complete the applicable checks in an order suited to the source and available evidence.
+
+Return every material objection with its affected claim, source locator, evidence, verification basis, and remaining uncertainty. Do not truncate objections by reviewer order or omit one because other reviewers agree. The lead records an evidence-based disposition in the existing claim/source records. If an objection remains unresolved, narrow or qualify the claim, omit it, or disclose the limit under the existing completion rules; do not label the disputed proposition verified merely because a majority accepted it.
 
 ## Model-tier policy
 

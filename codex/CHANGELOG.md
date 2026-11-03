@@ -1,5 +1,15 @@
 # Codex plugin changes
 
+## 1.6.1 — 2026-11-03
+
+- Strengthen memo counterarguments by identifying the attacked premise, supporting
+  evidence, and conditions for success; carry accepted qualifications into the answer.
+- Add record, context, and adverse-reading checks within the existing bounded
+  refutation pass, with source-appropriate tools and an evidence-based disposition
+  for every material objection. No additional agents or majority voting.
+- Compare summaries, analysis, conclusions, and limits after substantive corrections;
+  align them with verified claims and refresh affected claim anchors and audits.
+
 ## 1.6.0 — 2026-10-30
 
 - Address Claude's dialog follow-ups: select Zotero libraries from public runtime

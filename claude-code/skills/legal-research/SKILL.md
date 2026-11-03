@@ -132,7 +132,11 @@ flows — a paywalled source is an honest `opened=false`, not a reason to grind.
 survey; **Sonnet** for triage, full reads, and verification; **Scope, Draft, and Finalize inherit
 the session model** (Fable when Fable is on). `deep:true` (or a `+800k`-style token budget) widens
 to up to 7 vectors, raises the read cap to 16, and gives each load-bearing citation (capped at 8)
-a **3-vote adversarial refutation pass** (re-opens sources to confirm quotes verbatim). The
+a **3-vote adversarial refutation pass** (re-opens sources to confirm quotes verbatim; the three
+voters lead with different routes — the record, the passage in context, the strongest adverse
+reading — meant to reduce correlated omissions; all three still run on the same model, so this is
+not independence, and a refutation the majority outvotes is carried into the memo as a disclosed
+objection rather than erased). The
 workflow runs in the background and notifies you on completion.
 
 ### 5. Deliver
@@ -193,6 +197,14 @@ search designed to support them, else sample-scoped language), readers tag each 
 (including arguendo and nonprecedential dispositions) and bearing (process-only / assumes the
 premise / adjacent doctrine), historical runs get selection-bias, boundary-date, and
 harm/exclusion checks, and deep runs add a dedicated adversarial calibration pass on the draft.
+Two further rules ride in the same brief (added 2026-11-03): repetitions of the same underlying
+evidence are not independent corroboration and a head count is not a confidence level (confidence
+is assessed from authority, verification basis, independent contributions, contrary evidence and
+coverage); and for each material contested issue the counter-position is stated at full strength,
+as its proponent would put it, never as the conclusion re-hedged. Finalize then runs a
+**consistency audit** across sections — Brief Answer, Discussion, Conclusion and Limits must tell
+one story, and the summary sections are fixed to match the Discussion and the cite-check results,
+never the reverse.
 A third error class sits between them: a **central-source omission** — a true "we didn't find it"
 mistaken for "it isn't there." The direct-answer coverage cell and the omission audit (above) guard
 this: an absence claim about a FIELD requires a search designed to find the thing (specialist title

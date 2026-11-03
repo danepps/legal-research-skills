@@ -214,7 +214,18 @@ const CLAIM_CALIBRATION = `CLAIM-STRENGTH CALIBRATION (applies to every thesis-l
   to police this.
 - When prior local research memos appear in the findings: reconcile, don't duplicate. Note where
   this memo's conclusions agree with, extend, or contradict theirs, and do not re-assert a claim a
-  prior memo already corrected or qualified without addressing that qualification.`
+  prior memo already corrected or qualified without addressing that qualification.
+- Trace each proposition to its origin. Repetitions of the same underlying evidence (a treatise's
+  summary repeated down a chain of citations; several sources that all rest on one case) are not
+  independent corroboration, and a head count of agreeing sources is not a confidence level.
+  Assess confidence from the authority's weight, its verification basis, genuinely independent
+  contributions (a distinct court applying the rule is one), contrary evidence, and coverage.
+- Counter-position at full strength: for each material contested issue, in the Discussion, state
+  the strongest contrary reading as its proponent would — the premise it attacks, the authority or
+  evidence it rests on, and the facts or interpretation under which it wins — not the memo's
+  conclusion restated with hedges. A valid point the answer needs belongs in the answer itself.
+  Summary sections carry the material qualifications that result, without repeating the
+  argument.`
 
 const METHODS_SCHOLARLY = `ANALYTICAL METHOD (scholarly):
 - Frame a research problem, not just a question: the received account, the live disagreement, the
@@ -1056,11 +1067,129 @@ const chunkJob = (ch) => async () => {
 }
 
 // Deep mode: each load-bearing authority gets 3 independent refutation votes; ≥2 refutes kill it.
+// Three voters given one identical prompt make three correlated reads of the same source, so a
+// 3-vote panel is weaker than it looks. Each voter LEADS with a different route — the record, the
+// passage in context, or the strongest adverse reading — so their errors decorrelate; all four
+// checks stay mandatory for every voter. (Idea from the wise-men-flash skill's per-member
+// reasoning procedures, 2026-11-03; no text copied. Prompt-only: no extra calls.)
+// The routes are source-aware: the refute set in a scholarship or mixed run holds articles,
+// books and statutes too, and the CourtListener tools resolve opinions only. `kind` is a free
+// string from the Draft; "other" (what citedWithin stamps on every harvested cite) and an empty
+// kind are UNKNOWN, not non-case: they fall back to the caption (markup stripped) and then to a
+// reporter-cite pattern, and an authority that matches neither gets the unknown route, which keeps
+// the case tools and tells the voter to establish the type first (Codex reviews, 2026-11-03).
+const REPORTER_CITE = /\b\d+\s+(?:U\.S\.|S\.\s?Ct\.|L\.\s?Ed\.(?:\s?2d)?|F\.(?:\s?(?:2d|3d|4th))?|F\.\s?Supp\.(?:\s?[23]d)?|F\.\s?App'?x|B\.R\.|So\.(?:\s?[23]d)?|P\.(?:\s?[23]d)?|A\.(?:\s?[23]d)?|N\.[EW]\.(?:\s?[23]d)?|S\.[EW]\.(?:\s?[23]d)?|N\.Y\.S\.(?:\s?[23]d)?|Cal\.\s?(?:App\.\s?)?[2-5]th|(?!Stat\.|Reg\.|Cong\.)[A-Z][a-z]+\.(?:\s?[23]d)?|WL|U\.S\.\s?LEXIS)(?:\s?\([^)]{1,20}\))?\s+\d+/
+const KIND_CASE = /^(case|cases|caselaw|case law|opinion|judicial opinion|decision|judgment)$/
+const KIND_STATUTE = /^(statute|statutes|statutory|regulation|regulations|rule|rules|constitution|constitutional provision|code|ordinance|treaty|legislation)$/
+const KIND_SECONDARY = /^(article|articles|book|books|treatise|note|student note|essay|chapter|book chapter|report|secondary|secondary source|scholarship|law review article|casebook|monograph)$/
+const authorityType = (c) => {
+  // Explicit kinds count only as whole labels: "casebook" or "case note" is not a case and
+  // "constitutional treatise" is not a statute (Codex review, 2026-11-03). Anything else is read
+  // off the citation, and conflicting signals (a reporter cite plus a statutory signature in an
+  // explanatory parenthetical) go to the unknown route instead of a guess.
+  const kind = (c.kind || '').trim().toLowerCase().replace(/[_-]+/g, ' ')
+  if (KIND_CASE.test(kind)) return 'case'
+  if (KIND_STATUTE.test(kind)) return 'statute'
+  if (KIND_SECONDARY.test(kind)) return 'secondary'
+  const cite = (c.citation || '').replace(/[*_`]/g, '').trim()
+  const statuteSig = /\b(U\.S\.C\.(?:A\.|S\.)?|C\.F\.R\.|Stat\.|Pub\. L\.|Fed\. R\. (?:Civ|Crim|App|Evid)\. P\.|Fed\. R\.|Const\.|Reg\.)\s/.test(cite)
+  const captionSig = /\bv\.\s|^(In re|Ex parte|Matter of)\b/.test(cite)
+  // Journal markers block BOTH the statute and the case branch: a note titled "Interpreting 42
+  // U.S.C. § 1983" in a law review is neither (Codex review, 2026-11-03).
+  const journalSig = /\b(L\. ?Rev\.|L\.J\.|J\. ?L\.|L\. ?Q\.|Rev\.\s|J\.\s|Const\. Comment\.|Comment\.\s|Stud\.\s|Pol'y\s)/.test(cite)
+  const reporterRaw = REPORTER_CITE.test(cite)
+  const reporterSig = reporterRaw && !journalSig
+  if (statuteSig && !journalSig && !captionSig && !reporterRaw) return 'statute'
+  // A caption alone ("v.", "In re") is not enough: article titles name cases ("A Critical Guide to
+  // Marbury v. Madison, 1969 Duke L.J. 1"). Only a reporter cite with no journal marker and no
+  // statutory signature is a case; everything else keeps the case tools behind a type check.
+  if (reporterSig && !statuteSig) return 'case'
+  return 'unknown'
+}
+const REFUTE_ROUTES_BY_TYPE = {
+  case: {
+    1: `YOUR ROUTE (voter #1 — the record first): settle (1) and (2) deterministically before anything
+else — the CourtListener lookup, then the quote verifier on the saved source — and only then read
+for substance. Your adversarial effort goes to the mechanics: a wrong volume, page, year, court or
+pincite; a quote that is not verbatim; a parenthetical or bracket that changes the words.`,
+    2: `YOUR ROUTE (voter #2 — the passage first): open the source and read the quoted passage IN
+CONTEXT — the paragraph before and after it, and whose opinion it sits in — before running any
+tool. Your adversarial effort goes to substance: does the passage, read fairly, support the
+proposition AS STATED at the pincite, or only a narrower one; is it a holding, a dictum, an arguendo
+assumption, a party's argument as recited by the court, a dissent or a concurrence. Then run the
+deterministic quote check, and the case tools last.`,
+    3: `YOUR ROUTE (voter #3 — the strongest adverse reading first): start from what would make this
+citation wrong and look for it — negative or limiting treatment (the citing-opinions probe and, for
+a lower court, the history tool, before anything else), a later same-litigation disposition, a
+holding narrower than the proposition, a limiting fact the memo omits, a competing line of
+authority the source itself acknowledges. Then confirm existence, the cite and the quote.`,
+  },
+  statute: {
+    1: `YOUR ROUTE (voter #1 — the record first): this is a statute, regulation, rule or constitutional
+provision, so the case tools do not apply. Settle (1) and (2) against the OFFICIAL text before
+anything else — the code or register (uscode.house.gov, govinfo, eCFR, the state legislature's
+site, or LII as a reproduction) at the cited title, section and subsection, in the version in force
+on the date the memo's use requires (see RESEARCH AS OF below and the proposition's own date) —
+then run the quote verifier on the saved text. Your
+adversarial effort goes to the mechanics: a wrong section or subsection, a quote that is not
+verbatim, words quoted from a different version.`,
+    2: `YOUR ROUTE (voter #2 — the text first): this is a statute, regulation, rule or constitutional
+provision, so the case tools do not apply. Read the cited provision IN CONTEXT — the definitions
+section, the neighbouring subsections, any exception or savings clause — before running any check.
+Your adversarial effort goes to substance: does the text, read with its definitions, support the
+proposition AS STATED, or only a narrower one; is the memo quoting operative text or a heading,
+note or preamble. Then run the deterministic quote check.`,
+    3: `YOUR ROUTE (voter #3 — the strongest adverse reading first): this is a statute, regulation, rule
+or constitutional provision, so the citing-opinions probe does not apply. Start from what would
+make this citation wrong and look for it — an amendment, repeal or renumbering between the version
+quoted and the date the memo's use requires (see RESEARCH AS OF below; a change after that date is
+a disclosure for currentTreatment, not a refutation), a sunset or effective-date clause, a
+provision held unconstitutional or preempted, a definition elsewhere in the title that narrows the
+quoted words, a controlling construction by the courts that the memo's reading ignores. Then
+confirm the section, the version and the quote.`,
+  },
+  secondary: {
+    1: `YOUR ROUTE (voter #1 — the record first): this is a secondary source, so the case tools do not
+apply. Settle (1) and (2) against the catalog record or the source's own front matter before
+anything else — author, title, journal or publisher, volume, first page, year, edition — then run
+the quote verifier on the saved text, and only then read for substance. Your adversarial effort
+goes to the mechanics: a wrong volume, page or year; a quote that is not verbatim; a parenthetical
+or bracket that changes the words.`,
+    2: `YOUR ROUTE (voter #2 — the passage first): this is a secondary source, so the case tools do not
+apply. Open it and read the quoted passage IN CONTEXT — the paragraph before and after it — before
+running any check. Your adversarial effort goes to substance: is the author asserting this, or
+reporting another's view, or describing a position in order to reject it; does the passage support
+the proposition AS STATED at the pincite, or only a narrower claim. Then run the deterministic
+quote check.`,
+    3: `YOUR ROUTE (voter #3 — the strongest adverse reading first): this is a secondary source, so the
+case tools do not apply. Start from what would make this citation wrong and look for it — a later
+edition or version that changed the passage, a published reply, correction or retraction, the
+author qualifying the claim elsewhere in the same piece, the passage being a description of an
+opponent's view, a claim narrower than the proposition. Then confirm existence, the cite and the
+quote.`,
+  },
+}
+const UNKNOWN_PREFACE = `SOURCE TYPE UNKNOWN: the citation does not show whether this is a judicial opinion. Establish
+that first from the citation and the source itself. If it is an opinion, the route below applies as
+written, case tools included. If it is a statute, regulation or constitutional provision, apply the
+same route to the OFFICIAL text at the cited section in the version in force, and skip the case
+tools. If it is an article, book or other secondary source, apply the same route to the catalog
+record and the text, and skip the case tools.
+`
+const refuteRoute = (k, type) => {
+  const routes = REFUTE_ROUTES_BY_TYPE[type] || REFUTE_ROUTES_BY_TYPE.case
+  return (type === 'unknown' ? UNKNOWN_PREFACE : '') + (routes[k] || '')
+}
 const refutePrompt = (c, k) => `You are independent cite-checker #${k} of 3. Your job is to try to
 REFUTE a load-bearing authority in a legal memo. Check adversarially:
 (1) does this authority actually exist; (2) is the citation (reporter, volume, page, year, court)
 accurate; (3) OPEN the source — does the quote appear VERBATIM, and does it support the stated
-proposition at the given pincite; (4) for cases: overruled, abrogated, or superseded?
+proposition at the given pincite; (4) for cases: overruled, abrogated, or superseded; for a
+statute, regulation or rule: amended, repealed, renumbered, held invalid or preempted; for a
+secondary source: a later edition, reply, correction or retraction that changes the passage?
+${refuteRoute(k, authorityType(c))}
+You do not see the other voters and they do not see you: vote on what you found, not on what a
+cautious checker usually concludes.
 For (3), settle verbatim-ness DETERMINISTICALLY, not by eye: save the source text to a file and
 run the quote verifier —
   python3 "${FETCH_PAGE}" "<url>" --out ${refuteFile(c, k)}
@@ -1077,17 +1206,21 @@ passage actually support the proposition.
 If you cannot confirm a claimed quote or pincite, or you are genuinely uncertain the authority is
 real, set refuted=true and say why. A wrong-but-fixable citation is NOT a refutation — set
 refuted=false and give correctedCitation.
-Tip: for CASES, settle existence and the reporter cite deterministically first — via the Bash tool
-(load with ToolSearch "select:Bash" if needed): python3 "${CHECK_CITE}" "<cite>" — and check
-treatment systematically with: python3 "${CL_TOOLS}" citing "<cite>" --limit 15 (read
+CASE TOOLS (cases only; run them at the point YOUR ROUTE puts them, not before): existence and
+the reporter cite settle deterministically via the Bash tool (load with ToolSearch "select:Bash"
+if needed): python3 "${CHECK_CITE}" "<cite>"; treatment is checked systematically with: python3 "${CL_TOOLS}" citing "<cite>" --limit 15 (read
 treatment_probe.most_relevant and name_search_treatment_probe, mentions_target=true rows first; a
 signal about THIS case → currentTreatment with the treating case named; rows about other cases
 are noise; distinct_cases_returned, not row counts, is the number of citing cases). A cite that
 will not resolve is a search problem (python3 "${CL_TOOLS}" find "<name>" --cite "<cite>"), not a
 refutation. For a LOWER-COURT case cited for current law, also run python3 "${CL_TOOLS}" history
 "<cite>" and report in currentTreatment any reversal, vacatur or cert. disposition the docket or a
-later same-litigation opinion shows. Opinions that postdate your training data are real. Then
-spend your adversarial effort on the quote and the pincite.
+later same-litigation opinion shows. Opinions that postdate your training data are real. For a
+STATUTE, REGULATION, RULE or CONSTITUTION, none of these tools apply: existence and text are the
+official code or register (uscode.house.gov, govinfo, eCFR, the state legislature's site; LII as a
+reproduction) at the version in force on the relevant date. For an ARTICLE or BOOK, none apply
+either: existence is the catalog record (Zotero, the journal's site, a repository, WorldCat), and
+the quote is settled by the verifier above.
 ACCESS DISCIPLINE: at most 3 access attempts, via WebSearch/WebFetch only — never browser
 automation, library proxies, or SSO/login flows. "I could not open the source" is NOT a refutation
 by itself: if the source is paywalled, judge on what you could reach and say so in your reasoning.
@@ -1098,6 +1231,14 @@ it only through secondary material; "citation-only" if you confirmed no more tha
 exists (e.g. the CourtListener API hit). Being INSTRUCTED to open the source does not make your
 basis full-text — a paywall or bot wall means you report the level you reached.
 
+MEMO QUESTION: ${QUESTION}
+RESEARCH AS OF: ${AS_OF}${plan.historical ? `${NOTES ? `
+QUESTION NOTES: ${NOTES}` : ''}
+HISTORICAL QUESTION: the memo asks how the law stood at an earlier time, so the version that matters
+is the one in force on the date the proposition concerns (read the proposition, the memo question
+and its notes above for that date), not today's. An amendment, repeal, overruling or later treatment AFTER
+that date is reported in currentTreatment as a disclosure — it is a refutation only if the memo
+presents the earlier text or holding as current law.` : ''}
 AUTHORITY: ${c.citation}
 URL: ${c.url || '(locate it yourself)'}
 Proposition: ${c.proposition || ''}
@@ -1123,6 +1264,9 @@ const strongestBasis = (vs) => {
 }
 // Authorities whose refutation panel came back short (CLAUDE-01): {gi, citation, votes}.
 const refuteGaps = []
+// Authorities the panel verified over a minority refutation: {gi, citation, objections[]}.
+const panelObjections = []
+const REFUTE_ROUTE_NAMES = { 1: 'record', 2: 'passage in context', 3: 'adverse reading' }
 const refuteJob = (c) => () =>
   parallel(
     [1, 2, 3].map((k) => async () => {
@@ -1132,12 +1276,18 @@ const refuteJob = (c) => () =>
       return v
     })
   ).then((votes) => {
-    const vs = votes.filter(Boolean)
+    // Keep each vote's seat (k) so a reason can be attributed to its route. Every reason is kept:
+    // the old slice(0, 2) silently dropped the third voter's, and after the routes were
+    // differentiated that was the adverse-reading voter's (Codex review, 2026-11-03).
+    const vs = votes.map((v, i) => (v ? { ...v, k: i + 1 } : null)).filter(Boolean)
     const refutes = vs.filter((v) => v.refuted).length
     const corrected = vs.find((v) => v.correctedCitation)?.correctedCitation
     const treatment = vs.find((v) => v.currentTreatment)?.currentTreatment
     const basis = strongestBasis(vs)
-    const reasons = vs.map((v) => v.reason).filter(Boolean).slice(0, 2).join(' | ')
+    const reasons = vs
+      .filter((v) => v.reason)
+      .map((v) => `#${v.k} ${REFUTE_ROUTE_NAMES[v.k] || ''}${v.refuted ? ' REFUTES' : ''}: ${v.reason}`)
+      .join(' | ')
     if (vs.length < 3) refuteGaps.push({ gi: c.gi, citation: c.citation, votes: vs.length })
     if (!vs.length) {
       // Nothing was checked. "Verified" here would be the absence of evidence dressed as evidence.
@@ -1154,6 +1304,13 @@ const refuteJob = (c) => () =>
     const killAt = Math.ceil(vs.length / 2)
     const verdict = refutes >= killAt ? 'unverified' : corrected ? 'needs-correction' : 'verified'
     const panelNote = vs.length < 3 ? `${vs.length === 1 ? 'SINGLE-VOTER' : 'SHORT PANEL'} — ${3 - vs.length} of 3 refutation voters returned nothing` : ''
+    // A refutation the majority outvoted is not resolved by the majority: it is carried to
+    // Finalize as an objection (with its evidence) and disclosed, and the authority's tier label
+    // says so. Finalize qualifies the memo's use of the authority or lists it in Limits.
+    const objections = refutes && refutes < killAt
+      ? vs.filter((v) => v.refuted).map((v) => `MINORITY OBJECTION (voter #${v.k}, ${REFUTE_ROUTE_NAMES[v.k] || 'route'}): ${v.reason || '(no reason given)'}`)
+      : []
+    if (objections.length) panelObjections.push({ gi: c.gi, citation: c.citation, objections })
     return [{
       index: c.gi,
       citation: c.citation,
@@ -1161,7 +1318,8 @@ const refuteJob = (c) => () =>
       basis, // what the voters reported; undefined if none reported one
       correctedCitation: corrected,
       currentTreatment: treatment,
-      notes: [panelNote, basis ? '' : 'basis not reported by any voter', reasons || `${refutes}/${vs.length} refute votes`].filter(Boolean).join(' | '),
+      objections,
+      notes: [...objections, panelNote, basis ? '' : 'basis not reported by any voter', reasons || `${refutes}/${vs.length} refute votes`].filter(Boolean).join(' | '),
     }]
   })
 
@@ -1224,7 +1382,11 @@ const vFor = (c) => {
 const checkKind = (c, v) => {
   if (v.verdict === 'unchecked') return 'not validated (budget)'
   if (/NOT CHECKED/.test(v.notes || '')) return 'not validated (checker failure)'
-  if (panelSet.has(c.gi)) return /SHORT PANEL|SINGLE-VOTER/.test(v.notes || '') ? 'verified (short refutation panel)' : 'verified (3-voter refutation panel)'
+  if (panelSet.has(c.gi)) {
+    const short = /SHORT PANEL|SINGLE-VOTER/.test(v.notes || '')
+    const obj = (v.objections || []).length
+    return `verified (${short ? 'short' : '3-voter'} refutation panel${obj ? `, ${obj} objection${obj === 1 ? '' : 's'} unresolved` : ''})`
+  }
   return 'checked (existence + citing-opinion treatment probe)'
 }
 const tagged = toVerify.map((c) => { const v = vFor(c); return { ...c, v, check: checkKind(c, v) } })
@@ -1238,6 +1400,7 @@ const refuteNoVotes = refuteGaps.filter((g) => g.votes === 0)
 const refuteShort = refuteGaps.filter((g) => g.votes > 0)
 if (refuteNoVotes.length) coverageGaps.push(`${refuteNoVotes.length} load-bearing authorit${refuteNoVotes.length === 1 ? 'y' : 'ies'} got NO refutation votes (all 3 voters failed after one retry each) — marked unverified / NOT CHECKED`)
 if (refuteShort.length) coverageGaps.push(`${refuteShort.length} load-bearing authorit${refuteShort.length === 1 ? 'y' : 'ies'} decided on a short refutation panel (1–2 of 3 voters returned) — flagged in the cite-check results`)
+if (panelObjections.length) coverageGaps.push(`${panelObjections.length} load-bearing authorit${panelObjections.length === 1 ? 'y' : 'ies'} verified over a minority refutation — the objection is carried into the memo's text or its Limits section, not resolved by the majority`)
 if (noVerdict.length) coverageGaps.push(`${noVerdict.length} cited authorit${noVerdict.length === 1 ? 'y' : 'ies'} got no cite-check verdict at all (agent failure after one retry, or skipped index) — marked unverified / NOT CHECKED`)
 const checkGapReport = [
   ...refuteNoVotes.map((g) => `- ${g.citation} — no refutation votes returned (0/3 voters)`),
@@ -1281,6 +1444,14 @@ Apply these edits:
   that the memo's own disclosed research design cannot support, and downgrade it to sample-scoped
   language ("in the leading cases reviewed", "the earliest clean statement found in this
   research"). Cite-checks confirm sources; they do not license generalizations.
+- CONSISTENCY AUDIT (one scan, edit in place — read the memo as a whole, not section by section):
+  the Brief Answer or Introduction, the Discussion, the Conclusion and the Limits section must tell
+  one story. Fix the summary sections to match the Discussion and the cite-check results, never the
+  reverse: a confidence stated up top that the weakest load-bearing authority's verification basis
+  or the Limits section cannot support; a bottom line stated as settled while the Discussion names
+  contrary or limiting authority it does not resolve; a qualification the Discussion adds that the
+  Conclusion drops; an absolute ("no court has", "uniformly") that a later section undercuts; a
+  date, count or number that differs between sections.
 ${skipCount ? `- Authorities marked "unchecked" were NOT cite-checked (the token budget ran out) —
   this is different from unverified. KEEP them as cited, but tag each one's first citation with
   "[not independently cite-checked]" and list them separately in the Limits section.` : ''}
@@ -1292,6 +1463,15 @@ ${checkGapReport ? `- CITE-CHECK COVERAGE GAPS: the checking agents for the auth
   "short refutation panel" authority was decided by fewer than 3 adversarial voters — keep it as
   cited, but name it in the Limits section as single- or two-checker verified.
 ${checkGapReport}` : ''}
+${panelObjections.length ? `- MINORITY OBJECTIONS: the authorities below were verified by their refutation panel over
+  one voter's evidenced objection (quoted in their cite-check results as "MINORITY OBJECTION").
+  A majority does not resolve an objection. Where it names a narrower holding, an omitted
+  limiting fact, a mischaracterized posture (dictum, dissent, arguendo) or a narrower claim than
+  the proposition, qualify the memo's use of that authority in the sentence that cites it. Where
+  the memo's own record cannot resolve it, keep the cite, state the qualification, and list the
+  authority under its own heading in Limits, "Verified over an objection", with the objection
+  quoted. Never present such an authority as settled support.
+${panelObjections.map((p) => `  - ${p.citation}: ${p.objections.join(' | ')}`).join('\n')}` : ''}
 ${gapReport ? `- POST-DRAFT ADDITIONS: the authorities below were retrieved after drafting to fill
   gaps the draft itself flagged. Weave each into the memo where the draft noted the gap, with its
   cite — subject to its cite-check verdict above. Remove the corresponding gap notes.` : ''}
@@ -1362,6 +1542,7 @@ return {
     uncheckedForBudget: skipCount,
     notCheckedAgentFailure: refuteNoVotes.length + noVerdict.length, // counted inside `unverified`
     shortRefutationPanel: refuteShort.length,
+    panelObjections: panelObjections.length,
   },
   memo: final.memo,
 }

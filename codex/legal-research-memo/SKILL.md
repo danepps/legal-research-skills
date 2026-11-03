@@ -123,7 +123,7 @@ Organize the memo around the legal work the reader needs done. For each subquest
 1. State the short answer.
 2. State the governing rule or framework with the best authority.
 3. Synthesize the authorities in a useful sequence—normally controlling rule, leading application, adverse or limiting authority, then application to the facts.
-4. Explain the strongest counterargument and the response or remaining uncertainty.
+4. For each material contested issue, state the strongest counterargument as its proponent would: the premise it attacks, the authority or evidence supporting it, and the facts or interpretation under which it would succeed. Explain the response or remaining uncertainty, and incorporate any accepted qualification into the answer itself. Carry material qualifications into summaries without repeating the full argument there.
 5. Give a calibrated conclusion (for example, strong, probable, uncertain, or unresolved) and identify what fact or authority could change it.
 
 When the doctrine contains multiple stages, elements, or alternative routes to protection, map them separately before synthesizing. Do not use authority addressing one stage to establish another, and do not convert contextual considerations into universal elements unless the court did so. Distinguish the court's stated test from the memo's synthesis of the cases.
@@ -136,7 +136,7 @@ For deep scholarly work, synthesize in two passes. First produce an evidence-ric
 
 Prioritize verification by consequence: controlling rule and dispositive application first, strongest adverse authority second, then supporting and contextual material. Source count is not coverage; the central proposition must be supported at the level of generality written. Before synthesizing scholarly or literature work, perform a central-source omission audit: compare the ledger with the closest direct source’s references and citing works, search each central concept paired with the relevant actor or institution, inspect headings or tables of contents when abstracts are underspecific, and record why any apparently direct candidate was excluded or left unread. Do not infer that book-specific, doctrine-specific, institution-specific, or other direct scholarship is absent merely because adjacent-source abstracts do not mention it.
 
-For deep or high-stakes work, mark the three to five load-bearing authorities and run a fresh-context refutation pass that tries to disprove the quotation, pinpoint, holding attribution, and use of each source. Use a separate agent only when independence justifies the coordination cost; otherwise perform a distinct post-draft pass without treating the draft as presumptively correct. For standard work, use this pass only where ambiguity or consequence warrants it; do not add it to routine targeted answers.
+For deep or high-stakes work, mark the three to five load-bearing authorities and run a fresh-context refutation pass that tries to disprove the quotation, pinpoint, holding attribution, and use of each source. Apply the record, context, and adverse-reading checks in [references/subagent-orchestration.md](references/subagent-orchestration.md#bounded-refutation-pass) within this existing pass. Use a separate agent only when independence justifies the coordination cost; otherwise perform a distinct post-draft pass without treating the draft as presumptively correct. For standard work, use this pass only where ambiguity or consequence warrants it; do not add it to routine targeted answers.
 
 ### 5. Draft the memo
 
@@ -196,6 +196,8 @@ Run the checklist in [references/review-checklist.md](references/review-checklis
 - “no cases,” “settled,” “first,” “earliest,” “overwhelmingly,” “most,” and similar frequency, priority, or universal claims are supported by a documented protocol or qualified;
 - citations, case names, statutory sections, dates, and cross-references are internally consistent; and
 - the final memo states its cutoff date, scope, and material limitations.
+
+After citation corrections and other substantive edits, compare the summary, analysis, conclusion, and limits against the verified claim record. Reconcile material conclusions, qualifications, confidence statements, dates, and counts; correct unsupported analysis wherever it occurs, then align the summaries. Follow the checklist's final consistency review and refresh affected claim anchors and audits after substantive changes.
 
 End with a short research-status note when appropriate: what was reviewed, what remains to be checked, and what would most improve confidence in the answer.
 

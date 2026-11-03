@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-SKIP_DIRS = {".git", ".codex-memo", "__pycache__", ".pytest_cache", "testdata", "node_modules"}
+SKIP_DIRS = {".git", ".codex-memo", "AI Memos", "__pycache__", ".pytest_cache", "testdata", "node_modules"}
 LINK_RE = re.compile(r"\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 
 

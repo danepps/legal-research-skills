@@ -41,13 +41,14 @@ Use this as a final pass. Mark each item complete, not applicable, or needing fo
 - [ ] Distinct doctrinal stages, elements, and alternative routes are separated before synthesis.
 - [ ] Contextual factors are not presented as universal elements unless the governing authority makes them so.
 - [ ] The memo explains why authorities matter instead of reciting facts.
-- [ ] The strongest argument against the conclusion is stated fairly.
+- [ ] For each material contested issue, the strongest counterargument identifies the premise attacked, supporting authority or evidence, and the facts or interpretation under which it would succeed; the response or remaining uncertainty is explicit, and accepted qualifications appear in the answer.
 - [ ] Uncertainty is calibrated and tied to a concrete source, fact, or doctrinal gap.
 - [ ] No frequency, priority, or universal claim (“no court,” “settled,” “always,” “first,” “earliest,” “overwhelmingly,” “most”) is left unqualified without a documented coverage protocol.
 - [ ] The final deliverable's schema-v4-and-newer quantifier scan is current, and every trigger occurrence maps to a protocol-backed claim or an explicit occurrence-specific waiver.
 - [ ] A schema-v5-and-newer standard/deep scholarly or hybrid run passed `direct_source_audit` with `event:direct_source_search` evidence and a verified `direct_answer` source when one exists.
 - [ ] Cross-doctrinal analogies identify what is transferred, why, and what limits the analogy.
 - [ ] Deep or high-stakes work includes a bounded refutation pass on the three to five load-bearing authorities.
+- [ ] Every material objection from that pass has an evidence-based disposition in the existing claim/source records. Unresolved objections lead to a narrowed or qualified claim, omission, or a disclosed limit; agreement among reviewers does not resolve an objection.
 
 ## Scholarly mode, when applicable
 
@@ -74,6 +75,8 @@ Use this as a final pass. Mark each item complete, not applicable, or needing fo
 ## Deliverable
 
 - [ ] Headings, topic sentences, citations, and cross-references are internally consistent.
+- [ ] After the last substantive correction, the Short Answer or Introduction, Analysis, Conclusion, and Limits agree on material conclusions, qualifications, confidence, dates, and counts. Unsupported analysis was corrected against the verified claim record, then summaries were aligned; valid analysis was not weakened to preserve an earlier summary.
+- [ ] Substantive edits from this review are reflected in the existing claim records, unique draft anchors, and affected audits, including the quantifier scan when applicable. Completion gates were rechecked where those edits changed their evidence; a checklist entry does not replace a machine-visible gate.
 - [ ] Selected bibliographies and tables of authorities use complete citations and do not omit a first page, year, author, title, or stable location that was available in the ledger.
 - [ ] The memo is readable in the requested format.
 - [ ] If a DOCX was created, its OOXML package, XML parts, hashes, and extracted text passed structural verification; the deliverable states that pagination and visual layout were not rendered.
