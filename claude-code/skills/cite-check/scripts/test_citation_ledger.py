@@ -77,6 +77,39 @@ check(cl.source_key("Id. at 522 (emphasis added)") == "id", "sourceKey of an Id.
 keys = {s["key"] for s in L["secondary_cites"]}
 check(len(L["secondary_cites"]) == 2, "2 unique secondary cites (article, book)")
 
+print("stale supra matched by name (2026-11-12 run)")
+STALE = """One.[^1] Two.[^2] Three.[^3] Four.[^4] Five.[^5] Six.[^6]
+
+[^1]: Thomas W. Merrill, The Landscape of Constitutional Property, 86 Va. L. Rev. 885 (2000) [hereinafter Merrill, Landscape].
+[^2]: Thomas W. Merrill, Choice of Law in Takings Cases, 2019 U. Chi. L. Rev. Online 1 (2019).
+[^3]: Jane Gold, Something Else, 1 Yale L.J. 1 (1990).
+[^4]: Merrill, Landscape, supra note 3, at 950.
+[^5]: Id. at 943.
+[^6]: Merrill, supra note 3, at 12.
+"""
+with tempfile.TemporaryDirectory() as td:
+    md = os.path.join(td, "stale.md")
+    ex = os.path.join(td, "stale.json")
+    with open(md, "w", encoding="utf-8") as f:
+        f.write(STALE)
+    subprocess.run([sys.executable, os.path.join(HERE, "extract_cites.py"), md, ex], check=True, capture_output=True)
+    S = cl.build_ledger(json.load(open(ex, encoding="utf-8")))
+    sn = {}
+    for x in S["instances"]:
+        sn.setdefault(x["note"], []).append(x)
+    land = sn[1][0]["i"]
+    check(sn[4][0]["xref_status"] == "name-mismatch" and sn[4][0].get("xref_name_final") == land,
+          "'Merrill, Landscape, supra note 3' (note 3 is Gold): still flagged, source found by name")
+    check(sn[4][0].get("xref_final") is None, "the by-name source is not passed off as a resolved cross-reference")
+    check(sn[5][0]["xref_status"] == "unresolved" and sn[5][0].get("xref_name_final") == land,
+          "Id. after the stale supra reaches Landscape through it")
+    check(sn[6][0].get("xref_name_final") is None,
+          "'Merrill, supra note 3' with two Merrill works and no title word stays unresolved")
+    comp = {c["i"]: c for c in cl.compact(S)}
+    check(comp[sn[4][0]["i"]]["xn"] == land and comp[sn[4][0]["i"]]["x"] is None, "compact form carries xn")
+    cl.assign_dispositions(S)
+    check("matched by author name" in sn[4][0]["reason"], "disposition reason names the by-name match")
+
 print("dispositions — nothing ran")
 c0 = cl.assign_dispositions(json.loads(json.dumps(L)), secondary_pass_ran=False, case_pass_ran=False)
 check(c0.get("unchecked", 0) == 5, "5 substantive instances unchecked when no pass ran (%s)" % c0)

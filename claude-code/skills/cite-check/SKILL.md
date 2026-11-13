@@ -429,7 +429,13 @@ Workflow({
    `Id.` chains to their real antecedent (which may be a case two notes up) and following
    `supra note N` redirects, using the antecedent/supra context the prep script assembles. First-page
    U.S. Reports pincites are flagged as *probable* syllabus and routed to the LOC bound volume,
-   where the verify agent confirms which section the passage actually sits in.
+   where the verify agent confirms which section the passage actually sits in. **A source is
+   always a full citation** (2026-11-12): any resolution left on a bare `Id.` or a `supra` short
+   form is completed from the citation ledger, which resolves every chain, including a stale
+   `supra` number matched by author name (`xn`); the quote is then keyed by the ledger key, the
+   same key the Zotero pre-lookup used. Units with no resolution, or still on an unresolvable
+   cross-reference, are re-asked once in chunks of 7; anything left is verified on its own,
+   keyed by footnote, never pooled with other `Id.`s.
 2. **Existence** — `check_cite.py` over the unique reporter cites (CourtListener paces at
    60/min). A cite that does not resolve is a search problem, never evidence of a bad cite:
    CourtListener's citation metadata is uneven and a case can be present with no reporter cite
@@ -442,19 +448,6 @@ Workflow({
    read; a source the pre-lookup matched is settled without an agent, its record as the basis and
    any draft-vs-record difference as a "confirm" note. Under budget pressure this pass is
    skipped and the affected instances ship as `unchecked` (never silently).
-2b. **History** (added 2026-10-19) — for every case cite that exists: lower-court cases get
-   `cl_case_tools.py history` (the RECAP docket's entries after the decision date, with the
-   dispositive ones flagged — notice of appeal, USCA judgment, mandate, cert. granted/denied,
-   amended or substituted opinion, reconsideration, vacatur — plus later same-litigation
-   opinions, i.e. the reviewing court's decision), and every case gets the two-route
-   `cl_case_tools.py citing` treatment probe. A **finding** is a draft cite with no history
-   words whose record shows an outcome R. 10.7 requires, or stated history the record
-   contradicts; **treatment flags** (a later case says this one was overruled / abrogated /
-   limited) are reported separately because the draft may cite the case as history or as a
-   foil. Eight cases per agent, low effort; `history:false` skips it; under budget pressure it
-   is skipped and the report says so. Advisory throughout: RECAP is crowd-sourced, incomplete
-   and federal-only; docket text is the clerk's language; Supreme Court dockets are not on
-   PACER; no hits is not proof of good law.
 3. **Verify** — quotes are collapsed onto their **unique source** (a case cited 30 times is fetched
    once) and one agent per source fetches it and checks every quote verbatim, every pincite, the
    caption/author/title/reporter/year metadata, and **attribution** (the words are in the source,
@@ -464,6 +457,11 @@ Workflow({
    presence in the fetched text (typographic folding, marked ellipses/brackets honored) and reports
    the printed page of the match — agent judgment is reserved for substance. Manuscripts get a **version-drift** check (quote
    present in the cited draft but gone/moved in the current SSRN version → `superseded-source`).
+   **Zotero sweep** (2026-11-12): before support, every quote still unverifiable, unverdicted or
+   unresolved goes through `scripts/zotero_sweep.py`, which walks the quote's footnote in the
+   ledger and runs `verify_quotes.py` against every Zotero text the pre-lookup holds for any source
+   that note cites or cross-refers to. A match replaces the verdict (pincite not judged); a match
+   in a different work than the one resolved is flagged for an attribution check.
 3b. **Support** (opt-in, 2026-10-24) — the support units whose source a verify agent fetched
    anyway were already judged inside that agent; the rest are bundled by unique source (one
    agent per multi-unit source, three single-unit sources per agent) and read at the pincite
@@ -487,6 +485,20 @@ Workflow({
    to reject the script's positional guesses as much as to confirm them). Runs after re-verify so it
    never competes with verification for budget; under pressure the candidates ship unadjudicated and
    the run records a degradation note.
+4c. **History** (added 2026-10-19; moved after re-verify 2026-11-12, because it is advisory and
+   on that run it consumed the budget the support pass needed) — for every case cite that exists: lower-court cases get
+   `cl_case_tools.py history` (the RECAP docket's entries after the decision date, with the
+   dispositive ones flagged — notice of appeal, USCA judgment, mandate, cert. granted/denied,
+   amended or substituted opinion, reconsideration, vacatur — plus later same-litigation
+   opinions, i.e. the reviewing court's decision), and every case gets the two-route
+   `cl_case_tools.py citing` treatment probe. A **finding** is a draft cite with no history
+   words whose record shows an outcome R. 10.7 requires, or stated history the record
+   contradicts; **treatment flags** (a later case says this one was overruled / abrogated /
+   limited) are reported separately because the draft may cite the case as history or as a
+   foil. Eight cases per agent, low effort, and a hard tool-call cap; `history:false` skips it; it launches only the batches that fit
+   the budget left after verify and support, and the report lists the rest as not checked. Advisory throughout: RECAP is crowd-sourced, incomplete
+   and federal-only; docket text is the clerk's language; Supreme Court dockets are not on
+   PACER; no hits is not proof of good law.
 5. **Report** — a graded, footnote-numbered report in the "needs your attention first" style: a
    TL;DR that states the existence-only share in one sentence (and the support counts when the
    pass ran), the findings sections A–F, a **subsequent history & treatment** section (G,

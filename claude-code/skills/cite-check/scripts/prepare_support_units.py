@@ -81,9 +81,11 @@ def build_units(data):
         if x["kind"] in SKIP_KINDS or x.get("nested") or x["quoted"]:
             continue
         if x["kind"] in XREF_KINDS:
-            if x["xref_status"] != "resolved" or x.get("xref_final") is None:
+            # a stale supra matched by author name (xref_name_final) still names its source
+            final = x.get("xref_final") if x["xref_status"] == "resolved" else x.get("xref_name_final")
+            if final is None:
                 continue
-            tgt = instances[x["xref_final"]]
+            tgt = instances[final]
             if tgt["kind"] in SKIP_KINDS or tgt["kind"] in XREF_KINDS:
                 continue
         else:

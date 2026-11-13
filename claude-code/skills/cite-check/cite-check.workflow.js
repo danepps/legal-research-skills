@@ -4,10 +4,10 @@ export const meta = {
   phases: [
     { title: 'Segment', detail: 'resolve each quote to the specific source it hangs on (Id./supra chains, syllabus routing)' },
     { title: 'Existence', detail: 'CourtListener existence + caption check for every case cite (name-search fallback before any web escalation), plus existence/metadata check of every unique unquoted secondary source' },
-    { title: 'History', detail: 'subsequent history (docket entries after the decision + later same-litigation opinions) for every lower-court case, and a two-route adverse-treatment probe for every case' },
     { title: 'Verify', detail: 'one agent per unique source: fetch once, check every quote verbatim + pincites + metadata' },
     { title: 'Support', detail: '(opt-in) read each unquoted cite at its pincite and judge whether it supports the sentence it hangs on, through its signal' },
     { title: 'Re-verify', detail: 'mandatory verify-the-verifier pass on every high-severity finding (quote and support)' },
+    { title: 'History', detail: 'subsequent history (docket entries after the decision + later same-litigation opinions) for every lower-court case, and a two-route adverse-treatment probe for every case — advisory, so it runs last and spends what the quote and support passes left' },
     { title: 'Form', detail: 'Bluebook typeface + short forms, decided from the draft alone (no sources)' },
     { title: 'Report', detail: 'assemble the graded, footnote-by-footnote cite-check report' },
   ],
@@ -92,6 +92,7 @@ const PREPARE_SUPPORT = `${SKILLS}/cite-check/scripts/prepare_support_units.py`
 const CL_TOOLS = `${SKILLS}/legal-research/cl_case_tools.py`
 const PROBE = `${SKILLS}/legal-research/probe_sources.py`
 const ZOTERO_LOOKUP_SCRIPT = `${SKILLS}/cite-check/scripts/zotero_lookup.py`
+const ZOTERO_SWEEP = `${SKILLS}/cite-check/scripts/zotero_sweep.py`
 
 // ---- knobs -------------------------------------------------------------------
 const SEGMENT_CHUNK = 28   // quote-units per resolver agent
@@ -131,13 +132,14 @@ const COST = Object.assign({
   segment: 150_000,       // one resolver chunk (SEGMENT_CHUNK units; 7 turns)
   exist: 90_000,          // case-existence batch (one deterministic script call + reasoning)
   existWeb: 130_000,      // 5 secondary sources not in Zotero, located on the web (7-10 turns)
-  history: 110_000,
+  history: 350_000,       // 8-case batch. A 2026-11-12 run measured ~779k each (27-60 tool calls) with no tool cap; now capped, re-measure
   verify: 150_000,        // one source fetched from the web (2026-10-26 mean 176k with Zotero searches by hand; 2026-10-27 run 2: 105-180k, 7-17 turns)
   verifyZotero: 80_000,   // one source whose text zotero_lookup.py already put on disk (run 2: 72-86k, 3-5 turns)
   verifyTail: 130_000,    // a VERIFY_CHUNK batch of single-quote web sources
   support: 200_000,       // one web source read for proposition support (medium effort)
   supportZotero: 100_000, // the same with the text already on disk
   supportTail: 210_000,   // a SUPPORT_TAIL batch of single-unit web sources (run 2: 153-290k at 3 per batch, 7-20 turns)
+  sweep: 60_000,          // pre-report Zotero sweep: one script call, output copied back (2026-11-12)
   reverify: 100_000,      // second-derivation agent (196k on an unbounded one; 75-95k once tool-capped)
   form: 130_000,
   report: 250_000,
@@ -193,6 +195,7 @@ const costKind = (opts) => {
   if (L.startsWith('support-tail')) return 'supportTail'
   if (L.startsWith('support')) return 'support'
   if (L.startsWith('re-verify')) return 'reverify'
+  if (L.startsWith('zotero-sweep')) return 'sweep'
   const P = (opts && opts.phase) || currentPhase
   return P === 'Form' ? 'form' : P === 'Report' ? 'report' : 'verify'
 }
@@ -267,8 +270,88 @@ const zoteroHitFor = (key, source) => {
     const mw = cwords((h.title || '').split(':')[0])
     if (mw.length >= 2 && mw.length < tw.length && mw.every((w) => toks.has(w))) return h
   }
+  // Short forms (2026-11-12): "Author, Short Title, supra note N" carries one title word of
+  // three, so the 85% rule above can never match it, and 12 sources were told "not in Zotero"
+  // on that basis. Accept a record by the cited author when ONE distinctive title word (5+
+  // letters, in no other record by that author) is in the cite, or when the author has only
+  // one record here AND only one work in the whole draft.
+  const surs = (h) => (h.au || []).map((n) => norm(n).split(' ').pop()).filter((x) => x && x.length >= 3)
+  const mine = [...new Map(Object.values(ZOTERO_HITS).filter((h) => surs(h).some((n) => toks.has(n))).map((h) => [`${h.lib}:${h.item}`, h])).values()]
+  if (!mine.length) return null
+  const titled = mine.filter((h) => cwords((h.title || '').split(':')[0]).some((w) => w.length >= 5 && toks.has(w) &&
+    !mine.some((o) => o !== h && cwords(o.title || '').includes(w))))
+  if (titled.length === 1) return titled[0]
+  if (mine.length === 1) {
+    const sn = surs(mine[0]).find((n) => toks.has(n))
+    if (sn && draftWorksBy(sn) === 1) return mine[0]
+  }
   return null
 }
+// Distinct works by an author across the whole draft (ledger keys, leading signal words dropped:
+// the ledger keys "see also jane doe ..." and "jane doe ..." are one work).
+const SIGNAL_WORDS = /^(?:(?:see|also|cf|but|e g|eg|accord|contra|compare|generally|with)\s+)+/
+const draftWorksBy = (surname) => new Set(LEDGER
+  .filter((x) => x.k !== 'case' && x.k !== 'statute' && !['id', 'supra', 'case-short', 'text', 'internal'].includes(x.k) && x.c && norm(x.c).split(' ').includes(surname))
+  .map((x) => (x.key || '').replace(SIGNAL_WORDS, ''))).size
+
+// ---- deterministic Id./supra resolution for quote sources (2026-11-12) ----------------------
+// The 2026-11-12 run let the segment agent hand back "Id." (23 quotes from 11+ sources became
+// one bundle keyed "id") and "Author, Short Title, supra note N" (42 quotes keyed by the short
+// form, so none reached its Zotero text). The ledger already resolves every Id./supra chain —
+// including stale supra numbers, by author name (`xn`) — so a source left as a cross-reference
+// is replaced by the full citation it stands for, and keyed by the ledger key the Zotero
+// pre-lookup used.
+const XREF_K = new Set(['id', 'supra', 'case-short'])
+const LEDGER_BY_I = new Map(LEDGER.map((x) => [x.i, x]))
+const SIGNAL_LEAD = /^\s*(?:(?:see|cf\.|but|also|e\.g\.,?|accord|contra|compare|generally|with)[\s,]+)*/i
+const isIdSource = (s) => /^id\.?(?=[\s,;]|$)/i.test((s || '').replace(SIGNAL_LEAD, '').trim())
+const isSupraSource = (s) => /\bsupra\b/i.test(s || '')
+const isXrefSource = (s) => !s || isIdSource(s) || isSupraSource(s)
+const xrefFinal = (x) => (x.x != null ? x.x : x.xn != null ? x.xn : null)
+const ledgerKind = (k) => (['case', 'statute', 'article', 'book', 'internet'].includes(k) ? k : 'unknown')
+function ledgerTargetFor(r) {
+  if (r.footnote == null) return null
+  const inNote = LEDGER.filter((x) => x.n === r.footnote && XREF_K.has(x.k) && xrefFinal(x) != null)
+  let cands = []
+  if (isIdSource(r.source)) cands = inNote.filter((x) => x.k === 'id')
+  else if (isSupraSource(r.source)) {
+    const names = norm((r.source || '').replace(SIGNAL_LEAD, '').split(/\bsupra\b/i)[0]).split(' ').filter((w) => w.length >= 3)
+    cands = inNote.filter((x) => x.k === 'supra' && names.length &&
+      names.every((w) => norm((LEDGER_BY_I.get(xrefFinal(x)) || {}).c || '').split(' ').includes(w) || STOPW.has(w)))
+  }
+  const finals = [...new Set(cands.map(xrefFinal))]
+  if (finals.length !== 1) return null
+  const t = LEDGER_BY_I.get(finals[0])
+  return t && t.c ? t : null
+}
+// A full citation the agent copied: find the ledger instance it came from, for the ledger key.
+const SUBST_LEDGER = LEDGER.filter((x) => !XREF_K.has(x.k) && x.k !== 'text' && x.k !== 'internal' && x.c)
+function ledgerKeyFor(src, n) {
+  const want = norm((src || '').replace(SIGNAL_LEAD, '')).slice(0, 40)
+  if (want.length < 12) return null
+  const hits = SUBST_LEDGER.filter((x) => (n == null || x.n <= n) && norm(x.c).includes(want))
+  if (!hits.length) return null
+  hits.sort((a, b) => (a.n === n ? 0 : 1) - (b.n === n ? 0 : 1) || b.n - a.n)
+  return hits[0].key
+}
+function applyLedgerResolution(r) {
+  if (isXrefSource(r.source)) {
+    const t = ledgerTargetFor(r)
+    if (!t) return false
+    r.resolutionNote = `${r.resolutionNote ? r.resolutionNote + ' ' : ''}[resolved from the citation ledger: "${(r.source || '').slice(0, 60)}" -> the full cite in n.${t.n}]`
+    r.draftSource = r.source
+    r.source = t.c
+    r.ledgerKey = t.key
+    if (!r.kind || r.kind === 'unknown') r.kind = ledgerKind(t.k)
+    return true
+  }
+  const k = ledgerKeyFor(r.source, r.footnote)
+  if (k) r.ledgerKey = k
+  return true
+}
+// The unique-source key a resolved quote is bundled under. A source still left as a bare
+// cross-reference is keyed by its footnote, never pooled with every other unresolved "Id.".
+const bundleKeyOf = (r) => r.ledgerKey || (isXrefSource(r.source) ? `unresolved n.${r.footnote ?? '?'}` : sourceKey(r.source, r.kind))
 const ZOTERO_POLICY = ZOTERO_PRELOOKED
   ? `ZOTERO: the user's Zotero libraries were searched DETERMINISTICALLY before this run (zotero_lookup.py)
 for every secondary source the draft cites, and every source below carries a "ZOTERO:" line with the
@@ -496,7 +579,7 @@ const SEGMENT_SCHEMA = {
           id: { type: 'integer', description: 'the unit id, echoed exactly' },
           footnote: { type: 'integer', description: 'the unit\'s footnote number, echoed exactly (for a body quote, the footnote that carries its citation)' },
           quote: { type: 'string', description: 'the quoted text, echoed (short)' },
-          source: { type: 'string', description: 'the SPECIFIC citation this quote hangs on, fully resolved (Id. walked to its antecedent, supra redirects followed). Copy the citation as printed.' },
+          source: { type: 'string', description: 'the FULL citation of the specific work this quote hangs on (author or case name, title, volume, reporter/journal, first page), copied as printed from the note where that full citation appears. NEVER "Id." and never a "supra" short form: walk the chain to the full cite.' },
           kind: { type: 'string', enum: ['case', 'statute', 'article', 'book', 'internet', 'unknown'] },
           pincite: { type: 'string', description: 'the page/section the quote is pinned to, resolved through the chain (e.g. an "Id. at 522" inherits the antecedent work at p. 522)' },
           syllabus: { type: 'boolean', description: 'true if the pincite is the first page of a U.S. Reports cite or otherwise points at the syllabus/front matter rather than the opinion' },
@@ -717,6 +800,12 @@ STEP 2 — for EACH unit, determine the SPECIFIC source the quote is attributed 
   working paper / "forthcoming" / SSRN preprint / slip opinion. Set syllabus=true when the pincite
   is the first page of a U.S. Reports cite (syllabus_hint is a clue) or otherwise points at front
   matter.
+- THE SOURCE IS ALWAYS A FULL CITATION. Never return "Id." or a "Name, supra note N" short form in
+  source — the workflow rejects those and asks again (a real run left 23 quotes on "Id." and 42 on
+  supra short forms, and they never reached the text already on disk). Copy the full cite of the
+  work from the note where it appears. If a "supra note N" points at a note that does NOT cite that
+  author (renumbering — on one real draft every supra ran two notes low), find the author's full
+  cite by NAME in antecedents / supra_targets / home_note and use it; say so in resolutionNote.
 - Record the resolved pincite (an Id. inherits its antecedent's page unless it gives its own).
 - resolutionNote: one line ONLY when you resolved an Id./supra chain, so the report can show the work.
 
@@ -739,7 +828,12 @@ do NOT judge accuracy — only resolve WHICH source and WHERE. Never invent a ci
 source is genuinely unresolvable from the context given, set source to the verbatim draft text
 and kind "unknown".`
 
-const segAgent = (ch) => spawn(segPrompt(ch), {
+const segRetryNote = `RETRY — A FIRST PASS RETURNED NOTHING USABLE FOR THESE UNITS (no resolution at all, or a
+source left as "Id." / a supra short form). Return one resolution for EVERY unit id below, and make
+each source the full citation of the work.
+
+`
+const segAgent = (ch) => spawn((ch.retry ? segRetryNote : '') + segPrompt(ch), {
   label: `segment:${ch.label}`,
   phase: 'Segment',
   schema: SEGMENT_SCHEMA,
@@ -752,19 +846,49 @@ const segResults = await parallel(segChunks.map((ch) => async () => {
   if (!r) { log(`segment:${ch.label} died — retrying once`); r = await segAgent(ch) }
   return r
 }))
-const resolutions = []
-for (const r of segResults.filter(Boolean)) for (const u of (r.resolutions || [])) {
-  if (u.footnote == null && UNIT_NOTES.has(u.id)) u.footnote = UNIT_NOTES.get(u.id)
-  resolutions.push(u)
-}
-const resById = new Map(resolutions.map((r) => [r.id, r]))
-const segTarget = UNIT_IDS ? UNIT_IDS.length : UNIT_COUNT
-// Units no resolution came back for (dead chunk, or an agent that skipped ids) — these can
-// never be verified, so they are disclosed as unchecked rather than vanishing.
 const allUnitIds = UNIT_IDS ? UNIT_IDS.slice() : Array.from({ length: UNIT_COUNT }, (_, i) => i)
-const unresolvedIds = allUnitIds.filter((i) => !resById.has(i))
-if (unresolvedIds.length) degradation.push(`${unresolvedIds.length} quote unit(s) got no resolution from the segment pass (agent failure or skipped ids) — listed as NOT CHECKED`)
-log(`Resolved ${resolutions.length}/${segTarget} quotes to their specific source${unresolvedIds.length ? ` (${unresolvedIds.length} unresolved)` : ''}.`)
+const allUnitSet = new Set(allUnitIds)
+const resById = new Map()
+// Take an agent's resolutions: only ids that exist; the ledger replaces any Id./supra source it
+// can resolve; a later (retry) resolution replaces an earlier one only if it is better.
+const takeResolutions = (outs) => {
+  for (const r of outs.filter(Boolean)) for (const u of (r.resolutions || [])) {
+    if (!allUnitSet.has(u.id)) continue
+    if (u.footnote == null && UNIT_NOTES.has(u.id)) u.footnote = UNIT_NOTES.get(u.id)
+    applyLedgerResolution(u)
+    const prev = resById.get(u.id)
+    if (!prev || (isXrefSource(prev.source) && !isXrefSource(u.source))) resById.set(u.id, u)
+  }
+}
+takeResolutions(segResults)
+// Retry (2026-11-12: one agent returned 2 of its 28 resolutions and 27 quotes went unchecked;
+// the missing ids were computed and only logged). Units with no resolution, or still sitting on a
+// bare Id./supra the ledger could not resolve, go back out once in small --pick chunks.
+const SEG_RETRY_CHUNK = 7
+const retryIds = allUnitIds.filter((i) => !resById.has(i) || isXrefSource(resById.get(i).source))
+if (retryIds.length) {
+  const retryChunks = []
+  for (let i = 0; i < retryIds.length; i += SEG_RETRY_CHUNK) {
+    const ids = retryIds.slice(i, i + SEG_RETRY_CHUNK)
+    retryChunks.push({ load: `--pick ${ids.join(' ')}`, label: `retry-${ids[0]}`, count: ids.length, retry: true })
+  }
+  if (!tight(RESERVE_REPORT + RESERVE_REVERIFY + retryChunks.length * COST.segment)) {
+    log(`Segment retry: ${retryIds.length} unit(s) without a usable resolution (${retryIds.filter((i) => !resById.has(i)).length} missing, ${retryIds.filter((i) => resById.has(i)).length} on a bare Id./supra) — ${retryChunks.length} chunk(s) of up to ${SEG_RETRY_CHUNK}.`)
+    takeResolutions(await parallel(retryChunks.map((ch) => () => segAgent(ch))))
+  } else {
+    degradation.push(`segment retry skipped for ${retryIds.length} unit(s) (budget)`)
+  }
+}
+const resolutions = allUnitIds.filter((i) => resById.has(i)).map((i) => resById.get(i))
+const segTarget = UNIT_IDS ? UNIT_IDS.length : UNIT_COUNT
+// Units no resolution came back for even after the retry — these can never be verified, so they
+// are disclosed as unchecked rather than vanishing.
+let unresolvedIds = allUnitIds.filter((i) => !resById.has(i))
+if (unresolvedIds.length) degradation.push(`${unresolvedIds.length} quote unit(s) got no resolution from the segment pass even after a retry — listed as NOT CHECKED`)
+const xrefLeft = resolutions.filter((r) => isXrefSource(r.source))
+if (xrefLeft.length) degradation.push(`${xrefLeft.length} quote(s) still hang on an unresolved Id./supra after the ledger and a retry — each is verified on its own (keyed by footnote), not pooled`)
+const ledgerResolved = resolutions.filter((r) => r.draftSource).length
+log(`Resolved ${resolutions.length}/${segTarget} quotes to their specific source${ledgerResolved ? ` (${ledgerResolved} Id./supra chains completed from the ledger)` : ''}${unresolvedIds.length ? ` (${unresolvedIds.length} unresolved)` : ''}.`)
 
 // ===========================================================================
 // Phase 2 — CASE EXISTENCE (deterministic CourtListener + web escalation)
@@ -920,163 +1044,11 @@ const existFixed = existence.filter((e) => e.corrected)
 log(`Case existence: ${existence.length} checked, ${existBad.length} unconfirmed, ${existFixed.length} reporter typos.`)
 
 // ===========================================================================
-// Phase 2b — SUBSEQUENT HISTORY & TREATMENT (added 2026-10-19)
-// Bluebook R. 10.7 wants the subsequent history in the citation, and a case cited for current
-// law may have been reversed, vacated or overruled since. Direct history is what a citation
-// graph cannot see: a judgment vacated on reconsideration or reversed by a mandate often leaves
-// no published opinion for a citation search to find, so the DOCKET (RECAP, federal only) is
-// read for everything filed after the decision, alongside later same-litigation opinions; a
-// two-route citing probe (graph + name phrase) flags adverse treatment. Advisory: findings go in
-// their own report section, never in "Needs your attention", and never enter the ledger.
-// ===========================================================================
-mark('History')
-const HISTORY_RE = /\b(aff'd|affirmed|rev'd|reversed|vacated|cert\.?\s*(denied|granted|dismissed)|overruled|abrogated|superseded|modified|reh'g|rehearing|en banc|withdrawn|amended|substituted|remanded|appeal (dismissed|docketed|filed)|petition for cert)/i
-const SCOTUS_RE = /\b\d+\s+(U\.?\s?S\.?|S\.?\s?Ct\.?|L\.?\s?Ed\.?(\s?2d)?)\s+\d+/i
-const existByCite = new Map(existence.map((e) => [norm(e.citation), e]))
-const draftTextsFor = (cite) => {
-  const k = norm(cite)
-  return LEDGER.filter((x) => x.k === 'case' && x.case && norm(x.case) === k).map((x) => x.c)
-}
-const historyCases = CASE_CITES.map((cite) => {
-  const ex = existByCite.get(norm(cite)) || {}
-  const texts = draftTextsFor(cite)
-  return {
-    cite,
-    caseName: ex.caseName || '',
-    dateFiled: ex.dateFiled || '',
-    exists: ex.exists !== false,
-    scotus: SCOTUS_RE.test(cite),
-    draftHasHistory: texts.some((t) => HISTORY_RE.test(t)),
-    draftTexts: texts.slice(0, 3).map((t) => t.slice(0, 220)),
-    notes: [...new Set(LEDGER.filter((x) => x.k === 'case' && x.case && norm(x.case) === norm(cite)).map((x) => x.n))].slice(0, 8),
-  }
-})
-const HISTORY_SCHEMA = {
-  type: 'object',
-  required: ['cases'],
-  properties: {
-    cases: {
-      type: 'array',
-      items: {
-        type: 'object',
-        required: ['cite', 'status'],
-        properties: {
-          cite: { type: 'string', description: 'the citation, echoed exactly' },
-          status: { type: 'string', enum: ['checked', 'not-resolved', 'tool-error', 'skipped'] },
-          subsequentHistory: { type: 'string', description: 'the subsequent history found, in Bluebook order with cites, e.g. "aff\'d, 980 F.3d 157 (1st Cir. 2020), rev\'d, 600 U.S. 181 (2023)"; empty if none was found' },
-          historyBasis: { type: 'string', enum: ['docket+opinions', 'opinions-only', 'docket-only', 'none-found', 'not-checked'], description: 'what the history rests on' },
-          historyFinding: { type: 'string', description: 'ONLY when the draft\'s citation omits history you found (or states history the record contradicts): one line, quoting the draft\'s cite text and giving the history to add. Empty otherwise.' },
-          treatment: { type: 'string', description: 'adverse treatment that names THIS case (overruled / abrogated / limited / declined to follow / superseded by statute), with the treating case\'s name, cite and date and the scope as far as the snippet shows ("scope unconfirmed" otherwise). Empty if none.' },
-          treatmentRoutes: { type: 'string', description: 'coverage line: graph N (M with treatment language) / name-search N (K not in graph) / D distinct cases; most recent citing date' },
-          coverage: { type: 'string', description: 'what was and was not checked: docket read (N entries after decision, truncated?), docket skipped (state court / no RECAP record), same-litigation opinions found, name resolution route' },
-          confidence: { type: 'string', enum: ['high', 'moderate', 'low'] },
-          note: { type: 'string' },
-        },
-      },
-    },
-  },
-}
-const historyPrompt = (batch) => `You are checking the SUBSEQUENT HISTORY and current TREATMENT of case citations in a
-law-review draft, with two deterministic CourtListener tools. Bluebook R. 10.7 requires the
-subsequent history of a cited decision (aff'd / rev'd / vacated / cert. denied / overruled), and a
-case cited for current law must not have been reversed or overruled since. You READ tool output
-and report; you do not verify quotes here and you do not assess whether the draft's proposition
-is supported.
-
-CASES (echo each cite exactly as given):
-${batch.map((c) => `- cite: ${c.cite}${c.caseName ? ` | name: ${c.caseName}` : ''}${c.dateFiled ? ` | decided: ${c.dateFiled}` : ''} | ${c.scotus ? 'SUPREME COURT (no docket pass; treatment only)' : 'lower court (history + treatment)'} | draft cite text already carries history words: ${c.draftHasHistory ? 'YES' : 'no'} | cited in notes ${c.notes.join(', ') || '?'}\n    draft cite(s): ${c.draftTexts.map((t) => JSON.stringify(t)).join(' || ') || '(none captured)'}`).join('\n')}
-
-FOR EACH CASE, via Bash (load with ToolSearch "select:Bash" if needed):
-1. Lower-court cases only — subsequent history:
-     python3 "${CL_TOOLS}" history "<cite>" --name "<case name>" --year <decision year>
-   Read origin (court, level, docket number), docket.flagged_entries (each entry's flags name
-   what it is evidence of: notice_of_appeal, usca_judgment_or_opinion, mandate, cert_granted /
-   cert_denied, amended_or_substituted_opinion, reconsideration, vacated, remanded ...),
-   docket.note (why a docket pass was skipped or empty), and same_litigation_opinions (later
-   opinions in the same case; court_can_review_origin=true marks a reviewing court — THAT
-   opinion's citation is the history to report). Compose subsequentHistory from what the record
-   shows, in Bluebook order, citing the reviewing opinion where the index has it and the docket
-   entry (date, entry number, wording) where it does not. A notice of appeal alone is "appeal
-   filed, <date>" — not an outcome. An "(Attachments: ... Amended Opinion ...)" parenthetical is
-   a known, unretrieved amendment — report it as such.
-2. Every case — treatment:
-     python3 "${CL_TOOLS}" citing "<cite>" --name "<case name>" --limit 10
-   Read treatment_probe.most_relevant (mentions_target=true rows first) and
-   name_search_treatment_probe. A signal row whose snippet names THIS case's parties and says it
-   was overruled / abrogated / limited / declined to follow / superseded is a treatment flag:
-   name the treating case, cite, date, and the scope if the snippet shows it, else "scope
-   unconfirmed — open <case>". Rows about other cases are noise. Copy routes.* counts and
-   distinct_cases_returned into treatmentRoutes with most_recent_citing_date.
-3. If the cite does not resolve, the tool says so: run
-     python3 "${CL_TOOLS}" find "<case name>" --cite "<cite>" --year <year>
-   and retry with cluster:<id> from the matching candidate. If nothing resolves, status
-   "not-resolved" — that is a coverage gap, not evidence about the case.
-
-WHAT COUNTS AS A FINDING (historyFinding) — only these:
-- The draft's cite text carries NO history words, and the record shows an outcome that Bluebook
-  R. 10.7 requires: a reviewing court's affirmance / reversal / vacatur / modification, cert.
-  denied or granted, an amended or substituted opinion, a judgment vacated on reconsideration.
-- The draft states history the record contradicts (says aff'd, record shows rev'd).
-NOT a finding: a notice of appeal with no outcome (say so in coverage); history the draft already
-gives (draftHasHistory YES and consistent); a denial of rehearing (R. 10.7.1 lets it be omitted
-unless particularly relevant); a Supreme Court decision (no history to add).
-Treatment is reported in its own field, never as a history finding: the draft may cite the case
-for its history or as a foil, which you cannot tell from here.
-
-HONESTY RULES: RECAP is crowd-sourced, incomplete and federal-only — an empty docket is "no RECAP
-entries found", never "no appeal"; state-court origins get no docket pass, say so; docket text
-is the clerk's language, not a holding — do not characterize scope from "VACATED and REMANDED"
-alone; the opinion index and the docket are separate sources. Supreme Court dockets are not on
-PACER, so cert. history rests on lower-court docket entries or a later same-litigation opinion
-— say "cert. history unconfirmed" when neither shows it. No hits is not proof of good law
-(this is not Shepard's/KeyCite). Cases decided after your training data are real. Cap
-confidence at moderate when the docket could not be read or only one citing route returned;
-low when the case did not resolve or a tool errored. Never report from memory.
-Pace yourself; on a 429 rate-limit, wait and retry once.`
-const historyBatches = []
-const historyTargets = HISTORY_ON ? historyCases.filter((c) => c.exists) : []
-for (let i = 0; i < historyTargets.length; i += HISTORY_BATCH) historyBatches.push(historyTargets.slice(i, i + HISTORY_BATCH))
-let historyResults = []
-let historyRan = false
-if (historyBatches.length && !tight(RESERVE_REPORT + RESERVE_REVERIFY + historyBatches.length * COST.history)) {
-  historyRan = true
-  const hAgent = (b, i) => spawn(historyPrompt(b), { label: `history:${i * HISTORY_BATCH}-${i * HISTORY_BATCH + b.length}`, phase: 'History', schema: HISTORY_SCHEMA, model: VERIFY_MODEL, effort: DEEP ? 'medium' : 'low' })
-  const outs = await parallel(historyBatches.map((b, i) => async () => {
-    let r = await hAgent(b, i)
-    if (!r) { log(`history batch ${i} died — retrying once`); r = await hAgent(b, i) }
-    return r
-  }))
-  for (const o of outs.filter(Boolean)) historyResults.push(...(o.cases || []))
-  const got = new Set(historyResults.map((h) => norm(h.cite)))
-  const missed = historyTargets.filter((c) => !got.has(norm(c.cite)))
-  for (const c of missed) historyResults.push({ cite: c.cite, status: 'skipped', coverage: 'no result returned (agent failure)', confidence: 'low' })
-  if (missed.length) degradation.push(`${missed.length} case cite(s) got no subsequent-history result (agent failure) — listed as not checked`)
-} else if (historyBatches.length) {
-  degradation.push(`subsequent-history / treatment pass skipped for ${historyTargets.length} case cites (budget)`)
-} else if (!HISTORY_ON && CASE_CITES.length) {
-  degradation.push('subsequent-history / treatment pass turned off by the caller (history:false)')
-}
-const historyByCite = new Map(historyResults.map((h) => [norm(h.cite), h]))
-const historyFindings = historyResults.filter((h) => h.status === 'checked' && h.historyFinding)
-const treatmentFlags = historyResults.filter((h) => h.status === 'checked' && h.treatment)
-const historyUnchecked = historyResults.filter((h) => h.status !== 'checked')
-const histLine = (h) => {
-  const c = historyCases.find((x) => norm(x.cite) === norm(h.cite)) || {}
-  return `- ${h.cite}${c.notes && c.notes.length ? ` (n.${c.notes.join(', n.')})` : ''}` +
-    (h.historyFinding ? `\n    history: ${h.historyFinding}` : '') +
-    (h.subsequentHistory && !h.historyFinding ? `\n    record shows: ${h.subsequentHistory}` : '') +
-    (h.treatment ? `\n    treatment: ${h.treatment}` : '') +
-    `\n    basis: ${h.historyBasis || 'n/a'}; ${h.coverage || ''}; routes: ${h.treatmentRoutes || 'n/a'}; confidence ${h.confidence || '?'}` +
-    (h.note ? `\n    note: ${h.note}` : '')
-}
-log(`History: ${historyResults.length}/${historyTargets.length} cases checked — ${historyFindings.length} missing-history findings, ${treatmentFlags.length} treatment flags, ${historyUnchecked.length} not checked.`)
-
-// ===========================================================================
 // Collapse resolved quotes onto UNIQUE sources (lesson 1: fetch once)
 // ===========================================================================
 const bundles = new Map()
 for (const r of resolutions) {
-  const key = sourceKey(r.source, r.kind)
+  const key = bundleKeyOf(r)
   if (!bundles.has(key)) bundles.set(key, { key, kind: r.kind, source: r.source, manuscript: false, syllabus: false, quotes: [] })
   const b = bundles.get(key)
   if (r.manuscript) b.manuscript = true
@@ -1328,14 +1300,77 @@ for (const v of verifyResults) {
     })
   }
 }
-// Attach footnote numbers via the resolution units (segment echoed ids).
-// (footnote already set above where res was found.)
+// ---------------------------------------------------------------------------
+// Pre-report ZOTERO SWEEP (2026-11-12). Every quote still unverifiable, unverdicted or unresolved
+// is run, by script, against every Zotero text the pre-lookup put on disk for any source its
+// footnote cites or cross-refers to (scripts/zotero_sweep.py walks the ledger, stale supras
+// included). On the 2026-11-12 run most of the 65 unverifiable / not-checked quotes had their
+// source's text on disk all along. A match is a deterministic verify_quotes.py result, not an
+// agent's judgment; the agent only runs the command and copies the output. Pincites are not
+// judged here (a PDF's page count is not its printed page number).
+// ---------------------------------------------------------------------------
+const SWEEP_SCHEMA = {
+  type: 'object', required: ['results'],
+  properties: { results: { type: 'array', items: { type: 'object', required: ['id', 'found'], properties: {
+    id: { type: 'integer' }, footnote: { type: 'integer' }, found: { type: 'boolean' }, status: { type: 'string' },
+    file: { type: 'string' }, key: { type: 'string' }, item: { type: 'string' }, library: { type: 'string' },
+    title: { type: 'string' }, page_in_file: { type: 'integer' }, matched: { type: 'string' },
+  } } } },
+}
+const sweptIds = new Set()
+{
+  const verdictNow = new Map(findings.map((f) => [f.id, f]))
+  const sweepIds = allUnitIds.filter((i) => {
+    const f = verdictNow.get(i)
+    return f ? f.verdict === 'unverifiable' : true // unverifiable, no verdict, or no resolution at all
+  })
+  const SWEEP_CHUNK = 40
+  const chunks = []
+  for (let i = 0; i < sweepIds.length; i += SWEEP_CHUNK) chunks.push(sweepIds.slice(i, i + SWEEP_CHUNK))
+  if (ZOTERO_PRELOOKED && EXTRACT_PATH && chunks.length && !tight(RESERVE_REPORT + chunks.length * COST.sweep)) {
+    const outs = await parallel(chunks.map((ids, k) => () => spawn(`Run ONE deterministic command and report its output. No judgment, no other tools.
+Via Bash (load it with ToolSearch "select:Bash" if needed):
+  python3 "${ZOTERO_SWEEP}" "${EXTRACT_PATH}" "${ZOTERO_LOOKUP}" --ids ${ids.join(' ')}
+It prints {"results": [...]}. Return that results array in the schema, every row, copying each field
+exactly as printed (omit a field the row does not have). Do not add, drop, or change anything.
+${TOOL_CAP(3)}`, { label: `zotero-sweep:${k}`, phase: 'Verify', schema: SWEEP_SCHEMA, model: VERIFY_MODEL, effort: 'low' })))
+    const want = new Set(sweepIds)
+    for (const o of outs.filter(Boolean)) for (const r of (o.results || [])) {
+      if (!r.found || !want.has(r.id) || sweptIds.has(r.id) || !r.matched) continue
+      const res = resById.get(r.id)
+      const otherWork = res && res.ledgerKey && r.key && res.ledgerKey !== r.key
+      const f = {
+        id: r.id,
+        footnote: res ? res.footnote : (r.footnote ?? UNIT_NOTES.get(r.id)),
+        source: (res && !isXrefSource(res.source) && !otherWork) ? res.source : (r.title || r.key || ''),
+        sourceIdentified: `${r.title || r.key} (Zotero ${r.library || ''} item ${r.item || '?'}; text from the pre-lookup)`,
+        verdict: r.status === 'altered' ? 'altered_marked' : 'verbatim',
+        severity: 'low',
+        sourceText: r.matched,
+        pinciteFinding: 'pincite not judged by the Zotero sweep',
+        basis: 'direct-full-text',
+        note: `found by the pre-report Zotero sweep (verify_quotes.py, ${r.status}) in ${r.title || r.key}${r.page_in_file ? `, page ${r.page_in_file} of the PDF file` : ''}` +
+          (otherWork ? ` — NOT in the work the run resolved it to (${(res.source || '').slice(0, 80)}): check which source the draft attributes it to` : ''),
+        metadataFindings: [], versionDrift: '', urlFinding: '',
+        ledgerKey: r.key, swept: true,
+      }
+      const at = findings.findIndex((x) => x.id === r.id)
+      if (at >= 0) findings[at] = f
+      else findings.push(f)
+      sweptIds.add(r.id)
+    }
+    unresolvedIds = unresolvedIds.filter((i) => !sweptIds.has(i))
+    log(`Zotero sweep: ${sweptIds.size} of ${sweepIds.length} unverifiable / unchecked quote(s) matched in Zotero text already on disk.`)
+  } else if (ZOTERO_PRELOOKED && chunks.length) {
+    degradation.push(`pre-report Zotero sweep skipped for ${sweepIds.length} unverifiable / unchecked quote(s) (budget)`)
+  }
+}
 const highSev = findings.filter((f) => f.severity === 'high')
 // Resolved quotes that no verify agent returned a verdict for (dead agent after retry, or a
 // verdict list that skipped ids). Disclosed in the report as NOT CHECKED, never dropped.
 const verdictIds = new Set(findings.map((f) => f.id))
 const unverifiedUnits = resolutions.filter((r) => !verdictIds.has(r.id))
-const budgetUnits = new Set(unverifiedUnits.filter((r) => budgetDroppedKeys.has(sourceKey(r.source, r.kind))).map((r) => r.id))
+const budgetUnits = new Set(unverifiedUnits.filter((r) => budgetDroppedKeys.has(bundleKeyOf(r))).map((r) => r.id))
 const lostUnits = unverifiedUnits.length - budgetUnits.size
 if (lostUnits) degradation.push(`${lostUnits} resolved quote(s) got no verdict from the verify pass (agent failure or skipped ids) — listed as NOT CHECKED`)
 log(`Verified ${findings.length} quotes across ${verifyResults.length} sources; ${highSev.length} high-severity findings to re-verify${unverifiedUnits.length ? `; ${unverifiedUnits.length} quotes got no verdict` : ''}.`)
@@ -1683,7 +1718,7 @@ for (const f of findings) {
   if (f.artifact) continue
   const res = resById.get(f.id)
   const src = (res && res.source) || f.source || ''
-  const k = sourceKey(src)
+  const k = f.ledgerKey || (res && res.ledgerKey) || sourceKey(src)
   const note = f.footnote
   let hit = null
   const byKey = LEDGER.filter((x) => substantive(x) && x.key === k)
@@ -1731,8 +1766,171 @@ for (const x of LEDGER) {
 }
 const ledgerCounts = {}
 for (const x of LEDGER) ledgerCounts[x.d] = (ledgerCounts[x.d] || 0) + 1
-const ledgerLine = (x) => `- n.${x.n} [${x.k}] ${x.c.slice(0, 140)}${x.why ? ` — ${x.why}` : ''}`
+const ledgerLine = (x) => `- n.${x.n} [${x.k}] ${(x.c || '').slice(0, 140)}${x.why ? ` — ${x.why}` : ''}`
 log(`Ledger: ${LEDGER.length} citation instances — ${JSON.stringify(ledgerCounts)}`)
+
+// ===========================================================================
+// (Moved after Re-verify on 2026-11-12: history is advisory; on a full-draft run it ran before
+// Verify/Support, measured ~7x its cost model, and left the support pass — what was asked for —
+// reading 71 of 236 units. It now spends only what the quote and support passes left.)
+// Phase 2b — SUBSEQUENT HISTORY & TREATMENT (added 2026-10-19)
+// Bluebook R. 10.7 wants the subsequent history in the citation, and a case cited for current
+// law may have been reversed, vacated or overruled since. Direct history is what a citation
+// graph cannot see: a judgment vacated on reconsideration or reversed by a mandate often leaves
+// no published opinion for a citation search to find, so the DOCKET (RECAP, federal only) is
+// read for everything filed after the decision, alongside later same-litigation opinions; a
+// two-route citing probe (graph + name phrase) flags adverse treatment. Advisory: findings go in
+// their own report section, never in "Needs your attention", and never enter the ledger.
+// ===========================================================================
+mark('History')
+const HISTORY_RE = /\b(aff'd|affirmed|rev'd|reversed|vacated|cert\.?\s*(denied|granted|dismissed)|overruled|abrogated|superseded|modified|reh'g|rehearing|en banc|withdrawn|amended|substituted|remanded|appeal (dismissed|docketed|filed)|petition for cert)/i
+const SCOTUS_RE = /\b\d+\s+(U\.?\s?S\.?|S\.?\s?Ct\.?|L\.?\s?Ed\.?(\s?2d)?)\s+\d+/i
+const existByCite = new Map(existence.map((e) => [norm(e.citation), e]))
+const draftTextsFor = (cite) => {
+  const k = norm(cite)
+  return LEDGER.filter((x) => x.k === 'case' && x.case && norm(x.case) === k).map((x) => x.c)
+}
+const historyCases = CASE_CITES.map((cite) => {
+  const ex = existByCite.get(norm(cite)) || {}
+  const texts = draftTextsFor(cite)
+  return {
+    cite,
+    caseName: ex.caseName || '',
+    dateFiled: ex.dateFiled || '',
+    exists: ex.exists !== false,
+    scotus: SCOTUS_RE.test(cite),
+    draftHasHistory: texts.some((t) => HISTORY_RE.test(t)),
+    draftTexts: texts.slice(0, 3).map((t) => t.slice(0, 220)),
+    notes: [...new Set(LEDGER.filter((x) => x.k === 'case' && x.case && norm(x.case) === norm(cite)).map((x) => x.n))].slice(0, 8),
+  }
+})
+const HISTORY_SCHEMA = {
+  type: 'object',
+  required: ['cases'],
+  properties: {
+    cases: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['cite', 'status'],
+        properties: {
+          cite: { type: 'string', description: 'the citation, echoed exactly' },
+          status: { type: 'string', enum: ['checked', 'not-resolved', 'tool-error', 'skipped'] },
+          subsequentHistory: { type: 'string', description: 'the subsequent history found, in Bluebook order with cites, e.g. "aff\'d, 980 F.3d 157 (1st Cir. 2020), rev\'d, 600 U.S. 181 (2023)"; empty if none was found' },
+          historyBasis: { type: 'string', enum: ['docket+opinions', 'opinions-only', 'docket-only', 'none-found', 'not-checked'], description: 'what the history rests on' },
+          historyFinding: { type: 'string', description: 'ONLY when the draft\'s citation omits history you found (or states history the record contradicts): one line, quoting the draft\'s cite text and giving the history to add. Empty otherwise.' },
+          treatment: { type: 'string', description: 'adverse treatment that names THIS case (overruled / abrogated / limited / declined to follow / superseded by statute), with the treating case\'s name, cite and date and the scope as far as the snippet shows ("scope unconfirmed" otherwise). Empty if none.' },
+          treatmentRoutes: { type: 'string', description: 'coverage line: graph N (M with treatment language) / name-search N (K not in graph) / D distinct cases; most recent citing date' },
+          coverage: { type: 'string', description: 'what was and was not checked: docket read (N entries after decision, truncated?), docket skipped (state court / no RECAP record), same-litigation opinions found, name resolution route' },
+          confidence: { type: 'string', enum: ['high', 'moderate', 'low'] },
+          note: { type: 'string' },
+        },
+      },
+    },
+  },
+}
+const historyPrompt = (batch) => `You are checking the SUBSEQUENT HISTORY and current TREATMENT of case citations in a
+law-review draft, with two deterministic CourtListener tools. Bluebook R. 10.7 requires the
+subsequent history of a cited decision (aff'd / rev'd / vacated / cert. denied / overruled), and a
+case cited for current law must not have been reversed or overruled since. You READ tool output
+and report; you do not verify quotes here and you do not assess whether the draft's proposition
+is supported.
+
+CASES (echo each cite exactly as given):
+${batch.map((c) => `- cite: ${c.cite}${c.caseName ? ` | name: ${c.caseName}` : ''}${c.dateFiled ? ` | decided: ${c.dateFiled}` : ''} | ${c.scotus ? 'SUPREME COURT (no docket pass; treatment only)' : 'lower court (history + treatment)'} | draft cite text already carries history words: ${c.draftHasHistory ? 'YES' : 'no'} | cited in notes ${c.notes.join(', ') || '?'}\n    draft cite(s): ${c.draftTexts.map((t) => JSON.stringify(t)).join(' || ') || '(none captured)'}`).join('\n')}
+
+FOR EACH CASE, via Bash (load with ToolSearch "select:Bash" if needed):
+1. Lower-court cases only — subsequent history:
+     python3 "${CL_TOOLS}" history "<cite>" --name "<case name>" --year <decision year>
+   Read origin (court, level, docket number), docket.flagged_entries (each entry's flags name
+   what it is evidence of: notice_of_appeal, usca_judgment_or_opinion, mandate, cert_granted /
+   cert_denied, amended_or_substituted_opinion, reconsideration, vacated, remanded ...),
+   docket.note (why a docket pass was skipped or empty), and same_litigation_opinions (later
+   opinions in the same case; court_can_review_origin=true marks a reviewing court — THAT
+   opinion's citation is the history to report). Compose subsequentHistory from what the record
+   shows, in Bluebook order, citing the reviewing opinion where the index has it and the docket
+   entry (date, entry number, wording) where it does not. A notice of appeal alone is "appeal
+   filed, <date>" — not an outcome. An "(Attachments: ... Amended Opinion ...)" parenthetical is
+   a known, unretrieved amendment — report it as such.
+2. Every case — treatment:
+     python3 "${CL_TOOLS}" citing "<cite>" --name "<case name>" --limit 10
+   Read treatment_probe.most_relevant (mentions_target=true rows first) and
+   name_search_treatment_probe. A signal row whose snippet names THIS case's parties and says it
+   was overruled / abrogated / limited / declined to follow / superseded is a treatment flag:
+   name the treating case, cite, date, and the scope if the snippet shows it, else "scope
+   unconfirmed — open <case>". Rows about other cases are noise. Copy routes.* counts and
+   distinct_cases_returned into treatmentRoutes with most_recent_citing_date.
+3. If the cite does not resolve, the tool says so: run
+     python3 "${CL_TOOLS}" find "<case name>" --cite "<cite>" --year <year>
+   and retry with cluster:<id> from the matching candidate. If nothing resolves, status
+   "not-resolved" — that is a coverage gap, not evidence about the case.
+
+WHAT COUNTS AS A FINDING (historyFinding) — only these:
+- The draft's cite text carries NO history words, and the record shows an outcome that Bluebook
+  R. 10.7 requires: a reviewing court's affirmance / reversal / vacatur / modification, cert.
+  denied or granted, an amended or substituted opinion, a judgment vacated on reconsideration.
+- The draft states history the record contradicts (says aff'd, record shows rev'd).
+NOT a finding: a notice of appeal with no outcome (say so in coverage); history the draft already
+gives (draftHasHistory YES and consistent); a denial of rehearing (R. 10.7.1 lets it be omitted
+unless particularly relevant); a Supreme Court decision (no history to add).
+Treatment is reported in its own field, never as a history finding: the draft may cite the case
+for its history or as a foil, which you cannot tell from here.
+
+HONESTY RULES: RECAP is crowd-sourced, incomplete and federal-only — an empty docket is "no RECAP
+entries found", never "no appeal"; state-court origins get no docket pass, say so; docket text
+is the clerk's language, not a holding — do not characterize scope from "VACATED and REMANDED"
+alone; the opinion index and the docket are separate sources. Supreme Court dockets are not on
+PACER, so cert. history rests on lower-court docket entries or a later same-litigation opinion
+— say "cert. history unconfirmed" when neither shows it. No hits is not proof of good law
+(this is not Shepard's/KeyCite). Cases decided after your training data are real. Cap
+confidence at moderate when the docket could not be read or only one citing route returned;
+low when the case did not resolve or a tool errored. Never report from memory.
+Pace yourself; on a 429 rate-limit, wait and retry once — then move on and mark that case
+"tool-error" rather than retrying again.
+
+${TOOL_CAP(4 + 3 * batch.length)}`
+const historyBatches = []
+const historyTargets = HISTORY_ON ? historyCases.filter((c) => c.exists) : []
+for (let i = 0; i < historyTargets.length; i += HISTORY_BATCH) historyBatches.push(historyTargets.slice(i, i + HISTORY_BATCH))
+let historyResults = []
+let historyRan = false
+// Advisory, so it runs last and launches only the batches that fit what is left after the report
+// reserve (gatedFanout); the batches it could not launch are disclosed case by case.
+if (historyBatches.length && !tight(RESERVE_REPORT + COST.history)) {
+  historyRan = true
+  const hAgent = (b, i) => spawn(historyPrompt(b), { label: `history:${i * HISTORY_BATCH}-${i * HISTORY_BATCH + b.length}`, phase: 'History', schema: HISTORY_SCHEMA, model: VERIFY_MODEL, effort: DEEP ? 'medium' : 'low' })
+  const { results: outs, dropped: histDropped } = await gatedFanout(historyBatches.map((b, i) => async () => {
+    let r = await hAgent(b, i)
+    if (!r) { log(`history batch ${i} died — retrying once`); r = await hAgent(b, i) }
+    return r
+  }), historyBatches.map(() => COST.history), RESERVE_REPORT)
+  const droppedCites = new Set(histDropped.flatMap((j) => historyBatches[j].map((c) => norm(c.cite))))
+  for (const o of outs.filter(Boolean)) historyResults.push(...(o.cases || []))
+  const got = new Set(historyResults.map((h) => norm(h.cite)))
+  const missed = historyTargets.filter((c) => !got.has(norm(c.cite)))
+  for (const c of missed) historyResults.push({ cite: c.cite, status: 'skipped', coverage: droppedCites.has(norm(c.cite)) ? 'not launched (budget: history runs last, after the quote and support passes)' : 'no result returned (agent failure)', confidence: 'low' })
+  if (droppedCites.size) degradation.push(`subsequent-history / treatment pass: ${droppedCites.size} case cite(s) not launched (budget; history runs last) — listed as not checked`)
+  if (missed.length > droppedCites.size) degradation.push(`${missed.length - droppedCites.size} case cite(s) got no subsequent-history result (agent failure) — listed as not checked`)
+} else if (historyBatches.length) {
+  degradation.push(`subsequent-history / treatment pass skipped for ${historyTargets.length} case cites (budget)`)
+} else if (!HISTORY_ON && CASE_CITES.length) {
+  degradation.push('subsequent-history / treatment pass turned off by the caller (history:false)')
+}
+const historyByCite = new Map(historyResults.map((h) => [norm(h.cite), h]))
+const historyFindings = historyResults.filter((h) => h.status === 'checked' && h.historyFinding)
+const treatmentFlags = historyResults.filter((h) => h.status === 'checked' && h.treatment)
+const historyUnchecked = historyResults.filter((h) => h.status !== 'checked')
+const histLine = (h) => {
+  const c = historyCases.find((x) => norm(x.cite) === norm(h.cite)) || {}
+  return `- ${h.cite}${c.notes && c.notes.length ? ` (n.${c.notes.join(', n.')})` : ''}` +
+    (h.historyFinding ? `\n    history: ${h.historyFinding}` : '') +
+    (h.subsequentHistory && !h.historyFinding ? `\n    record shows: ${h.subsequentHistory}` : '') +
+    (h.treatment ? `\n    treatment: ${h.treatment}` : '') +
+    `\n    basis: ${h.historyBasis || 'n/a'}; ${h.coverage || ''}; routes: ${h.treatmentRoutes || 'n/a'}; confidence ${h.confidence || '?'}` +
+    (h.note ? `\n    note: ${h.note}` : '')
+}
+log(`History: ${historyResults.length}/${historyTargets.length} cases checked — ${historyFindings.length} missing-history findings, ${treatmentFlags.length} treatment flags, ${historyUnchecked.length} not checked.`)
+
 
 // ===========================================================================
 // Phase 4b — FORM (Bluebook typeface + short forms; no external sources)
@@ -1891,6 +2089,20 @@ const counts = {
   },
 }
 
+// Three-state Zotero wording for section I (2026-11-12: the report told the author to attach PDFs
+// that were already attached, because it worked from the verify agents' notes).
+const zoteroStateFor = (id) => {
+  if (!ZOTERO_PRELOOKED) return ''
+  const r = resById.get(id)
+  if (!r) return ''
+  const k = bundleKeyOf(r)
+  const b = bundleByKey.get(k)
+  const h = b ? b.zotero : (r.kind === 'case' || r.kind === 'statute' ? null : zoteroHitFor(k, r.source))
+  if (r.kind === 'case' || r.kind === 'statute') return ''
+  if (!h) return ' [ZOTERO: not in any library — adding the source with its PDF would unlock it]'
+  if (h.text) return ` [ZOTERO: text read from ${h.lib} item ${h.item} — already on disk; do NOT suggest attaching it]`
+  return ` [ZOTERO: record ${h.lib} item ${h.item} has no PDF — attaching the PDF to that item would unlock it]`
+}
 const fmtFinding = (f) => {
   const q = resById.get(f.id)
   return `- n.${f.footnote ?? '?'} [${f.verdict}${f.severity === 'high' ? ', HIGH' : ''}${f.severity === 'high' && !f.reverified ? ', SINGLE-CHECKER — not re-verified' : ''}] ` +
@@ -1986,7 +2198,11 @@ REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sect
   pass did not run (opt-in; \`support:true\` reads every unquoted cite at its pincite), so unquoted
   cites were existence-checked only.`}
 - **I. Couldn't check (what would unlock each)** — unverifiable items, each with its unlock path
-  (Hein/JSTOR pull, add PDF to Zotero, physical copy).
+  (Hein/JSTOR pull, add PDF to Zotero, physical copy). Each unverifiable quote below carries a
+  [ZOTERO: ...] tag computed from the pre-lookup, in one of three states: text read from Zotero;
+  record in Zotero with no PDF; not in Zotero. Word the unlock path from that tag and name the item
+  key it gives. Never tell the author to download or attach a source the tag says is already in
+  Zotero with its text (a past report did, twice).
 - **J. Citation coverage ledger** — REQUIRED, from the ledger block below: what every citation
   instance got, and above all what did NOT get checked.
 - A short method note: deterministic extraction + supra/existence checks; quotes verified by agents
@@ -2085,7 +2301,7 @@ NOT READ — out of scope (${supportOutOfScope.length} whole-work cites; one sen
 ${supportNoVerdict.map((u) => `- n.${u.n} support unit ${u.id} — no verdict: ${(u.src || '').slice(0, 100)}`).join('\n') || '(none)'}` : 'PASS DID NOT RUN (opt-in). One sentence in section H.'}
 
 === UNVERIFIABLE (section I) ===
-${findings.filter((f) => f.verdict === 'unverifiable').map(fmtFinding).join('\n') || '(none)'}
+${findings.filter((f) => f.verdict === 'unverifiable').map((f) => fmtFinding(f) + zoteroStateFor(f.id)).join('\n') || '(none)'}
 
 === QUOTES NOT CHECKED — agent failure, not a finding (section I; list by footnote) ===
 ${[...unresolvedIds.map((i) => `- n.${UNIT_NOTES.get(i) ?? '?'} unit ${i} — no source resolution`), ...unverifiedUnits.map((r) => `- n.${r.footnote ?? '?'} unit ${r.id} — ${budgetUnits.has(r.id) ? 'source never fetched (budget)' : 'no verdict'}: "${(r.quote || '').slice(0, 120)}"`)].join('\n') || '(none)'}

@@ -66,18 +66,28 @@ async function agent(prompt, opts) {
   if (L.startsWith('segment')) {
     const m = prompt.match(/--ids (\d+) (\d+)/)
     const units = m ? Array.from({ length: +m[2] - +m[1] }, (_, i) => +m[1] + i) : (prompt.match(/--pick ([\d ]+)/) || [, ''])[1].trim().split(/\s+/).filter(Boolean).map(Number)
+    const retry = prompt.startsWith('RETRY')
+    // 2026-11-12 scenarios: a first pass that drops every id, or that leaves a bare "Id." the
+    // ledger can resolve (n.2's "See id. at 436" -> McCulloch), or one it cannot (n.5 has no Id.)
+    if (scenario === 'segment-missing' && !retry) return { resolutions: [] }
+    if (scenario === 'segment-id') return { resolutions: units.map((id) => ({ id, footnote: 2, quote: 'q', source: 'Id. at 436', kind: 'unknown', pincite: '436' })) }
+    if (scenario === 'segment-id-stuck') return { resolutions: units.map((id) => ({ id, footnote: 5, quote: 'q', source: 'Id.', kind: 'unknown', pincite: '' })) }
     return { resolutions: units.map((id) => ({ id, footnote: 1, quote: 'q', source: 'McCulloch v. Maryland, 17 U.S. (4 Wheat.) 316, 431 (1819)', kind: 'case', pincite: '431' })) }
   }
   if (L.startsWith('exist-secondary')) return { sources: [...prompt.matchAll(/- key (\S+)/g)].map((m) => ({ key: m[1], exists: true, basis: 'web' })) }
   if (L.startsWith('exist')) return { results: [...prompt.matchAll(/"(\d+ [A-Za-z. ]+ \d+)"/g)].map((m) => ({ citation: m[1], exists: true, caseName: 'X v. Y', dateFiled: '1819-03-06', basis: 'courtlistener-api' })) }
   if (L.startsWith('history')) return { cases: [...prompt.matchAll(/- cite: ([^|]+?) \|/g)].map((m) => ({ cite: m[1].trim(), status: 'checked', historyBasis: 'none-found', confidence: 'moderate' })) }
   if (L.startsWith('verify-tail')) return { sources: [] }
+  if (L.startsWith('zotero-sweep')) {
+    const sw = (prompt.match(/--ids ([\d ]+)/) || [, ''])[1].trim().split(/\s+/).filter(Boolean).map(Number)
+    return { results: sw.map((id) => ({ id, found: true, status: 'verbatim', key: '17 u s 316', item: 'Z1', library: 'zotero-group', title: 'McCulloch text', page_in_file: 3, matched: 'the power to tax involves the power to destroy' })) }
+  }
   if (L.startsWith('verify')) {
     const key = prompt.match(/SOURCE-BUNDLE KEY \(echo it back exactly\): (.+)/)[1].trim()
     const qids = ids(prompt, /\[id (\d+)\]/)
     const sids = ids(prompt, /\[support id (\d+)\]/)
     return { sourceKey: key, sourceIdentified: 'CourtListener', fetchBasis: 'authoritative-reproduction',
-      verdicts: qids.map((id) => ({ id, verdict: 'verbatim', severity: 'low', basis: 'authoritative-reproduction' })),
+      verdicts: qids.map((id) => ({ id, verdict: scenario === 'sweep' ? 'unverifiable' : 'verbatim', severity: 'low', basis: 'authoritative-reproduction' })),
       supportVerdicts: sids.map((id) => ({ ...supportVerdict(id), sourceKey: scenario === 'bad-results' ? 'wrong-source' : key })) }
   }
   if (L.startsWith('support-tail') || L.startsWith('support')) {
@@ -116,6 +126,9 @@ const result = {
   items: out.findings.items.filter((i) => i.kind.startsWith('support')).map((i) => [i.kind, i.verdict, i.footnote]),
   exported: out.findings.support,
   spend: out.spend,
+  counts: { verbatim: out.counts.verbatim, unverifiable: out.counts.unverifiable, quotesNotChecked: out.counts.quotesNotChecked },
+  logs,
+  verifyKeys: prompts.filter((p) => /^verify/.test(p.label)).map((p) => ((p.prompt.match(/SOURCE-BUNDLE KEY \(echo it back exactly\): (.+)/) || [])[1] || '').trim()),
   secondaryExistence: out.secondaryExistence,
   // prompt facts the Zotero scenario checks (no prompt text leaves the harness)
   prompts: prompts.map((p) => ({

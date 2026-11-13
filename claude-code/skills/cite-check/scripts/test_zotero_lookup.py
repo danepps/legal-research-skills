@@ -177,5 +177,32 @@ with tempfile.TemporaryDirectory() as td:
     ls = zl.load_sources({"secondary": [la], "support": [sa]})
     check([s["key"] for s in ls] == ["52 ucla l rev 715", "justice abandoned", "nowhere", "x"], "load_sources: article/book/other only, deduped across files (%s)" % [s["key"] for s in ls])
 
+print("2026-11-12 run: chapters, et al., manuscripts, PDF preference")
+HB = [
+    item("HB", "book", "The Oxford Handbook of the New Private Law", [("Andrew S.", "Gold"), ("John C. P.", "Goldberg"), ("Daniel B.", "Kelly"), ("Henry E.", "Smith")], "2020"),
+    {"key": "MC", "data": {"key": "MC", "itemType": "bookSection", "title": "Private and Public Law", "date": "2020-10-27",
+                           "creators": [{"creatorType": "author", "firstName": "Thomas W.", "lastName": "Merrill"}] +
+                                       [{"creatorType": "editor", "firstName": "X", "lastName": n} for n in ("Gold", "Goldberg", "Kelly", "Sherwin", "Smith")]}},
+    item("IN", "bookSection", "Introduction", [("Andrew S.", "Gold"), ("John C. P.", "Goldberg"), ("Daniel B.", "Kelly"), ("Henry E.", "Smith")], "2020"),
+]
+it, sc, _ = zl.match_source("See Thomas W. Merrill, Private and Public Law, in The Oxford Handbook of the New Private Law 575, 575 (Andrew S. Gold et al. eds., 2020)", "book", HB)
+check(it is not None and it["key"] == "MC", "chapter cite takes the chapter's bookSection record, not the Handbook (%s)" % (it and it["key"]))
+it, sc, _ = zl.match_source("Andrew S. Gold et al., Introduction, in The Oxford Handbook of the New Private Law xv, xv (Andrew S. Gold et al. eds., 2020)", "book", HB)
+check(it is not None and it["key"] == "IN", "'Gold et al., Introduction, in ...' takes the Introduction record (%s)" % (it and it["key"]))
+f = zl.parse_cite("Andrew S. Gold et al., Introduction, in The Oxford Handbook (2020)", "book")
+check(f["lastNames"] == ["gold"] and f["etAl"], "'et al.' is not read as a surname (%s)" % f["lastNames"])
+TWIN = [item("T1", "journalArticle", "General Law Revivalism and the Problem of 1938", [("Curtis", "Bradley"), ("Jack", "Goldsmith")], "2026"),
+        item("T2", "preprint", "General Law Revivalism and the Problem of 1938", [("Curtis", "Bradley"), ("Jack", "Goldsmith")], "2026")]
+ms = "Curtis Bradley & Jack Landman Goldsmith, General Law Revivalism and the Problem of 1938, 136 Yale L.J. (forthcoming 2026) (manuscript at 4), https://papers.ssrn.com/abstract=1"
+it, _, _ = zl.match_source(ms, "internet", TWIN, has_pdf=lambda k: k == "T2")
+check(it is not None and it["key"] == "T2", "two equal matches: the record with the PDF wins (%s)" % (it and it["key"]))
+with tempfile.TemporaryDirectory() as td:
+    la = os.path.join(td, "l.json")
+    json.dump({"secondary": [{"key": "ms", "kind": "internet", "cite": ms},
+                             {"key": "url", "kind": "internet", "cite": "https://example.com/page"},
+                             {"key": "stat", "kind": "statute", "cite": "42 U.S.C. § 1983"}]}, open(la, "w"))
+    keys = [x["key"] for x in zl.load_sources({"secondary": [la]})]
+    check(keys == ["ms"], "load_sources: an internet-kind manuscript with author and title is looked up; a bare URL and a statute are not (%s)" % keys)
+
 print("\n%s" % ("all tests passed" if not fails else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)

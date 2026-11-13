@@ -199,3 +199,12 @@ calls per source, gave up on four sources the first run had reached by trying ha
 record whose subtitle the draft omits (Barkow, *Justice Abandoned*) was on disk but not joined
 to its verify bundle — the join now also matches a record's main title plus author. Re-verify
 agents carry a tool-call budget too (one had run 17 turns on a single quote).
+
+## Addendum 2026-11-12 — a full-draft run's failures, and the fixes
+
+A full-draft run left 65 quotes unverifiable or not checked, most with the source's text already on
+disk from Zotero. Causes and fixes are in CHANGELOG 1.6.2: unresolved `Id.`/`supra` quote sources
+(now completed from the ledger, with stale supras matched by name as `xn`), a segment agent that
+silently skipped ids (now retried), a history pass with no tool cap that ate the budget (now capped
+and run last), Zotero lookup gaps for manuscripts and book chapters, and no last check of
+unverifiable quotes against the texts already on disk (now `scripts/zotero_sweep.py`).

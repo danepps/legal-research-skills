@@ -22,8 +22,9 @@ Usage:
 
 Inputs: the `secondary` array of `citation_ledger.py --compact` ({key, kind, cite}), the `units`
 array of `prepare_support_units.py --compact` ({key, k, src}), or a plain list of
-{key, kind, cite}. Only article/book/other kinds are looked up (statutes and URLs have no Zotero
-record worth matching). Keys are the ledger's source keys, so the workflow joins on them.
+{key, kind, cite}. Every secondary kind is looked up: article/book/other always, others (an
+"internet" manuscript with an SSRN URL) when the cite yields an author and a title. Cases and
+statutes are not. Keys are the ledger's source keys, so the workflow joins on them.
 
 Per source the report gives:
     matched        true when one library item matched with enough confidence
@@ -81,6 +82,9 @@ SIGNAL_RE = re.compile(
 TAG_RE = re.compile(r"<[^>]+>")
 HEREINAFTER_RE = re.compile(r"\s*\[hereinafter[^\]]*\]", re.I)
 PAREN_RE = re.compile(r"\s*\((?![^)]*\b(?:1[6-9]|20)\d{2}\))[^()]*\)")  # parentheticals without a year
+ET_AL_RE = re.compile(r",?\s+et\s+al\.?", re.I)
+# "Author, Chapter Title, in Book Title 575 (eds., 2020)": the chapter is the cited work.
+IN_BOOK_RE = re.compile(r",\s+in\s+(?=[A-Z0-9])")
 YEAR_RE = re.compile(r"\b((?:1[6-9]|20)\d{2})\b")
 ARTICLE_RE = re.compile(
     r"^(?P<authors>.+?),\s+(?P<title>.+?),\s+(?P<vol>\d+)\s+(?P<journal>[A-Z][A-Za-z.&'’\-\s]+?)\s+"
@@ -119,6 +123,7 @@ def clean_cite(cite: str) -> str:
 
 def last_names(authors: str) -> list[str]:
     out = []
+    authors = ET_AL_RE.sub("", authors or "")
     for a in re.split(r"\s*(?:&|\band\b|,)\s*", authors or ""):
         a = re.sub(r"\b(?:jr|sr|ii|iii|iv|ed|eds|trans)\.?$", "", a.strip(), flags=re.I).strip()
         if not a:
@@ -133,7 +138,7 @@ def parse_cite(cite: str, kind: str = "") -> dict:
     """Best-effort fields from a footnote cite. Never raises; missing fields are ''."""
     s = clean_cite(cite)
     years = YEAR_RE.findall(s)
-    f = {"text": s, "authors": "", "title": "", "volume": "", "first": "", "journal": "",
+    f = {"text": s, "authors": "", "title": "", "container": "", "volume": "", "first": "", "journal": "",
          "year": years[-1] if years else "", "lastNames": [], "pattern": ""}
     m = ARTICLE_RE.match(s)
     if m and kind in ("article", "other", ""):
@@ -145,11 +150,18 @@ def parse_cite(cite: str, kind: str = "") -> dict:
         if m:
             f.update(authors=m.group("authors"), title=m.group("title"), year=m.group("year"),
                      first=m.group("page") or "", pattern="book")
+    if f["pattern"] == "book" and IN_BOOK_RE.search(f["title"]):
+        # 2026-11-12: "Author, Chapter Title, in The Oxford Handbook of ..." parsed the
+        # whole tail as the title and matched the Handbook's own record (no PDF) instead of the
+        # chapter's (with one). The chapter title is the title; the book is its container.
+        chapter, container = IN_BOOK_RE.split(f["title"], 1)
+        f.update(title=chapter.strip(), container=container.strip(), pattern="chapter")
     if f["authors"] and len(tokens(f["authors"])) > 12:
         # the first comma was inside the title; treat everything as title text
         f["title"] = f["authors"] + ", " + f["title"]
         f["authors"] = ""
     f["lastNames"] = last_names(f["authors"])
+    f["etAl"] = bool(ET_AL_RE.search(f["authors"]))
     return f
 
 
@@ -161,7 +173,12 @@ def item_year(d: dict) -> str:
 
 def item_creators(d: dict) -> list[str]:
     names = []
-    for c in d.get("creators") or []:
+    creators = d.get("creators") or []
+    # A bookSection lists the volume's editors beside the chapter's author (2026-11-12: one
+    # chapter record carried five volume editors, so the author share fell to 2 of 6 and the record
+    # never matched). When a record has authors, the authors are who the cite names.
+    authors = [c for c in creators if c.get("creatorType", "author") == "author"]
+    for c in authors or creators:
         if c.get("lastName"):
             names.append(c["lastName"])
         elif c.get("name"):
@@ -192,10 +209,12 @@ def score_item(fields: dict, cite_words: set[str], cite_tokens: set[str], d: dic
     creators = [fold(n) for n in item_creators(d)]
     creator_tokens = {tokens(n)[-1] for n in creators if tokens(n)}
     author = (sum(1 for n in creator_tokens if n in cite_tokens) / len(creator_tokens)) if creator_tokens else 0.0
+    if fields.get("etAl") and creators and tokens(creators[0]) and tokens(creators[0])[-1] in cite_tokens:
+        author = max(author, 1.0)  # "Gold et al." names only the first of four authors
     year = bool(fields["year"]) and item_year(d) == fields["year"]
     cite_match = bool(fields["volume"]) and (d.get("volume") or "").strip() == fields["volume"] \
         and bool(fields["first"]) and first_page(d.get("pages") or "") == fields["first"]
-    type_ok = not (fields["pattern"] == "article" and (d.get("itemType") or "") == "book")
+    type_ok = not (fields["pattern"] in ("article", "chapter") and (d.get("itemType") or "") == "book")
     score = 0.45 * title + 0.15 * reverse + 0.25 * author + (0.1 if year else 0.0) + (0.25 if cite_match else 0.0)
     return {"score": round(score, 3), "title": round(title, 2), "reverse": round(reverse, 2), "author": round(author, 2),
             "year": year, "cite": cite_match, "typeOk": type_ok, "titleWords": len(title_words)}
@@ -224,8 +243,21 @@ def accept(sc: dict) -> bool:
     return False
 
 
-def match_source(cite: str, kind: str, items: list[dict]) -> tuple[dict | None, dict | None, list]:
-    """Best item for a cite: (item, score, runners-up). `items` are Zotero item dicts (with data)."""
+def _rank(fields: dict, sc: dict, it: dict, has_pdf) -> tuple:
+    """Order among ACCEPTED candidates (2026-11-12): for a chapter cite, the bookSection record
+    whose title is the chapter's beats the parent book; then a record with a PDF beats one
+    without (two records of one work, one carrying the file); then the score."""
+    d = it.get("data") or {}
+    chapter = fields.get("pattern") == "chapter" and (d.get("itemType") == "bookSection" or (
+        content_words(TAG_RE.sub("", d.get("title") or "")) <= content_words(fields.get("title") or "")
+        and d.get("itemType") != "book"))
+    pdf = bool(has_pdf and has_pdf(d.get("key") or it.get("key")))
+    return (1 if chapter else 0, 1 if pdf else 0, sc["score"])
+
+
+def match_source(cite: str, kind: str, items: list[dict], has_pdf=None) -> tuple[dict | None, dict | None, list]:
+    """Best item for a cite: (item, score, runners-up). `items` are Zotero item dicts (with data).
+    `has_pdf(item_key)` (optional) lets a record with a PDF win a tie between accepted matches."""
     fields = parse_cite(cite, kind)
     cite_words = content_words(fields["text"])
     cite_tokens = set(tokens(fields["text"]))
@@ -238,9 +270,14 @@ def match_source(cite: str, kind: str, items: list[dict]) -> tuple[dict | None, 
         if sc["score"] > 0.2:
             scored.append((sc, it))
     scored.sort(key=lambda x: -x[0]["score"])
-    if scored and accept(scored[0][0]):
-        best_sc, best = scored[0]
-        return best, dict(best_sc, fields=fields), [i for _, i in scored[1:3]]
+    ok = [(sc, it) for sc, it in scored if accept(sc)]
+    if ok:
+        top = ok[0][0]["score"]
+        # only near-equal accepted matches compete on chapter/PDF; a clearly better match stands
+        # (a chapter record always competes: the parent book's score is inflated by its title)
+        pool = [(sc, it) for sc, it in ok if top - sc["score"] <= 0.15 or _rank(fields, sc, it, None)[0]]
+        best_sc, best = max(pool, key=lambda x: _rank(fields, x[0], x[1], has_pdf))
+        return best, dict(best_sc, fields=fields), [i for _, i in scored if i is not best][:2]
     return None, {"fields": fields, "best": scored[0][0] if scored else None}, [i for _, i in scored[:3]]
 
 
@@ -460,8 +497,15 @@ def load_sources(args: dict) -> list[dict]:
     seen, out = set(), []
 
     def add(key, kind, cite):
-        if not key or key in seen or kind not in ("article", "book", "other"):
+        # 2026-11-12: forthcoming articles cited with an SSRN URL are kind "internet"; excluding
+        # that kind skipped three manuscripts whose PDFs sat in the group library. Any secondary
+        # kind is looked up when the cite yields an author and a title (a bare URL does not).
+        if not key or key in seen or kind in ("case", "statute", "id", "supra", "case-short", "text", "internal"):
             return
+        if kind not in ("article", "book", "other"):
+            f = parse_cite(cite or "", kind or "")
+            if not (f["lastNames"] and f["title"]):
+                return
         seen.add(key)
         out.append({"key": key, "kind": kind, "cite": cite})
 
@@ -498,7 +542,8 @@ def run(sources: list[dict], servers: list[dict], cache_dir: str, allow_download
         best = None
         best_unmatched = None
         for s, l in libs:
-            it, sc, runners = match_source(src["cite"], src["kind"], l["items"])
+            it, sc, runners = match_source(src["cite"], src["kind"], l["items"],
+                                           has_pdf=lambda k, l=l: pdf_attachment(l, k) is not None)
             if it:
                 best = (s, l, it, sc)
                 break

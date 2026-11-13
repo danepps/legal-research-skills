@@ -510,13 +510,34 @@ def build_ledger(data):
     }
 
 
+def _supra_by_name(instances, x, keys):
+    """Fallback for a supra whose note number is stale (2026-11-12 run: 43 of 105 supras on the
+    draft pointed two notes low after a renumbering, so an "Author, Short Title, supra note N"
+    never reached the author's full cite and every quote on it lost its Zotero text). Look for
+    the full cite by NAME instead: the earlier substantive instances whose text carries EVERY key
+    the supra names (author surname plus any short-title word). Accepted only when all such
+    instances are one source (one ledger key); two Merrill works with no title word to tell them
+    apart stay unresolved. The status is left as it was, so the stale number is still reported."""
+    if not keys:
+        return None
+    hits = [y for y in instances if y["i"] < x["i"] and not y.get("nested")
+            and y["kind"] not in XREF_KINDS + ("text", "internal")
+            and all(k in _surname(y["text"]) for k in keys)]
+    if not hits or len({y["key"] for y in hits}) != 1:
+        return None
+    return hits[0]["i"]
+
+
 def _resolve_xrefs(instances):
-    def follow(idx, hops=0):
+    # Returns (end index or None, whether the chain went through a by-name supra fallback).
+    def follow(idx, hops=0, via=False):
         x = instances[idx]
         if x["kind"] not in XREF_KINDS or hops > 12:
-            return idx
+            return idx, via
         t = x["xref_target"]
-        return follow(t, hops + 1) if t is not None else None
+        if t is None and x.get("xref_by_name") is not None:
+            t, via = x["xref_by_name"], True
+        return follow(t, hops + 1, via) if t is not None else (None, via)
 
     for x in instances:
         status = None
@@ -550,6 +571,8 @@ def _resolve_xrefs(instances):
             elif cands:
                 pick = cands[0]
             x["xref_target"] = pick["i"] if pick else None
+            if pick is None:
+                x["xref_by_name"] = _supra_by_name(instances, x, keys)
         elif x["kind"] == "case-short":
             m = SHORT_CASE.search(_strip_parens(x["text"]))
             vol, rep = m.group(1), re.sub(r"\s+", "", m.group(2))
@@ -561,12 +584,21 @@ def _resolve_xrefs(instances):
             continue
         x["xref_status"] = status or ("resolved" if x["xref_target"] is not None else "unresolved")
     for x in instances:
-        if x["kind"] in XREF_KINDS and x["xref_target"] is not None:
-            end = follow(x["i"])
-            if end is None:
+        if x["kind"] not in XREF_KINDS:
+            continue
+        if x["xref_target"] is None and x.get("xref_by_name") is None:
+            continue
+        end, via = follow(x["i"])
+        if end is not None and via:
+            # Reached the source only through a stale supra matched by name: the source is
+            # known (the quote and support paths use it), the cross-reference is still broken.
+            x["xref_name_final"] = end
+            if x["xref_status"] == "resolved":
                 x["xref_status"] = "unresolved"
-            else:
-                x["xref_final"] = end
+        elif end is None:
+            x["xref_status"] = "unresolved"
+        else:
+            x["xref_final"] = end
 
 
 # ---- dispositions: reference implementation (mirrored in the workflow) -------
@@ -630,6 +662,9 @@ def assign_dispositions(ledger, case_existence=None, secondary_existence=None,
                 x["reason"] = "resolves to instance %d (n.%d)" % (
                     x.get("xref_final", x["xref_target"]),
                     inst[x.get("xref_final", x["xref_target"])]["note"])
+            if x["disposition"] == "unresolved-xref" and x.get("xref_name_final") is not None:
+                x["reason"] += ("; the source itself was matched by author name to instance %d (n.%d)"
+                                % (x["xref_name_final"], inst[x["xref_name_final"]]["note"]))
             # a quote hanging on an Id./supra still gets its own verdict record
             vs = quote_verdicts.get(x["i"], [])
             if any(v in FINDING_VERDICTS for v in vs):
@@ -689,6 +724,7 @@ def compact(ledger):
     """Small form for Workflow args: one short object per instance."""
     return [{"i": x["i"], "n": x["note"], "k": x["kind"], "c": x["text"],
              "key": x["key"], "case": x["case_cite"], "x": x.get("xref_final"),
+             "xn": x.get("xref_name_final"),
              "xs": x["xref_status"], "q": x["quoted"],
              "s": x.get("signal", ""), "pin": x.get("pincite", ""),
              "par": bool(x.get("parenthetical"))} for x in ledger["instances"]]

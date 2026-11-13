@@ -213,5 +213,32 @@ with tempfile.TemporaryDirectory() as td:
     sup = [p for p in r["prompts"] if p["label"].startswith("support:")][0]
     check(sup["textOnDisk"] == doe_txt, "a record with a subtitle is joined by its main title + author when the keys differ")
 
+    print("2026-11-12 run: segment retry, ledger Id. resolution, history order, Zotero sweep")
+    r = run("segment-missing")
+    check(any(a.startswith("segment:retry-") for a in r["agents"]), "ids missing from the first segment pass are re-asked (%s)" % [a for a in r["agents"] if a.startswith("segment")])
+    check(r["counts"]["quotesNotChecked"] == 0 and r["counts"]["verbatim"] >= 1, "after the retry nothing is left unchecked (%s)" % r["counts"])
+    r = run("segment-id")
+    check(r["verifyKeys"] == ["17 u s 316"], "a bare 'Id. at 436' is resolved from the ledger to McCulloch's ledger key (%s)" % r["verifyKeys"])
+    check(not any(a.startswith("segment:retry-") for a in r["agents"]), "an Id. the ledger resolves is not re-asked")
+    r = run("segment-id-stuck")
+    check(any(a.startswith("segment:retry-") for a in r["agents"]), "an Id. the ledger cannot resolve is re-asked once")
+    check(r["verifyKeys"] == ["unresolved n.5"] and "id" not in r["verifyKeys"], "a still-unresolved Id. is keyed by its footnote, never pooled as 'id' (%s)" % r["verifyKeys"])
+    r = run("baseline")
+    ph = r["phases"]
+    check(ph.index("History") > ph.index("Support") and ph.index("History") > ph.index("Re-verify"), "history runs after support and re-verify (%s)" % ph)
+    hp = [p for p in r["prompts"] if p["label"].startswith("history")]
+    check(hp and all(p["toolCap"] > 0 for p in hp), "history prompt carries a tool cap (%s)" % [p["toolCap"] for p in hp])
+    r = run("sweep", {"zotero": True, "zoteroLookupPath": os.path.join(td, "zl.json"), "zoteroHits": {}})
+    check(any(a.startswith("zotero-sweep") for a in r["agents"]), "unverifiable quotes go to the pre-report Zotero sweep")
+    check(r["counts"]["unverifiable"] == 0 and r["counts"]["verbatim"] >= 1, "a sweep match replaces the unverifiable verdict (%s)" % r["counts"])
+    r = run("sweep")
+    check(not any(a.startswith("zotero-sweep") for a in r["agents"]), "no sweep when no Zotero pre-lookup ran")
+    os.environ["REPORT_PROMPT_OUT"] = os.path.join(td, "report_prompt.txt")
+    r = run("sweep", {"zotero": True, "zoteroLookupPath": os.path.join(td, "zl.json"), "zoteroHits": {}, "costModel": {"sweep": 10**12}})
+    del os.environ["REPORT_PROMPT_OUT"]
+    rp = open(os.path.join(td, "report_prompt.txt"), encoding="utf-8").read()
+    check(any("Zotero sweep skipped" in d for d in r["degradation"]) and r["counts"]["unverifiable"] == 1, "a sweep the budget cannot fit is disclosed")
+    check("[ZOTERO:" in rp.split("=== UNVERIFIABLE (section I) ===")[1].split("===")[0] or "17 U.S." in rp, "unverifiable quotes reach the report (case sources carry no Zotero tag)")
+
 print("\n%s" % ("all tests passed" if not fails else "%d FAILED" % fails))
 sys.exit(1 if fails else 0)
