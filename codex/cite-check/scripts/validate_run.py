@@ -313,6 +313,9 @@ def main() -> int:
         + [str(row.get("text", "")) for row in extraction.get("footnotes", [])]
     )
 
+    if manifest.get("cache_recovery_version") not in (None, 1):
+        errors.append("unsupported cache_recovery_version")
+
     if args.require_ready:
         for issue in extraction.get("blocking_issues", []):
             errors.append(f"extraction is blocked: {issue}")
@@ -851,6 +854,10 @@ def main() -> int:
                 unlock = str(row.get("unlock_path", "")).strip()
                 if unlock and unlock not in limit_section:
                     errors.append(f"report.md Couldn't check section omits unlock_path for: {item_id}")
+
+        if schema_version >= 6 and manifest.get("cache_recovery_version") == 1:
+            from cache_recovery import validate_recovery
+            errors.extend(validate_recovery(args.run_dir, report.read_text(encoding="utf-8") if report.is_file() else ""))
 
         if schema_version >= 6:
             validate_review(args.run_dir, manifest, units, sources, verdicts, corpus,

@@ -4,6 +4,12 @@ Install all six Codex research skills and an optional update setup helper as one
 same maintained skill folders used by the manual installer. It does not install
 the Claude skills or configure external accounts.
 
+Cite-check now reconciles unresolved quotations with cached sources before
+publication, reports the actual library/access state, and protects requested
+verification work from advisory history costs. See the
+[cache-recovery protocol](cite-check/references/cache-recovery.md) for the
+new-run gate and legacy-run compatibility.
+
 ## Install
 
 ### Let Codex do it

@@ -62,6 +62,12 @@ not separately for each worker. A failed bundle receives another attempt only
 for a concrete new route or a correctable execution failure, not a generic
 "try harder" continuation. Record the route and reason before retrying.
 
+Run broad advisory history/treatment only after core verification, requested
+support, cached-quotation recovery and required audits. Follow the pilot-batch
+and tool-call allowances in [case-review.md](case-review.md); use measured local
+usage when available instead of importing another runtime's token constants.
+Currentness evidence necessary for a core finding remains part of the core work.
+
 For an explicit user budget, check remaining resources before each new bundle
 and retain capacity for required audits and the report. Cut additional support
 retrieval before those obligations; disclose the exact unread units. A script

@@ -1,5 +1,17 @@
 # Codex plugin changes
 
+## 1.7.0 — 2026-11-12
+
+- Recover unresolved quotations from reachable cached source texts before reporting
+  access failures. New runs require a current recovery record and explicit review
+  of remaining matches; matching words never clear attribution or pagination.
+- Guard source grouping against unresolved Id./supra pooling, require evidence and
+  disclosure for stale-note recovery, and preserve legacy-run compatibility.
+- Clarify manuscript/chapter/version-aware Zotero matching and distinguish actual
+  cache and library states in reports. Keep explicit skip and library selections.
+- Run advisory history after requested core verification and required audits,
+  using bounded screening, material-hit retrieval and measured pilot batches.
+
 ## 1.6.1 — 2026-11-03
 
 - Strengthen memo counterarguments by identifying the attacked premise, supporting

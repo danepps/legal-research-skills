@@ -11,16 +11,17 @@ import json
 from pathlib import Path
 
 from library_options import validate_library_access
+from source_resolution import resolution_errors
 
 SOURCE_FIELDS = (
     "source_id", "source_type", "canonical_citation", "status", "verification_basis",
     "url", "doi", "zotero_item_key", "source_path", "source_sha256", "retrieval_notes",
     "reason", "unlock_path", "pagination_convention", "first_page", "versions",
-    "identifiers", "retrieval_attempts", "library_id",
+    "identifiers", "retrieval_attempts", "library_id", "library_lookup",
 )
 SIBLING_FIELDS = (
     "unit_id", "source_id", "draft_citation_text", "resolved_source_label", "pincite",
-    "signal", "xref_status", "antecedent_unit_id",
+    "signal", "xref_status", "antecedent_unit_id", "xref_recovery",
 )
 
 
@@ -53,6 +54,13 @@ def build_bundle(run: Path, source_id: str) -> dict:
     run = run.resolve()
     units = rows(run, "citation-units.jsonl")
     sources = rows(run, "source-ledger.jsonl")
+    context = rows(run, "resolution-context.jsonl", True)
+    manifest_path = run / "run-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+    if manifest.get("cache_recovery_version") == 1:
+        problems = resolution_errors(units + context, sources)
+        if problems:
+            raise ValueError("; ".join(problems))
     all_prepared = rows(run, "prepared-units.jsonl", True)
     note_numbers = {}
     for unit in units + all_prepared:
@@ -93,6 +101,7 @@ def build_bundle(run: Path, source_id: str) -> dict:
         "source_record_available": bool(source),
         "path_base": "Resolve relative source paths against run_dir; read only needed excerpts.",
         "citation_units": selected,
+        "resolution_context_path": str(run / "resolution-context.jsonl") if context else None,
         "prepared_quotes": prepared,
         "quote_scope": "Quotes at the same location are context, not inferred attribution. Use explicit links or resolve attribution from the complete footnote.",
         "support_units": [s for s in rows(run, "support-units.jsonl", True) if s.get("unit_id") in ids],

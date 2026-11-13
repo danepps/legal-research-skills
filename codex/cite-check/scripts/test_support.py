@@ -299,6 +299,7 @@ class SupportTests(unittest.TestCase):
                 reviews.append(review)
             write(run/'case-review.jsonl', reviews)
             manifest = json.loads((run/'run-manifest.json').read_text())
+            manifest.pop('cache_recovery_version', None)  # Pre-recovery support fixture.
             manifest.update(status='ready_for_validation',completion_target='complete')
             manifest['counts'].update(quote_checks=1, verified=5, partial=1, mismatch=1, unverified=0, existence_only=3)
             (run/'run-manifest.json').write_text(json.dumps(manifest))
