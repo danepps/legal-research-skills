@@ -1,10 +1,26 @@
 # Subsequent history and treatment advisory
 
-Read this during source verification. Review history for every cited lower-court
+Run the advisory pass after core quotations, requested support and required audits. Currentness evidence needed for a core finding remains part of that core check. Review history for every cited lower-court
 case and treatment for every case, including cases cited only as history or as a
 foil. Deduplicate retrieval by source, but evaluate each citation instance's use.
 If access, scope, or budget prevents a pass, record the skipped cases and reason;
 never let omission imply coverage.
+
+## Bound the advisory pass
+
+Start with a small pilot batch (at most four unique cases) and review actual
+runtime usage before allocating the rest. Set an explicit tool-call allowance
+per batch (default 12 screening calls and up to 8 material-hit retrieval calls);
+record routes and unfinished cases when exhausted. Reuse cached identities and
+source text, share retry limits across workers, and avoid retrying rate limits
+in multiple workers. These are workflow bounds, not a hard financial cap.
+
+For metadata screening with Midpage when available, use `getCaseDocument` with
+`includeText:false`. Request full text only for a concrete material hit or a
+needed verification passage; cache it and read targeted excerpts. Do not trade
+requested support or required adverse audits for broad advisory screening.
+No available tool or an exhausted allowance means partial/skipped coverage,
+never a clean treatment result. Keep the existing route requirements below.
 
 ## Existence before history
 

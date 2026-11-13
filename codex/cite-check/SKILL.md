@@ -103,7 +103,7 @@ For each unit:
 - attach each quotation or proposition to the citation that the footnote's syntax and placement make responsible for it, and preserve its `prepared_unit_id`;
 - assign a stable `source_id` and collapse repeated authorities only after resolution.
 
-If resolution remains uncertain, preserve the uncertainty. Do not use placeholders or best-guess captions.
+Read [references/cache-recovery.md](references/cache-recovery.md) for source grouping, stale-reference recovery, and accurate library matching. If resolution remains uncertain, preserve the uncertainty with a separate unresolved source ID per citation unit. Do not use best-guess captions. Reconcile assigned and returned worker IDs; retry missing results once in a smaller assignment, then record anything still unchecked.
 
 Use the exact keys in the protocol's [ledger field reference](references/ledger-fields.md). Body-only citations use `location: body`, `paragraph_number`, and the complete extracted paragraph as `body_context`, with no footnote identity. Keep every cited pincite in `pincite`; unavailable pagination requires a partial verdict, not omission of the pin. Reporter extraction and leading-Id flags are screening aids, not an exhaustive citation inventory or an automatic resolver.
 
@@ -143,11 +143,7 @@ Keep exactly one final verdict per citation unit. A quote found only in a siblin
 
 For pincites, identify the pagination convention before proposing a correction: printed page, star/header marker preceding text, or footer marker following text. Record `page_delta` as an integer when proposing a page correction. Treat an exact-one-page difference as presumptively ambiguous until independently checked against the visual page; page corrections with no recoverable delta also require an audit.
 
-### 4a. Check subsequent history and treatment
-
-Read [references/case-review.md](references/case-review.md). Check every lower-court case for subsequent history and every case for treatment by both citation graph and caption-phrase routes. Use the history helper and the available companion treatment helper, or record equivalent direct searches. Read material hits and evaluate the draft's actual use. Reconcile one `case-review.jsonl` row per case source, including partial, skipped and unavailable passes. A skipped pass requires `complete_with_limits` and explicit disclosure; the advisory section separates required-history omissions, contradicted history, treatment flags and unchecked cases.
-
-### 4b. Read unquoted proposition support (only when enabled)
+### 4a. Read unquoted proposition support (only when enabled)
 
 Confirm the screening fields in `citation-screening.jsonl` on citation units,
 including signal, pin, proposition parenthetical and disclosed opinion posture.
@@ -181,6 +177,12 @@ and explain all six named artifact classes in audit evidence. Record the initial
 support verdict and retain retracted/revised audit rows after replacing the final
 verdict. Follow the exact protocol dispositions.
 
+### 5a. Recover cached quotations and perform advisory case review
+
+Run `scripts/cache_recovery.py RUN_DIR` under the [cache recovery protocol](references/cache-recovery.md). Inspect hits, reconcile the ordinary quotation/verdict/audit records, and regenerate the recovery artifacts after changes. Matching text alone does not verify identity, attribution, alterations, or pincites.
+
+After core quotation verification, requested support and required audits, read [references/case-review.md](references/case-review.md) and perform the advisory history/treatment pass within the remaining budget. Preserve any currentness check needed to substantiate a core finding; do not defer that necessary evidence. Review every lower-court case's history and every case's treatment using the required routes, or record the exact skipped/partial cases, reasons and unlock paths. Reserve capacity for material-hit review, adverse-finding audits and reporting. A skipped pass requires `complete_with_limits`. Regenerate recovery artifacts if case review changes the ledgers.
+
 ### 6. Write and publish the report
 
 Write the canonical report to `<run-dir>/report.md`. Put genuine findings first; do not put cleared suspicions, near-findings, or internal deliberation in “Needs your attention.” Then include the history/treatment advisory, complete footnote ledger and limitations. State the existence-only share of citation instances using the exact summary sentence in the ledger reference; count instances, not unique sources.
@@ -205,6 +207,8 @@ python3 <skill-dir>/scripts/findings_diff.py RUN_DIR/previous-findings.json RUN_
 ```
 
 Insert that exact block. Keys use source/content/verdict, never footnote numbers or run IDs. An absent finding in an incomplete or focused re-run is **not rechecked**, not automatically resolved. Keep duplicate occurrence locations. If no previous structured file is available, disclose that no reliable automated comparison was possible. The structured files remain hidden under the publication policy; publish only the report unless the user explicitly requests the JSON sidecar, and retain the hidden file for the next run.
+
+Include the current `cache-recovery.md` coverage lines in the report, and explain remaining cached matches and stale cross-references. Never recommend obtaining a source without reconciling the cache and library records. New runs require the recovery artifact at readiness; legacy runs retain their previous contract.
 
 Every adverse item must contain the footnote number, verbatim draft find string, draft and source text where applicable, category, severity, verification basis, evidence location, suggested action, and required audit result.
 

@@ -25,6 +25,8 @@ Use the official code, legislature, agency, rule publisher, or court. Verify sec
 
 Search the library selected in the run manifest before the web, including group libraries when selected. Honor an explicit decision to skip Zotero. Distinguish no connected library, access not assessed, and a configured but inaccessible library; disclose the actual state and any access remedy. Record the library type/ID alongside each Zotero item key. Verify that an attached file actually matches its metadata. Then use journal, repository, SSRN, author, institutional, publisher, Google Books, or Internet Archive copies. Compare the cited and current versions of manuscripts. Metadata-only or snippet-only access cannot verify a quotation or pincite.
 
+Use [cache-recovery.md](cache-recovery.md) for URL-bearing manuscripts, chapter/author matching, attachment/version selection and recorded library states.
+
 ### Internet sources
 
 Confirm the URL resolves and the page supports the proposition. Record access date. For dead or changed pages, inspect an archived copy and suggest the stable archived URL.
@@ -38,7 +40,7 @@ Keep four layers distinct:
 3. `source_evidence`: what the retrieved source actually says;
 4. `verdict`: the comparison and recommended action.
 
-Walk `Id.`/`ibid.` backward through `supra` redirects until reaching a full source. For `supra note N`, inspect note N and confirm it contains the claimed source. Do not assume the nearest full citation is the antecedent. Preserve uncertainty.
+Follow the source-grouping and stale-reference safeguards in [cache-recovery.md](cache-recovery.md); the bundle helper rejects unresolved shared identities. Walk `Id.`/`ibid.` backward through `supra` redirects until reaching a full source. For `supra note N`, inspect note N and confirm it contains the claimed source. Do not assume the nearest full citation is the antecedent. Preserve uncertainty.
 
 Attach each quotation or proposition to the citation that the footnote's syntax and placement make responsible for it. Preserve the full body sentence, full footnote, marked quote, resolved pin, and nearby framing verb. Before concluding that a quote is absent, search every source named in the same footnote. If the quote appears in a sibling source, classify `misattributed` and recommend moving the parenthetical or citation.
 

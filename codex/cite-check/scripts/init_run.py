@@ -106,6 +106,7 @@ def main() -> int:
     )
     manifest = {
         "schema_version": 7 if args.support else 6,
+        "cache_recovery_version": 1,
         "support_pass": {"enabled": True, "scope": args.support_scope} if args.support else {"enabled": False},
         "draft_path": str(snapshot.resolve()),
         "original_draft_path": str(args.draft.resolve()),

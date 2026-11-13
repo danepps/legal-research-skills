@@ -1,6 +1,6 @@
 {
   "name": "legal-research",
-  "version": "1.6.1",
+  "version": "1.7.0",
   "description": "Verified legal research, citation checking, proofreading, and Zotero library workflows for Codex.",
   "author": {
     "name": "Daniel Epps"
@@ -8,7 +8,13 @@
   "homepage": "https://danepps.github.io/legal-research-skills/",
   "repository": "https://github.com/danepps/legal-research-skills",
   "license": "MIT",
-  "keywords": ["legal-research", "scholarship", "citations", "proofreading", "zotero"],
+  "keywords": [
+    "legal-research",
+    "scholarship",
+    "citations",
+    "proofreading",
+    "zotero"
+  ],
   "skills": [
     "./build-zotero-library",
     "./cite-check",
@@ -32,4 +38,3 @@
     ]
   }
 }
-

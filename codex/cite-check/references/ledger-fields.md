@@ -314,3 +314,14 @@ resolve an absent finding only when its source/claim was read in all matching
 occurrences; unrelated whole-work exclusions do not block that. Disabled, focused
 or limited reruns, missing coverage records, and unread duplicates retain absent
 findings as not rechecked.
+
+## Cached-source recovery extension
+
+New schema-v6/v7 runs additionally set `cache_recovery_version: 1`. Their gate
+requires a current `cache-recovery.json`, reviewed unresolved match candidates,
+and report coverage lines. Older manifests without this field remain readable.
+See [cache-recovery.md](cache-recovery.md) for `library_lookup`, `xref_status`,
+`xref_recovery`, out-of-scope `resolution-context.jsonl`, the optional
+`cache-recovery-reviews.jsonl`, and the exact command and dispositions. All
+artifacts remain in the hidden run directory. They supplement ordinary source,
+quotation, verdict and audit ledgers; they never replace their verification gates.
