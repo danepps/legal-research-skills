@@ -57,6 +57,7 @@ ELLIPSIS = re.compile(r"\.[ ]?\.[ ]?\.(?:[ ]?\.)?")
 BRACKET = re.compile(r"\[([^\][]{0,80})\]")
 PUNCTUATION = re.compile(r"[^0-9A-Za-z]+")
 MAX_CHAIN_RESTARTS = 50
+BRACKET_SLACK = 20  # a bracket may stand for up to len(inner) + this many source characters
 MAX_ELLIPSIS_GAP = 600
 
 
@@ -80,7 +81,12 @@ EdgeCheck = Any
 
 
 def character_class(character: str) -> str:
-    """Return L for a letter or combining mark, D for a digit, otherwise empty."""
+    """Return L for a letter or combining mark, D for a digit, otherwise empty.
+
+    The empty string that character_at returns beyond either end of the text
+    is not a token character."""
+    if not character:
+        return ""
     category = unicodedata.category(character)[0]
     if category in "LM":
         return "L"
@@ -162,8 +168,52 @@ def span_jumps(
     return ({end: start for start, end, _ in spans}, {start: end for start, end, _ in spans})
 
 
-def hyphen_joins_before(raw: str, index: int, backward: dict[int, int]) -> bool:
-    """Report whether raw[index] begins the second half of a hyphenated word."""
+def letter_precedes(raw: str, index: int) -> bool:
+    """Report whether the printed character before raw[index] is a letter."""
+    while index > 0 and is_format_character(raw[index - 1]):
+        index -= 1
+    return character_class(character_at(raw, index - 1)) == "L"
+
+
+def gap_after(raw: str, cursor: int, forward: dict[int, int]) -> tuple[int, bool, bool]:
+    """Skip whitespace, page markers and format characters from raw[cursor].
+
+    Return the next printed character's index, whether whitespace was seen,
+    and whether a line or page break was seen."""
+    whitespace = line_break = False
+    while cursor < len(raw):
+        character = raw[cursor]
+        if cursor in forward:
+            cursor = forward[cursor]
+            whitespace = line_break = True
+        elif character.isspace():
+            whitespace = True
+            line_break = line_break or character not in " \t\u00a0"
+            cursor += 1
+        elif is_format_character(character):
+            cursor += 1
+        else:
+            break
+    return cursor, whitespace, line_break
+
+
+def is_joining_hyphen(raw: str, index: int, forward: dict[int, int]) -> bool:
+    """Report whether raw[index] is one hyphen joining two word halves: a
+    letter directly before it, and a letter directly after it or after a line
+    or page break."""
+    if character_at(raw, index) not in JOINING_HYPHENS or not letter_precedes(raw, index):
+        return False
+    cursor, whitespace, line_break = gap_after(raw, index + 1, forward)
+    return character_class(character_at(raw, cursor)) == "L" and (not whitespace or line_break)
+
+
+def hyphen_joins_before(
+    raw: str, index: int, backward: dict[int, int], forward: dict[int, int] | None = None
+) -> bool:
+    """Report whether raw[index] begins the second half of a hyphenated word,
+    or is the joining hyphen itself (a quotation that starts "-binding")."""
+    if forward is not None and is_joining_hyphen(raw, index, forward):
+        return True
     if character_class(character_at(raw, index)) != "L":
         return False
     cursor = index
@@ -195,7 +245,10 @@ def hyphen_joins_before(raw: str, index: int, backward: dict[int, int]) -> bool:
 
 
 def hyphen_joins_after(raw: str, index: int, forward: dict[int, int]) -> bool:
-    """Report whether raw[index - 1] ends the first half of a hyphenated word."""
+    """Report whether raw[index - 1] ends the first half of a hyphenated word,
+    or is the joining hyphen itself (a quotation that ends "non-")."""
+    if is_joining_hyphen(raw, index - 1, forward):
+        return True
     if character_class(character_at(raw, index - 1)) != "L":
         return False
     cursor = index
@@ -245,7 +298,7 @@ def match_edges(
     verdict = None
     if check_start and (
         classify_cut(text, start, at_end=False) == "inside"
-        or hyphen_joins_before(raw, offsets[start], jumps[0])
+        or hyphen_joins_before(raw, offsets[start], jumps[0], jumps[1])
     ):
         return "inside"
     if check_end:
@@ -469,20 +522,27 @@ def segment_pattern(segment: str) -> re.Pattern[str]:
         elif len(inner) <= 2:
             wildcard = r".{0,4}"
         else:
-            wildcard = r".{0,%d}?" % (len(inner) + 20)
+            wildcard = r".{0,%d}?" % (len(inner) + BRACKET_SLACK)
         pieces.append(f"(?P<b{number}>{wildcard})")
         cursor = match.end()
     pieces.append(re.escape(segment[cursor:]))
     return re.compile("".join(pieces))
 
 
-def bracket_edges(segment: str) -> tuple[bool, bool]:
-    """Report which segment edges a bracketed alteration occupies. A bracket
-    replaces source text of unknown length, so that edge has no boundary test."""
+def bracket_edges(segment: str) -> tuple[bool, bool, int | None]:
+    """Report which segment edges a bracketed alteration occupies, and the
+    longest source text the segment's pattern can match.
+
+    A bracket replaces source text of unknown length, so that edge has no
+    boundary test. The length is None for a segment without a bracket, which
+    can match in only one way from a given start."""
     brackets = list(BRACKET.finditer(segment))
+    if not brackets:
+        return (False, False, None)
     return (
-        bool(brackets) and brackets[0].start() == 0,
-        bool(brackets) and brackets[-1].end() == len(segment),
+        brackets[0].start() == 0,
+        brackets[-1].end() == len(segment),
+        len(segment) + BRACKET_SLACK * len(brackets),
     )
 
 
@@ -491,15 +551,30 @@ def search_segment(
     source: str,
     position: int,
     edge: EdgeCheck = None,
-    free: tuple[bool, bool] = (False, False),
+    free: tuple[bool, bool, int | None] = (False, False, None),
 ) -> re.Match[str] | None:
-    """Find the first match whose unbracketed edges are source-token boundaries."""
+    """Find the first match whose unbracketed edges are source-token boundaries.
+
+    A bracket wildcard can match more than one stretch of source from the same
+    start. For "The [official] may" against "The old mayor may issue", the lazy
+    wildcard first takes "old" and the segment ends inside "mayor"; taking
+    "old mayor" ends it on the word "may". When a match ends inside a token,
+    every other ending from that start is therefore tried before moving on."""
     while True:
         found = pattern.search(source, position)
         if found is None or edge is None or found.end() == found.start():
             return found
-        if edge(found.start(), found.end(), not free[0], not free[1]) != "inside":
+        check_start, check_end = not free[0], not free[1]
+        if edge(found.start(), found.end(), check_start, check_end) != "inside":
             return found
+        longest = free[2]
+        if longest and edge(found.start(), found.end(), check_start, False) != "inside":
+            for end in range(found.start() + 1, min(len(source), found.start() + longest) + 1):
+                if end == found.end():
+                    continue
+                alternative = pattern.fullmatch(source, found.start(), end)
+                if alternative and edge(alternative.start(), alternative.end(), check_start, check_end) != "inside":
+                    return alternative
         position = found.start() + 1
 
 
@@ -507,9 +582,9 @@ def match_marked(
     source: str,
     patterns: list[re.Pattern[str]],
     edge: EdgeCheck = None,
-    free: list[tuple[bool, bool]] | None = None,
+    free: list[tuple[bool, bool, int | None]] | None = None,
 ) -> tuple[int, int, list[int], list[re.Match[str]]] | None:
-    free = free or [(False, False)] * len(patterns)
+    free = free or [(False, False, None)] * len(patterns)
     anchor = 0
     for _ in range(MAX_CHAIN_RESTARTS):
         first = search_segment(patterns[0], source, anchor, edge, free[0])
@@ -735,7 +810,8 @@ def check_quote(
                 edges_in(True),
                 [bracket_edges(segment) for segment in segments],
             )
-            if marked_match:
+            # An empty match (a bare "[T]" against an empty file) locates nothing.
+            if marked_match and marked_match[1] > marked_match[0]:
                 start, end, gaps, matched_segments = marked_match
                 status = "altered"
                 selected_view = True

@@ -248,6 +248,43 @@ def main() -> int:
     )
     assert result["status"] == "not_found"
 
+    # Review of 2026-11-14: source edges, bracket endings, a quoted hyphen.
+    for source, quote in (
+        ("The rule applies under section 1983.", "The rule applies under section 1983"),
+        ("It called this 'reasonable'", "reasonable"),
+        ("These are the plaintiffs'", "These are the plaintiffs"),
+        ("eligible for protection, it said.", "eligible for protection"),
+        ("'eligible for protection', it said.", "eligible for protection"),
+        ("The rule applies under section 1983", "The rule applies under section 1983"),
+        ("the pre- and post-trial motions", "the pre-"),
+    ):
+        result = status_of(source, quote)
+        assert result["status"] == "verbatim" and not result["warnings"], (source, quote, result)
+    for source, quote in (
+        ("The work is non-binding precedent.", "The work is non-"),
+        ("The work is in-\neligible for protection.", "The work is in-"),
+        ("The work is non-binding precedent.", "-binding precedent"),
+    ):
+        result = status_of(source, quote)
+        assert result["status"] == "not_found", (source, quote, result)
+        assert "partial_token_match" in result["warnings"], (source, quote, result)
+    # A bracket's longer expansion is tried when the shorter one ends inside a word.
+    result = status_of("The old mayor may issue an order.", "The [official] may")
+    assert result["status"] == "altered", result
+    assert result["match_excerpt"] == "The old mayor may", result
+    assert result["bracket_map"] == [{"draft": "[official]", "source_normalized": "old mayor"}], result
+    assert result["alteration_reviewed"] is False
+    result = status_of("The old mayor issued an order.", "The [official] may")
+    assert result["status"] == "not_found", result
+    result = status_of(
+        "The old mayor may issue an order, and the old mayor may not.",
+        "The [official] may . . . the [official] may not",
+    )
+    assert result["status"] == "altered", result
+
+    # A bracket-only quotation against an empty file used to raise IndexError.
+    assert status_of("\f ", "[T]")["status"] == "not_found"
+
     # Flattened footnote calls are accepted, flagged for a reader.
     for source, quote in (
         ("The work receives copyright protection12 under the statute.", "receives copyright protection"),

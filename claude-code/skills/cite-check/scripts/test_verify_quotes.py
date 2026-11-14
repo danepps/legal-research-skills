@@ -383,6 +383,40 @@ check("a bracket does not excuse the segment's other edge",
               "the agency [is] reasonable in its view")["status"] == "not_found"
       and r["status"] in ("altered", "not_found"))
 
+print("token boundaries: review of 2026-11-14 (source edges, bracket endings, a quoted hyphen)")
+for label, source, quote in (
+    ("quote ends before the source's final period", "The rule applies under section 1983.",
+     "The rule applies under section 1983"),
+    ("quote ends before the source's final quote mark", "It called this 'reasonable'", "reasonable"),
+    ("quote ends before a final apostrophe", "These are the plaintiffs'", "These are the plaintiffs"),
+    ("quote starts at the source's first character", "eligible for protection, it said.",
+     "eligible for protection"),
+    ("quote starts after the source's first character", "'eligible for protection', it said.",
+     "eligible for protection"),
+    ("quote is the whole source", "The rule applies under section 1983", "The rule applies under section 1983"),
+    ("quote ends with a suspended hyphen", "the pre- and post-trial motions", "the pre-"),
+):
+    r = _status(source, quote)
+    check("%s -> verbatim, no crash" % label, r["status"] == "verbatim" and not r["warnings"])
+for label, source, quote in (
+    ("quote ends with the hyphen of a compound", "The work is non-binding precedent.", "The work is non-"),
+    ("quote ends with a hyphen at a line end", "The work is in-\neligible for protection.", "The work is in-"),
+    ("quote starts with the hyphen of a compound", "The work is non-binding precedent.", "-binding precedent"),
+):
+    r = _status(source, quote)
+    check("%s -> not_found" % label, r["status"] == "not_found" and r.get("partial_token_match"))
+r = _status("The old mayor may issue an order.", "The [official] may")
+check("a bracket's longer expansion is tried when the shorter one ends inside a word",
+      r["status"] == "altered" and r["match_excerpt"] == "The old mayor may")
+r = _status("The old mayor issued an order.", "The [official] may")
+check("with no whole-word ending the bracketed quote is still not_found", r["status"] == "not_found")
+r = _status("The old mayor may issue an order, and the old mayor may not.",
+            "The [official] may . . . the [official] may not")
+check("the same holds for a later ellipsis segment", r["status"] == "altered")
+
+r = _status("\f ", "[T]")
+check("a bracket-only quote against an empty source is not_found, not a crash", r["status"] == "not_found")
+
 r = _status("The work receives copyright protection12 under the statute.", "receives copyright protection")
 check("a flattened footnote call after a word matches, with a warning",
       r["status"] == "verbatim" and any(w.startswith("match_abuts_digits") for w in r["warnings"]))

@@ -90,6 +90,7 @@ STAR_MARKER_RE = re.compile(r"\*(\d{1,4})")
 ELLIPSIS_RE = re.compile(r"\.[ ]?\.[ ]?\.(?:[ ]?\.)?")
 BRACKET_RE = re.compile(r"\[([^\][]{0,80})\]")
 
+BRACKET_SLACK = 30     # a bracket may stand for up to len(inner) + this many source chars
 SHORT_SEGMENT = 10     # DingDuff rule: segments around an ellipsis >= ~10 chars
 MAX_GAP_WARN = 600     # normalized chars between ellipsis segments before warning
 CHAIN_RESTARTS = 50    # attempts to re-anchor segment 1 before giving up
@@ -120,7 +121,10 @@ _SENTENCE_OPENERS = frozenset("'\"\u2018\u201c([")
 
 
 def _cls(c):
-    """'L' for a letter or combining mark, 'D' for a digit, '' otherwise."""
+    """'L' for a letter or combining mark, 'D' for a digit, '' otherwise —
+    including for the empty string _at() returns past either end of the text."""
+    if not c:
+        return ""
     k = unicodedata.category(c)[0]
     return "L" if k in "LM" else "D" if k == "N" else ""
 
@@ -180,8 +184,46 @@ def span_jumps(page_spans):
     return ({e: s for s, e, _ in page_spans}, {s: e for s, e, _ in page_spans})
 
 
-def _hyphen_before(raw, a, back):
-    """Is raw[a] the first letter of the SECOND half of a hyphenated word?"""
+def _gap_after(raw, j, fwd):
+    """Skip whitespace, page markers and format characters from raw[j] on.
+    Returns (index of the next printed character, saw whitespace, saw a line
+    or page break)."""
+    ws = brk = False
+    n = len(raw)
+    while j < n:
+        ch = raw[j]
+        if j in fwd:                        # a page marker sits in the gap
+            j, ws, brk = fwd[j], True, True
+        elif ch.isspace():
+            ws, brk, j = True, brk or ch not in " \t\u00a0", j + 1
+        elif _is_cf(ch):
+            j += 1
+        else:
+            break
+    return j, ws, brk
+
+
+def _letter_before(raw, j):
+    """Is the printed character before raw[j] a letter?"""
+    while j > 0 and _is_cf(raw[j - 1]):
+        j -= 1
+    return _cls(_at(raw, j - 1)) == "L"
+
+
+def _hyphen_joins_at(raw, k, fwd):
+    """Is raw[k] ONE hyphen joining two word halves: a letter right before it,
+    and a letter right after it or after a line or page break?"""
+    if _at(raw, k) not in JOIN_DASHES or not _letter_before(raw, k):
+        return False
+    j, ws, brk = _gap_after(raw, k + 1, fwd)
+    return _cls(_at(raw, j)) == "L" and (not ws or brk)
+
+
+def _hyphen_before(raw, a, back, fwd=None):
+    """Is raw[a] the first letter of the SECOND half of a hyphenated word, or
+    the joining hyphen itself (a quote that starts "-binding")?"""
+    if fwd is not None and _hyphen_joins_at(raw, a, fwd):
+        return True
     if _cls(_at(raw, a)) != "L":
         return False
     j, ws, brk = a, False, False
@@ -209,7 +251,10 @@ def _hyphen_before(raw, a, back):
 
 
 def _hyphen_after(raw, b, fwd):
-    """Is raw[b-1] the last letter of the FIRST half of a hyphenated word?"""
+    """Is raw[b-1] the last letter of the FIRST half of a hyphenated word, or
+    the joining hyphen itself (a quote that ends "non-")?"""
+    if _hyphen_joins_at(raw, b - 1, fwd):
+        return True
     if _cls(_at(raw, b - 1)) != "L":
         return False
     j, n = b, len(raw)
@@ -246,7 +291,7 @@ def match_edges(norm, omap, raw, s, e, jumps=({}, {}), check_start=True, check_e
         return None
     verdict = None
     if check_start:
-        if _cut(norm, s, False) == "inside" or _hyphen_before(raw, omap[s], jumps[0]):
+        if _cut(norm, s, False) == "inside" or _hyphen_before(raw, omap[s], jumps[0], jumps[1]):
             return "inside"
     if check_end:
         verdict = _cut(norm, e, True)
@@ -462,28 +507,48 @@ def segment_regex(seg):
         elif len(inner) <= 2:
             parts.append(r".{0,4}")         # "[T]he", "[a]" — tiny substitution
         else:
-            parts.append(r".{0,%d}?" % (len(inner) + 30))
+            parts.append(r".{0,%d}?" % (len(inner) + BRACKET_SLACK))
         last = m.end()
     parts.append(re.escape(seg[last:]))
     return re.compile("".join(parts))
 
 
 def segment_free_edges(seg):
-    """(start, end): edges of a segment that a [bracketed] alteration occupies.
-    The bracket stands for source text of unknown length ("[T]he" for "the"),
-    so no token boundary can be required of that edge."""
+    """(start, end, max_len) for a segment. start/end: edges that a
+    [bracketed] alteration occupies. The bracket stands for source text of
+    unknown length ("[T]he" for "the"), so no token boundary can be required
+    of that edge. max_len: the longest source text the segment's regex can
+    match, or None when it has no bracket and so only one way to match."""
     ms = list(BRACKET_RE.finditer(seg))
-    return (bool(ms) and ms[0].start() == 0, bool(ms) and ms[-1].end() == len(seg))
+    if not ms:
+        return (False, False, None)
+    return (ms[0].start() == 0, ms[-1].end() == len(seg),
+            len(seg) + BRACKET_SLACK * len(ms))
 
 
-def search_segment(sre, src_norm, pos, edge=None, free=(False, False)):
-    """First match at or after pos whose edges sit on source-token boundaries."""
+def search_segment(sre, src_norm, pos, edge=None, free=(False, False, None)):
+    """First match at or after pos whose edges sit on source-token boundaries.
+
+    A bracket wildcard can match more than one stretch of source from the same
+    start. In "The [official] may" against "The old mayor may issue", the lazy
+    wildcard first takes "old" and the segment ends inside "mayor"; taking
+    "old mayor" ends it on the word "may". So when a match ends inside a token,
+    every other ending from that start is tried before moving on."""
     while True:
         m = sre.search(src_norm, pos)
         if not m or edge is None or m.end() == m.start():
             return m
-        if edge(m.start(), m.end(), not free[0], not free[1]) != "inside":
+        cs, ce = not free[0], not free[1]
+        if edge(m.start(), m.end(), cs, ce) != "inside":
             return m
+        max_len = free[2] if len(free) > 2 else None
+        if max_len and edge(m.start(), m.end(), cs, False) != "inside":
+            for end in range(m.start() + 1, min(len(src_norm), m.start() + max_len) + 1):
+                if end == m.end():
+                    continue
+                alt = sre.fullmatch(src_norm, m.start(), end)
+                if alt and edge(alt.start(), alt.end(), cs, ce) != "inside":
+                    return alt
         pos = m.start() + 1
 
 
@@ -492,7 +557,7 @@ def chain_match(src_norm, seg_res, edge=None, free=None):
     gaps) of the first consistent chain, or None. `edge(s, e, check_start,
     check_end)` rejects a segment that starts or ends inside a source token;
     `free[i]` names the edges of segment i that a bracket leaves unchecked."""
-    free = free or [(False, False)] * len(seg_res)
+    free = free or [(False, False, None)] * len(seg_res)
     anchor_from = 0
     for _ in range(CHAIN_RESTARTS):
         m0 = search_segment(seg_res[0], src_norm, anchor_from, edge, free[0])
@@ -697,7 +762,7 @@ def check_quote(raw, views, first_page, quote, pincite, fold_view=None):
         if segs and marked:
             res = chain_match(fsrc_norm, [segment_regex(s) for s in segs],
                               edge=edges_in(fview), free=[segment_free_edges(s) for s in segs])
-            if res:
+            if res and res[1] > res[0]:   # an empty match (a bare "[T]") locates nothing
                 s, e, gaps = res
                 status, span, mv = "altered", (s, e), (fsrc_norm, fomap, fbounds)
                 out["note"] = ("matches with the draft's marked alterations honored "
