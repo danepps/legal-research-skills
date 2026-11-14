@@ -414,6 +414,60 @@ r = _status("The old mayor may issue an order, and the old mayor may not.",
             "The [official] may . . . the [official] may not")
 check("the same holds for a later ellipsis segment", r["status"] == "altered")
 
+print("soft hyphens at a line end and bracketed page markers (issue #2, 2026-11-14)")
+SOFT = "The rule is un\u00ad\nnecessary because the amendment already covers it."
+r = _status(SOFT, "is unnecessary because the amendment already covers it")
+check("a word split by a soft hyphen at a line end matches when quoted whole",
+      r["status"] == "verbatim" and not r["warnings"])
+check("...and its split form is not the source's text",
+      _status(SOFT, "is un necessary because the amendment")["status"] == "not_found")
+check("...nor is the word without its prefix",
+      _status(SOFT, "necessary because the amendment")["status"] == "not_found")
+r = _status("One page here. The rule is un\u00ad\n\fnecessary because it is covered. More text.",
+            "is unnecessary because it is covered", ["--first-page", "10"])
+check("a soft-hyphen break across a page joins too, and spans both pages",
+      r["status"] == "verbatim" and r.get("page") == 10 and r.get("page_end") == 11)
+check("re-flowed text (soft hyphen, then a space) joins the same way",
+      _status("The rule is un\u00ad necessary because it is covered.",
+              "is unnecessary because it is covered")["status"] == "verbatim"
+      and _status("The rule is unnecessary because it is covered.",
+                  "is un\u00ad necessary because it is covered")["status"] == "verbatim")
+check("a soft hyphen in the middle of a line is still just dropped",
+      _status("The de\u00adfendant bears the burden.", "The defendant bears the burden")["status"] == "verbatim")
+
+MARK = "the court held that the [*516] statute applies here."
+r = _status(MARK, "the court held that the statute applies here.")
+check("a quote crossing a bracketed star-page marker matches", r["status"] == "verbatim" and not r["warnings"])
+check("a parallel-reporter marker [**12] is a marker too",
+      _status("the court held that the [**12] statute applies here.",
+              "the court held that the statute applies here")["status"] == "verbatim")
+check("a lone bare *516 is still text (it may be a footnote asterisk)",
+      _status("the court held that the *516 statute applies here.",
+              "the court held that the statute applies here")["status"] == "not_found")
+check("other bracketed text is not a marker",
+      _status("the court [sic] held that the statute applies here.",
+              "the court held that the statute applies here")["status"] == "not_found")
+PAGED = ("Syllabus text. [*515] The court first held one thing. It then held that the [*516] "
+         "statute applies here. [*517] Finally it remanded the case.")
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as jf:
+    json.dump([{"id": "a", "quote": "It then held that the statute applies here", "pincite": "515-16"},
+               {"id": "b", "quote": "Finally it remanded the case", "pincite": "516"}], jf)
+try:
+    rc, rep = run(PAGED, ["--json", jf.name])
+finally:
+    os.unlink(jf.name)
+a, b = rep["results"]
+check("bracketed markers paginate like bare ones",
+      rep["page_boundaries"]["marker"] == "star" and rep["page_boundaries"]["count"] == 3
+      and a["status"] == "verbatim" and a.get("page") == 515 and a.get("page_end") == 516
+      and a.get("pincite_ok") is True
+      and b["status"] == "verbatim" and b.get("page") == 517 and b.get("pincite_ok") is False)
+GAP = "the statute is in-\n[*516]\neligible for protection here."
+check("a word hyphenated across a bracketed marker matches when quoted whole",
+      _status(GAP, "the statute is ineligible for protection here")["status"] == "normalized")
+check("...and not without its prefix",
+      _status(GAP, "eligible for protection here")["status"] == "not_found")
+
 r = _status("\f ", "[T]")
 check("a bracket-only quote against an empty source is not_found, not a crash", r["status"] == "not_found")
 

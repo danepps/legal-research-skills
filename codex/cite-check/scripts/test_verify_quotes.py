@@ -282,6 +282,68 @@ def main() -> int:
     )
     assert result["status"] == "altered", result
 
+    # Issue #2: soft hyphens at a line end and bracketed star-page markers.
+    soft = "The rule is un\u00ad\nnecessary because the amendment already covers it."
+    result = status_of(soft, "is unnecessary because the amendment already covers it")
+    assert result["status"] == "normalized" and not result["warnings"], result
+    assert status_of(soft, "is un necessary because the amendment")["status"] == "not_found"
+    assert status_of(soft, "necessary because the amendment")["status"] == "not_found"
+    # Re-flowed text turns the line break after a soft hyphen into a space.
+    result = status_of(
+        "The rule is un\u00ad necessary because it is covered.", "is unnecessary because it is covered"
+    )
+    assert result["status"] == "normalized", result
+    result = status_of(
+        "The rule is unnecessary because it is covered.", "is un\u00ad necessary because it is covered"
+    )
+    assert result["status"] == "normalized", result
+    marked_source = "the court held that the [*516] statute applies here."
+    result = status_of(marked_source, "the court held that the statute applies here.")
+    assert result["status"] == "verbatim" and not result["warnings"], result
+    result = status_of(
+        "the court held that the [**12] statute applies here.",
+        "the court held that the statute applies here",
+    )
+    assert result["status"] == "verbatim", result
+    for source in (
+        "the court held that the *516 statute applies here.",  # may be a footnote asterisk
+        "the court [sic] held that the statute applies here.",  # other bracketed text
+    ):
+        result = status_of(source, "the court held that the statute applies here")
+        assert result["status"] == "not_found", (source, result)
+    paged_source = (
+        "Syllabus text. [*515] The court first held one thing. It then held that the [*516] "
+        "statute applies here. [*517] Finally it remanded the case."
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        source_path = Path(directory) / "bracketed.txt"
+        source_path.write_text(paged_source, encoding="utf-8")
+        items = Path(directory) / "items.json"
+        items.write_text(
+            json.dumps(
+                [
+                    {"quote": "It then held that the statute applies here", "pincite": "515-16"},
+                    {"quote": "Finally it remanded the case", "pincite": "516"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        process = subprocess.run(
+            [sys.executable, str(SCRIPT), str(source_path), "--json", str(items)],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        report = json.loads(process.stdout)
+        first, second = report["results"]
+        assert report["pagination_basis"] == "star_marker_sequence", report["pagination_basis"]
+        assert first["status"] == "verbatim" and first["page"] == 515 and first["page_end"] == 516
+        assert first["pincite_ok"] is True
+        assert second["status"] == "verbatim" and second["page"] == 517
+        assert second["pincite_ok"] is False
+    gap = "the statute is in-\n[*516]\neligible for protection here."
+    result = status_of(gap, "the statute is ineligible for protection here")
+    assert result["status"] == "normalized", result
+    assert status_of(gap, "eligible for protection here")["status"] == "not_found"
+
     # A bracket-only quotation against an empty file used to raise IndexError.
     assert status_of("\f ", "[T]")["status"] == "not_found"
 

@@ -1,5 +1,16 @@
 # Codex plugin changes
 
+## 1.7.2 — 2026-11-14
+
+- Treat a word split by a soft hyphen at a line end as one word in `cite-check`
+  quotation matching. The whole-word quotation is now `normalized`; the split form
+  no longer matches. Whitespace of any kind after the soft hyphen counts.
+- Treat a bracketed star-page marker (`[*516]`, `[**12]`) as whitespace and as a
+  page boundary, so a quotation may cross it and pincites are judged from it. A
+  lone bare `*516` remains text.
+- Reject a quotation that drops the first half of a word hyphenated across a line
+  with a bracketed marker in the gap.
+
 ## 1.7.1 — 2026-11-14
 
 - Require whole source tokens in `cite-check` quotation matching. A quotation that

@@ -2,6 +2,17 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.4 (2026-11-14)
+
+The two reports from issue #2 that 1.6.3 left open. Both were correct quotations wrongly rejected.
+
+- Claude Code `cite-check`, `scripts/verify_quotes.py`, soft hyphens: a word split by a soft hyphen at a line end ("un", U+00AD, line break, "necessary"; common in `pdftotext` output) read as two words, so the whole-word quotation was `not_found` while the split form "un necessary" matched. The halves are now one word at every tier: the whole-word quotation is `verbatim` and the split form is `not_found`. Any whitespace after the soft hyphen counts, since re-flowed or pasted text turns the line break into a space; a soft hyphen in the middle of a line is still just dropped.
+- Bracketed star-page markers: "[*516]" stayed in the text as brackets, so a quotation crossing a page was `not_found`. A bracketed marker ("[*516]", also "[**12]" and "[***3]") is now treated as whitespace wherever it appears, and counts for star pagination the same way a bare "*516" does. A lone bare "*516" is still text, since it may be a footnote asterisk.
+- This also closes a partial-match hole: a word hyphenated across a line with a bracketed marker in the gap ("in-", line break, "[*516]", line break, "eligible") used to match the quotation "eligible ...". It is rejected, and the whole word matches as `normalized`.
+- Quotation Stop hook (`claude-code/hooks/scripts/quote_check.py`): the same two changes.
+- Tests: regression cases in `test_verify_quotes.py` and `claude-code/hooks/tests/test_quote_check.py`, including pagination and pincites from bracketed markers.
+- Codex plugin 1.7.2 (see `codex/CHANGELOG.md`): the same two changes in the Codex `cite-check` verifier.
+
 ## 1.6.3 (2026-11-14)
 
 Quotation matching now requires whole source words and numbers. Reported in issue #2: the matchers located a quotation with a plain substring search, so a quotation that began or ended inside a source word or number passed as verbatim.
