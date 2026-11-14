@@ -11,6 +11,11 @@ Statuses:
   altered     matches after honoring marked ellipses/brackets; review required
   not_found   no match in this file; a closest-passage hint may be included
 
+Every status requires whole source tokens. A quotation that begins or ends
+inside a source word or number is not_found, with partial_token_match showing
+the source wording ("eligible" does not occur in "ineligible"; "$400," does not
+occur in "$400,000").
+
 Use --json with rows containing prepared_unit_id, unit_id, source_id, quote,
 and optional pincite. Use --output to write validator-ready JSONL evidence.
 """
@@ -52,7 +57,264 @@ ELLIPSIS = re.compile(r"\.[ ]?\.[ ]?\.(?:[ ]?\.)?")
 BRACKET = re.compile(r"\[([^\][]{0,80})\]")
 PUNCTUATION = re.compile(r"[^0-9A-Za-z]+")
 MAX_CHAIN_RESTARTS = 50
+BRACKET_SLACK = 20  # a bracket may stand for up to len(inner) + this many source characters
 MAX_ELLIPSIS_GAP = 600
+
+
+# Token boundaries. A match must begin and end on a source-token boundary. A cut
+# is inside a token when it falls: between two letters, two digits, or a digit
+# and a following letter (combining marks count as letters); beside an
+# apostrophe with a letter on each side; at a thousands comma (a comma followed
+# by exactly three digits) or a decimal point inside a number; or beside a
+# single hyphen joining two word halves, closed up ("non-binding") or broken
+# across a line or page ("in-\neligible"), a soft hyphen at a line end
+# included. Spaces alone after a hyphen ("pre- and
+# post-trial") and dash punctuation remain boundaries. Two shapes that flattened
+# footnote calls produce are accepted with a warning instead: a word followed
+# directly by digits, and a number, a period, then one to three digits before a
+# new sentence.
+JOINING_HYPHENS = frozenset("-\u2010\u2011")
+APOSTROPHES = frozenset("'\u2019\u02bc")
+SOFT_HYPHEN = "\u00ad"  # invisible unless it ends a line, where it splits a word
+SENTENCE_OPENERS = frozenset("'\"\u2018\u201c([")
+EdgeCheck = Any
+
+
+def character_class(character: str) -> str:
+    """Return L for a letter or combining mark, D for a digit, otherwise empty.
+
+    The empty string that character_at returns beyond either end of the text
+    is not a token character."""
+    if not character:
+        return ""
+    category = unicodedata.category(character)[0]
+    if category in "LM":
+        return "L"
+    return "D" if category == "N" else ""
+
+
+def character_at(text: str, index: int) -> str:
+    return text[index] if 0 <= index < len(text) else ""
+
+
+def separator_joins_number(text: str, index: int) -> bool:
+    """Decide whether a comma or period between digits belongs to one number."""
+    cursor = index + 1
+    while cursor < len(text) and character_class(text[cursor]) == "D":
+        cursor += 1
+    digits = cursor - (index + 1)
+    if text[index] == ",":
+        return digits == 3
+    if digits > 3:
+        return True
+    if cursor >= len(text):
+        return False
+    if text[cursor] != " ":
+        return True
+    following = character_at(text, cursor + 1)
+    if following in SENTENCE_OPENERS:
+        following = character_at(text, cursor + 2)
+    return not following.isupper()
+
+
+def is_format_character(character: str) -> bool:
+    return unicodedata.category(character) == "Cf"
+
+
+def classify_cut(text: str, index: int, *, at_end: bool) -> str | None:
+    """Classify the cut before text[index]: inside, digits (accepted), or None.
+
+    Format characters (a soft hyphen, a zero-width space) are never printed, so
+    the neighbors are the nearest characters on each side that are."""
+
+    def before(position: int) -> tuple[str, int]:
+        position -= 1
+        while position >= 0 and is_format_character(text[position]):
+            position -= 1
+        return character_at(text, position), position
+
+    def after(position: int) -> tuple[str, int]:
+        while position < len(text) and is_format_character(text[position]):
+            position += 1
+        return character_at(text, position), position
+
+    previous, previous_index = before(index)
+    current, current_index = after(index)
+    if not previous or not current:
+        return None
+    left = character_class(previous)
+    right = character_class(current)
+    if left and right:
+        return "digits" if at_end and left == "L" and right == "D" else "inside"
+    if current in APOSTROPHES and left == "L" and character_class(after(current_index + 1)[0]) == "L":
+        return "inside"
+    if previous in APOSTROPHES and right == "L" and character_class(before(previous_index)[0]) == "L":
+        return "inside"
+    if current in ",." and left == "D" and character_class(after(current_index + 1)[0]) == "D":
+        if separator_joins_number(text, current_index):
+            return "inside"
+        return "digits" if at_end else None
+    if previous in ",." and right == "D" and character_class(before(previous_index)[0]) == "D":
+        if separator_joins_number(text, previous_index):
+            return "inside"
+        return "digits" if at_end else None
+    return None
+
+
+def span_jumps(
+    spans: list[tuple[int, int, int | None]],
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Map page-marker ends to starts and starts to ends for raw-text scans."""
+    return ({end: start for start, end, _ in spans}, {start: end for start, end, _ in spans})
+
+
+def letter_precedes(raw: str, index: int) -> bool:
+    """Report whether the printed character before raw[index] is a letter."""
+    while index > 0 and is_format_character(raw[index - 1]):
+        index -= 1
+    return character_class(character_at(raw, index - 1)) == "L"
+
+
+def gap_after(raw: str, cursor: int, forward: dict[int, int]) -> tuple[int, bool, bool]:
+    """Skip whitespace, page markers and format characters from raw[cursor].
+
+    Return the next printed character's index, whether whitespace was seen,
+    and whether a line or page break was seen."""
+    whitespace = line_break = False
+    while cursor < len(raw):
+        character = raw[cursor]
+        if cursor in forward:
+            cursor = forward[cursor]
+            whitespace = line_break = True
+        elif character.isspace():
+            whitespace = True
+            line_break = line_break or character not in " \t\u00a0"
+            cursor += 1
+        elif is_format_character(character):
+            cursor += 1
+        else:
+            break
+    return cursor, whitespace, line_break
+
+
+def is_joining_hyphen(raw: str, index: int, forward: dict[int, int]) -> bool:
+    """Report whether raw[index] is one hyphen joining two word halves: a
+    letter directly before it, and a letter directly after it or after a line
+    or page break."""
+    if character_at(raw, index) not in JOINING_HYPHENS or not letter_precedes(raw, index):
+        return False
+    cursor, whitespace, line_break = gap_after(raw, index + 1, forward)
+    return character_class(character_at(raw, cursor)) == "L" and (not whitespace or line_break)
+
+
+def hyphen_joins_before(
+    raw: str, index: int, backward: dict[int, int], forward: dict[int, int] | None = None
+) -> bool:
+    """Report whether raw[index] begins the second half of a hyphenated word,
+    or is the joining hyphen itself (a quotation that starts "-binding")."""
+    if forward is not None and is_joining_hyphen(raw, index, forward):
+        return True
+    if character_class(character_at(raw, index)) != "L":
+        return False
+    cursor = index
+    whitespace = line_break = False
+    while cursor > 0:
+        character = raw[cursor - 1]
+        if cursor in backward:
+            cursor = backward[cursor]
+            whitespace = line_break = True
+        elif character.isspace():
+            whitespace = True
+            line_break = line_break or character not in " \t\u00a0"
+            cursor -= 1
+        elif is_format_character(character) and character != SOFT_HYPHEN:
+            cursor -= 1
+        else:
+            break
+    if cursor < 1:
+        return False
+    if raw[cursor - 1] == SOFT_HYPHEN:
+        if not line_break:  # mid-line: the cut classifier sees the adjacent letters
+            return False
+    elif raw[cursor - 1] not in JOINING_HYPHENS or (whitespace and not line_break):
+        return False
+    cursor -= 1
+    while cursor > 0 and is_format_character(raw[cursor - 1]):
+        cursor -= 1
+    return character_class(character_at(raw, cursor - 1)) == "L"
+
+
+def hyphen_joins_after(raw: str, index: int, forward: dict[int, int]) -> bool:
+    """Report whether raw[index - 1] ends the first half of a hyphenated word,
+    or is the joining hyphen itself (a quotation that ends "non-")."""
+    if is_joining_hyphen(raw, index - 1, forward):
+        return True
+    if character_class(character_at(raw, index - 1)) != "L":
+        return False
+    cursor = index
+    soft = False
+    while cursor < len(raw) and is_format_character(raw[cursor]):
+        soft = soft or raw[cursor] == SOFT_HYPHEN
+        cursor += 1
+    if cursor < len(raw) and raw[cursor] in JOINING_HYPHENS:
+        cursor += 1
+        soft = False
+    elif not soft:
+        return False
+    whitespace = line_break = False
+    while cursor < len(raw):
+        character = raw[cursor]
+        if cursor in forward:
+            cursor = forward[cursor]
+            whitespace = line_break = True
+        elif character.isspace():
+            whitespace = True
+            line_break = line_break or character not in " \t\u00a0"
+            cursor += 1
+        elif is_format_character(character):
+            cursor += 1
+        else:
+            break
+    if soft:  # a soft hyphen joins only across a line break
+        return character_class(character_at(raw, cursor)) == "L" and line_break
+    return character_class(character_at(raw, cursor)) == "L" and (not whitespace or line_break)
+
+
+def match_edges(
+    text: str,
+    offsets: list[int],
+    raw: str,
+    start: int,
+    end: int,
+    jumps: tuple[dict[int, int], dict[int, int]] = ({}, {}),
+    check_start: bool = True,
+    check_end: bool = True,
+) -> str | None:
+    """Return inside when text[start:end] cuts a source token, digits when the
+    match is accepted but digits follow it directly, otherwise None. Hyphen
+    tests read the raw file because normalized views alter hyphens."""
+    if end <= start:
+        return None
+    verdict = None
+    if check_start and (
+        classify_cut(text, start, at_end=False) == "inside"
+        or hyphen_joins_before(raw, offsets[start], jumps[0], jumps[1])
+    ):
+        return "inside"
+    if check_end:
+        verdict = classify_cut(text, end, at_end=True)
+        if verdict == "inside" or hyphen_joins_after(raw, offsets[end - 1] + 1, jumps[1]):
+            return "inside"
+    return verdict
+
+
+def token_context(text: str, offsets: list[int], raw: str, start: int, end: int) -> str:
+    """Return the raw source around text[start:end], widened to whole words."""
+    while start > 0 and text[start - 1] != " ":
+        start -= 1
+    while end < len(text) and text[end] != " ":
+        end += 1
+    return raw[offsets[start] : offsets[end - 1] + 1][:280]
 
 
 def file_sha256(path: Path) -> str:
@@ -260,25 +522,80 @@ def segment_pattern(segment: str) -> re.Pattern[str]:
         elif len(inner) <= 2:
             wildcard = r".{0,4}"
         else:
-            wildcard = r".{0,%d}?" % (len(inner) + 20)
+            wildcard = r".{0,%d}?" % (len(inner) + BRACKET_SLACK)
         pieces.append(f"(?P<b{number}>{wildcard})")
         cursor = match.end()
     pieces.append(re.escape(segment[cursor:]))
     return re.compile("".join(pieces))
 
 
-def match_marked(source: str, patterns: list[re.Pattern[str]]) -> tuple[int, int, list[int], list[re.Match[str]]] | None:
+def bracket_edges(segment: str) -> tuple[bool, bool, int | None]:
+    """Report which segment edges a bracketed alteration occupies, and the
+    longest source text the segment's pattern can match.
+
+    A bracket replaces source text of unknown length, so that edge has no
+    boundary test. The length is None for a segment without a bracket, which
+    can match in only one way from a given start."""
+    brackets = list(BRACKET.finditer(segment))
+    if not brackets:
+        return (False, False, None)
+    return (
+        brackets[0].start() == 0,
+        brackets[-1].end() == len(segment),
+        len(segment) + BRACKET_SLACK * len(brackets),
+    )
+
+
+def search_segment(
+    pattern: re.Pattern[str],
+    source: str,
+    position: int,
+    edge: EdgeCheck = None,
+    free: tuple[bool, bool, int | None] = (False, False, None),
+) -> re.Match[str] | None:
+    """Find the first match whose unbracketed edges are source-token boundaries.
+
+    A bracket wildcard can match more than one stretch of source from the same
+    start. For "The [official] may" against "The old mayor may issue", the lazy
+    wildcard first takes "old" and the segment ends inside "mayor"; taking
+    "old mayor" ends it on the word "may". When a match ends inside a token,
+    every other ending from that start is therefore tried before moving on."""
+    while True:
+        found = pattern.search(source, position)
+        if found is None or edge is None or found.end() == found.start():
+            return found
+        check_start, check_end = not free[0], not free[1]
+        if edge(found.start(), found.end(), check_start, check_end) != "inside":
+            return found
+        longest = free[2]
+        if longest and edge(found.start(), found.end(), check_start, False) != "inside":
+            for end in range(found.start() + 1, min(len(source), found.start() + longest) + 1):
+                if end == found.end():
+                    continue
+                alternative = pattern.fullmatch(source, found.start(), end)
+                if alternative and edge(alternative.start(), alternative.end(), check_start, check_end) != "inside":
+                    return alternative
+        position = found.start() + 1
+
+
+def match_marked(
+    source: str,
+    patterns: list[re.Pattern[str]],
+    edge: EdgeCheck = None,
+    free: list[tuple[bool, bool, int | None]] | None = None,
+) -> tuple[int, int, list[int], list[re.Match[str]]] | None:
+    free = free or [(False, False, None)] * len(patterns)
     anchor = 0
     for _ in range(MAX_CHAIN_RESTARTS):
-        first = patterns[0].search(source, anchor)
+        first = search_segment(patterns[0], source, anchor, edge, free[0])
         if first is None:
             return None
         cursor = first.end()
         gaps: list[int] = []
         final = first
         matches = [first]
-        for pattern in patterns[1:]:
-            following = pattern.search(source, cursor)
+        for pattern, pattern_free in zip(patterns[1:], free[1:]):
+            following = search_segment(pattern, source, cursor, edge, pattern_free)
             if following is None:
                 break
             gaps.append(following.start() - cursor)
@@ -291,11 +608,20 @@ def match_marked(source: str, patterns: list[re.Pattern[str]]) -> tuple[int, int
     return None
 
 
-def occurrence_count(source: str, needle: str) -> int:
+def next_occurrence(source: str, needle: str, cursor: int = 0, edge: EdgeCheck = None) -> int:
+    """Return the next occurrence on source-token boundaries, or -1."""
+    while True:
+        found = source.find(needle, cursor)
+        if found < 0 or edge is None or edge(found, found + len(needle)) != "inside":
+            return found
+        cursor = found + 1
+
+
+def occurrence_count(source: str, needle: str, edge: EdgeCheck = None) -> int:
     count = 0
     cursor = 0
     while count < 5:
-        found = source.find(needle, cursor)
+        found = next_occurrence(source, needle, cursor, edge)
         if found < 0:
             break
         count += 1
@@ -310,9 +636,13 @@ def matching_offset(
     marker: str,
     first_page: int | None,
     pincite: object,
+    edge: EdgeCheck = None,
 ) -> int:
-    """Prefer an actual occurrence on the cited page when text is repeated."""
-    first = source.find(needle)
+    """Prefer an actual occurrence on the cited page when text is repeated.
+
+    With edge, an occurrence that begins or ends inside a source token is not
+    an occurrence at all."""
+    first = next_occurrence(source, needle, 0, edge)
     pin = parse_pincite(pincite)
     if first < 0 or pin is None:
         return first
@@ -322,7 +652,7 @@ def matching_offset(
         end_page = printed_page(boundaries, marker, first_page, position + len(needle) - 1)
         if page is not None and end_page is not None and page <= pin[1] and end_page >= pin[0]:
             return position
-        position = source.find(needle, position + max(1, len(needle)))
+        position = next_occurrence(source, needle, position + max(1, len(needle)), edge)
     return first
 
 
@@ -412,50 +742,76 @@ def check_quote(
     status: str | None = None
     span: tuple[int, int] | None = None
     selected_view: bool | str = False
+    if "page_jumps" not in views:
+        views["page_jumps"] = span_jumps(page_spans(raw)[0])  # type: ignore[assignment]
+    jumps = views["page_jumps"]
+
+    def edges_in(view_key: bool | str) -> EdgeCheck:
+        text, offsets = views[view_key][0], views[view_key][1]
+        return lambda start, end, check_start=True, check_end=True: match_edges(
+            text, offsets, raw, start, end, jumps, check_start, check_end  # type: ignore[arg-type]
+        )
+
+    # (view, offset, length) of the first rejected hit inside a longer token.
+    partial: tuple[bool | str, int, int] | None = None
 
     plain_source = views[False][0]
     if plain_quote:
         found = matching_offset(
-            plain_source, plain_quote, views[False][2], marker, first_page, item.get("pincite")
+            plain_source, plain_quote, views[False][2], marker, first_page,
+            item.get("pincite"), edges_in(False),
         )
         if found >= 0:
             status = "verbatim"
             span = (found, found + len(plain_quote))
-            result["occurrences"] = occurrence_count(plain_source, plain_quote)
+            result["occurrences"] = occurrence_count(plain_source, plain_quote, edges_in(False))
+        elif plain_source.find(plain_quote) >= 0:
+            partial = (False, plain_source.find(plain_quote), len(plain_quote))
 
     folded_source, folded_offsets, _ = views[True]
     if status is None and folded_quote:
         found = matching_offset(
-            folded_source, folded_quote, views[True][2], marker, first_page, item.get("pincite")
+            folded_source, folded_quote, views[True][2], marker, first_page,
+            item.get("pincite"), edges_in(True),
         )
         if found >= 0:
             status = "normalized"
             span = (found, found + len(folded_quote))
-            result["occurrences"] = occurrence_count(folded_source, folded_quote)
+            result["occurrences"] = occurrence_count(folded_source, folded_quote, edges_in(True))
             result["note"] = "matched after typographic folding"
             selected_view = True
+        elif partial is None and folded_source.find(folded_quote) >= 0:
+            partial = (True, folded_source.find(folded_quote), len(folded_quote))
 
     if status is None and folded_quote and "dehyphenated" in views:
         dehyphenated_source = views["dehyphenated"][0]
         found = matching_offset(
             dehyphenated_source, folded_quote, views["dehyphenated"][2],
-            marker, first_page, item.get("pincite"),
+            marker, first_page, item.get("pincite"), edges_in("dehyphenated"),
         )
         if found >= 0:
             status = "normalized"
             span = (found, found + len(folded_quote))
-            result["occurrences"] = occurrence_count(dehyphenated_source, folded_quote)
+            result["occurrences"] = occurrence_count(
+                dehyphenated_source, folded_quote, edges_in("dehyphenated")
+            )
             result["note"] = "matched after line-break dehyphenation"
             selected_view = "dehyphenated"
+        elif partial is None and dehyphenated_source.find(folded_quote) >= 0:
+            partial = ("dehyphenated", dehyphenated_source.find(folded_quote), len(folded_quote))
 
     if status is None:
         segments = marked_segments(folded_quote)
         marked = ELLIPSIS.search(folded_quote) or BRACKET.search(folded_quote)
         if marked and segments:
             marked_match = match_marked(
-                folded_source, [segment_pattern(segment) for segment in segments]
+                folded_source,
+                [segment_pattern(segment) for segment in segments],
+                edges_in(True),
+                [bracket_edges(segment) for segment in segments],
             )
-            if marked_match:
+            # An empty match (a bare "[T]" against an empty file) locates nothing.
+            if marked_match and marked_match[1] > marked_match[0]:
                 start, end, gaps, matched_segments = marked_match
                 status = "altered"
                 selected_view = True
@@ -483,6 +839,16 @@ def check_quote(
             if differences:
                 result["word_diff"] = differences
         result["reason"] = "no match in this retrieved source-text file"
+        if partial is not None:
+            view_key, offset, length = partial
+            result["partial_token_match"] = token_context(
+                views[view_key][0], views[view_key][1], raw, offset, offset + length
+            )
+            result["warnings"].append("partial_token_match")
+            result["reason"] = (
+                "the quotation occurs in this file only inside a longer source word or "
+                "number; partial_token_match shows the source wording"
+            )
         return result
 
     result["status"] = status
@@ -497,6 +863,10 @@ def check_quote(
     result["match_excerpt"] = raw[raw_start:raw_end]
     result["match_start"] = raw_start
     result["match_end"] = raw_end
+    if status != "altered" and match_edges(view[0], offsets, raw, start, end, jumps) == "digits":  # type: ignore[arg-type]
+        # Usually a flattened footnote call; a reader must exclude a cut number.
+        result["warnings"].append("match_abuts_digits")
+        result["requires_judgment"] = True
     page = printed_page(boundaries, marker, first_page, start)
     if page is not None:
         result["page"] = page
@@ -584,6 +954,7 @@ def artifact_rows(
             "best_ratio",
             "hint",
             "word_diff",
+            "partial_token_match",
             "reason",
             "requires_judgment",
             "alteration_reviewed",
@@ -695,6 +1066,7 @@ def main() -> int:
         views["dehyphenated"] = normalize(
             raw, fold=True, spans=spans, dehyphenate_line_breaks=True
         )
+        views["page_jumps"] = span_jumps(spans)  # type: ignore[assignment]
         results = [
             check_quote(raw, views, marker, args.first_page, item)
             for item in items

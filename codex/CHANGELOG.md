@@ -1,5 +1,19 @@
 # Codex plugin changes
 
+## 1.7.1 — 2026-11-14
+
+- Require whole source tokens in `cite-check` quotation matching. A quotation that
+  begins or ends inside a source word or number (“eligible” within “ineligible”;
+  “$400,” within “$400,000”) is now `not_found` with a `partial_token_match` warning
+  and field, in the plain, folded and dehyphenated views, occurrence counts, pincite
+  selection and every ellipsis segment. An edge occupied by a bracket is exempt.
+  A soft hyphen at a line end joins a word the same way a hyphen does.
+- Accept, with a `match_abuts_digits` warning that requires judgment, a word followed
+  directly by digits and a sentence-ending number followed by one to three digits;
+  both are the shape of a flattened footnote call.
+- Quotations that stop before a possessive or inside a hyphenated compound no longer
+  match.
+
 ## 1.7.0 — 2026-11-12
 
 - Recover unresolved quotations from reachable cached source texts before reporting

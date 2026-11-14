@@ -253,6 +253,96 @@ check("LEGAL_RESEARCH_QUOTE_CHECK=off disables the hook", out == {})
 out, _ = run(tool_pair("Bash", "x"), BAD, env={"CLAUDE_CODE_PLUGIN_DIRS": "/x/mods/quote-guard:/y"})
 check("stands down when the quote-guard mod is loaded", out == {})
 
+# ---- token boundaries (2026-11-14) -----------------------------------------------------
+# The check was a bare substring test, so a quotation that began or ended inside a source
+# word or number passed.
+def reply(q):
+    return 'The opinion says "%s" and nothing more.' % q
+
+for name, source, quote in (
+    ("dropped negative prefix (ineligible)", "the work is ineligible for copyright protection under federal law",
+     "eligible for copyright protection under federal law"),
+    ("dropped negative prefix (unreasonable)", "it was unreasonable to exclude county and state facilities",
+     "reasonable to exclude county and state facilities"),
+    ("amount cut at its thousands comma", "the obligation is to pay more than $400,000",
+     "the obligation is to pay more than $400,"),
+    ("amount cut at its decimal point", "the fee rose to more than $3.5 million last year",
+     "the fee rose to more than $3"),
+    ("number cut at its start", "they must pay more than $400,000 in damages right now",
+     "000 in damages right now"),
+    ("word cut at its end", "in this case the agency acted reasonably", "in this case the agency acted reason"),
+    ("digits cut short", "liability arises under section 1983 of the act", "liability arises under section 198"),
+    ("identifier cut before its letter", "the liability under rule 10b-5 is strict", "the liability under rule 10"),
+    ("contraction cut at the apostrophe", "in that case the defendant can't be retried", "in that case the defendant can"),
+    ("possessive cut at a curly apostrophe", "the panel then reviewed the court’s findings",
+     "the panel then reviewed the court"),
+    ("hyphenated negative prefix", "that holding is non-binding precedent in this circuit",
+     "binding precedent in this circuit"),
+    ("quote ends with the hyphen of a compound", "that holding in this circuit is non-binding precedent",
+     "that holding in this circuit is non-"),
+    ("quote ends with a hyphen at a line end", "we hold that the work is in-\neligible for protection",
+     "we hold that the work is in-"),
+    ("first half of a hyphenated compound", "the flaw lay in the decision-making process",
+     "the flaw lay in the decision"),
+    ("prefix broken across a line", "the work is in-\neligible for copyright protection under federal law",
+     "eligible for copyright protection under federal law"),
+    ("first half of a word broken across a line", "we hold that the work is in-\neligible for protection",
+     "we hold that the work is in"),
+    ("statute cite cut one digit short", "the request was made under n.j.s.a. 47:1a-11 of the act",
+     "the request was made under n.j.s.a. 47:1a-1"),
+    ("prefix split off by a soft hyphen at a line end",
+     "the rule is un\u00ad\nnecessary because the amendment already covers it",
+     "necessary because the amendment already covers it"),
+    ("first half before a soft hyphen at a line end",
+     "we hold that the rule is un\u00ad\nnecessary because the amendment covers it",
+     "we hold that the rule is un"),
+    ("accented letter before the match", "everyone saw that their naïveté was plain to see", "veté was plain to see"),
+    ("ellipsis segment starting inside a word", "the statute is clearly ineligible for protection under the act",
+     "the statute is . . . eligible for protection under the act"),
+    ("bracket does not excuse the other edge", "it said the agency was reasonable in its views of the matter",
+     "the agency [is] reasonable in its view"),
+):
+    out, _ = run(tool_pair("Bash", source), reply(quote))
+    check("partial token blocked: " + name, out.get("decision") == "block")
+
+for name, source, quote in (
+    ("whole amount", "the obligation is to pay more than $400,000", "the obligation is to pay more than $400,000"),
+    ("quote ends before the source's final period", "the rule here applies under section 1983.",
+     "the rule here applies under section 1983"),
+    ("quote ends before the source's final quote mark", "it called the whole scheme 'entirely reasonable'",
+     "called the whole scheme 'entirely reasonable"),
+    ("quote starts at the source's first character", "eligible for protection under the act, it said",
+     "eligible for protection under the act"),
+    ("bracketed words then a whole word", "the old mayor may issue an order whenever needed",
+     "the [official] may issue an order whenever needed"),
+    ("year before a comma and a number", "in the year 2020, 15 states acted on it", "in the year 2020"),
+    ("whole word before a period", "the work was plainly eligible. the rest follows", "the work was plainly eligible"),
+    ("whole hyphenated compound", "that holding is non-binding precedent in this circuit",
+     "holding is non-binding precedent in this circuit"),
+    ("word after a closed-up em dash", "the plaintiff knows—or reasonably should know—of the injury",
+     "or reasonably should know—of the injury"),
+    ("word after a typed double hyphen", "the plaintiff knows--or reasonably should know--of the injury",
+     "or reasonably should know--of the injury"),
+    ("word after a suspended hyphen", "the pre- and post-trial motions were all denied", "and post-trial motions were all denied"),
+    ("page range cut at its hyphen", "see the discussion in id. at 516-17 for the rule", "see the discussion in id. at 516"),
+    ("possessive kept whole", "the panel then reviewed the court's findings", "the panel then reviewed the court's findings"),
+    ("accented word kept whole", "everyone saw that their naïveté was plain", "saw that their naïveté was plain"),
+    ("whole-token hit after a partial one",
+     "it is ineligible for protection under the act. later it became eligible for protection under the act",
+     "eligible for protection under the act"),
+    ("bracketed first letter", "yesterday the court held that the claim fails", "[T]he court held that the claim fails"),
+    ("whole-token ellipsis segment", "the statute is clearly eligible for protection under the act",
+     "the statute is . . . eligible for protection under the act"),
+    ("footnote call after a word", "the work receives copyright protection12 under the statute",
+     "the work receives copyright protection"),
+    ("footnote call after a sentence-ending number", "The Act was first passed in 1871.45 The Court later read it broadly",
+     "The Act was first passed in 1871."),
+    ("footnote call after a comma", "Plaintiffs suing under section 1983,45 may recover fees",
+     "Plaintiffs suing under section 1983"),
+):
+    out, _ = run(tool_pair("Bash", source), reply(quote))
+    check("whole tokens allowed: " + name, out == {})
+
 # ---- the PostToolUse note -------------------------------------------------------------
 out, _ = run(tool_pair("WebFetch", "summary"), "", script=NOTE, extra_input={"tool_name": "WebFetch"})
 check("summary note added while a skill is active",

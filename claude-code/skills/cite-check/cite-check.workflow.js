@@ -453,6 +453,13 @@ the closest source passage. Rules:
   same source (CAP static HTML / CourtListener) before reporting any verbatim-ness finding, and if
   the cleaner text matches, the verdict is verbatim. You may adjust and re-run AT MOST TWICE; a
   quote still not_found (with no innocent explanation) stays a finding.
+- not_found with "partial_token_match": the draft's wording occurs in the source only INSIDE a longer
+  word or number ("eligible" where the source says "ineligible"; "$400," where it says "$400,000").
+  That field shows the source's own words. It is a real difference, often one that reverses or
+  changes the meaning: report it as a finding with the source language, do not re-run to make it match.
+- A match carrying the warning "match_abuts_digits" is still a match: the source continues with digits
+  right after the quote, which is usually a flattened footnote call ("protection12"). Look at the
+  excerpt and confirm the quote does not cut a number or identifier short.
 - Pincites: use the script's page numbers instead of reading footer/star page markers by eye — this
   removes the off-by-one marker-convention trap. If it reports no page boundaries ("marker": "none"),
   fall back to the marker-convention rules and say which convention you assumed.

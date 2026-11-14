@@ -31,6 +31,11 @@ Match tiers, reported per quote as `status`:
   not_found   no match; `hint` carries the closest source passage when one
               scores near enough — the draft-vs-hint diff IS the finding
 
+Every tier matches WHOLE source tokens. A quote that begins or ends inside a
+source word or number is not a match ("eligible" is not in a source that says
+"ineligible"; "$400," is not in "$400,000") — see the token-boundary section.
+Such a quote is not_found, with `partial_token_match` showing the source words.
+
 Exit codes: 0 = every quote matched (any tier); 1 = at least one not_found;
 2 = usage/read error. Stdlib only. Output is one JSON object on stdout.
 """
@@ -85,9 +90,223 @@ STAR_MARKER_RE = re.compile(r"\*(\d{1,4})")
 ELLIPSIS_RE = re.compile(r"\.[ ]?\.[ ]?\.(?:[ ]?\.)?")
 BRACKET_RE = re.compile(r"\[([^\][]{0,80})\]")
 
+BRACKET_SLACK = 30     # a bracket may stand for up to len(inner) + this many source chars
 SHORT_SEGMENT = 10     # DingDuff rule: segments around an ellipsis >= ~10 chars
 MAX_GAP_WARN = 600     # normalized chars between ellipsis segments before warning
 CHAIN_RESTARTS = 50    # attempts to re-anchor segment 1 before giving up
+
+
+# ---- Token boundaries -------------------------------------------------------
+# A match must start and end on a source-token boundary. Substring search alone
+# accepted "eligible for protection" against "ineligible for protection" and
+# "$400," against "$400,000" as verbatim. A cut is INSIDE a token when it falls:
+#   - between two letters, two digits, or a digit and a following letter
+#     ("10b", "4th"); combining marks count as letters;
+#   - next to an apostrophe that has a letter on both sides ("can't" is not
+#     "can", "court's" is not "court");
+#   - inside a number: at a thousands comma (a comma followed by exactly three
+#     digits) or a decimal point;
+#   - next to a single hyphen that joins two word halves, written closed up
+#     ("non-binding" is not "binding") or broken across a line or page
+#     ("in-\neligible" is not "eligible"), a soft hyphen at a line end
+#     included. "pre- and post-trial" (spaces only) and dashes ("knows—or",
+#     "knows--or") are boundaries.
+# Two shapes are allowed because flattened footnote calls produce them, and are
+# reported as a warning instead: a word followed directly by digits
+# ("protection12") and a number, a period, then one to three digits before a
+# new sentence ("in 1871.45 The Court").
+APOSTROPHES = frozenset("'\u2019\u02bc")
+SOFT_HYPHEN = "\u00ad"       # invisible unless it ends a line, where it splits a word
+_SENTENCE_OPENERS = frozenset("'\"\u2018\u201c([")
+
+
+def _cls(c):
+    """'L' for a letter or combining mark, 'D' for a digit, '' otherwise —
+    including for the empty string _at() returns past either end of the text."""
+    if not c:
+        return ""
+    k = unicodedata.category(c)[0]
+    return "L" if k in "LM" else "D" if k == "N" else ""
+
+
+def _at(text, i):
+    return text[i] if 0 <= i < len(text) else ""
+
+
+def _separator_joins(norm, k):
+    """norm[k] is ',' or '.' with a digit on each side: is it part of ONE number?
+    A comma is when exactly three digits follow. A period is unless one to
+    three digits and then a new sentence follow (a footnote call)."""
+    j = k + 1
+    while j < len(norm) and _cls(norm[j]) == "D":
+        j += 1
+    ndigits = j - (k + 1)
+    if norm[k] == ",":
+        return ndigits == 3
+    if ndigits > 3:
+        return True
+    if j >= len(norm):
+        return False
+    if norm[j] != " ":
+        return True
+    nxt = _at(norm, j + 1)
+    if nxt in _SENTENCE_OPENERS:
+        nxt = _at(norm, j + 2)
+    return not nxt.isupper()
+
+
+def _cut(norm, i, at_end):
+    """Classify the cut between norm[i-1] and norm[i]: "inside" a source token,
+    "digits" (allowed, but digits follow the match — see above) or None."""
+    p, c = _at(norm, i - 1), _at(norm, i)
+    if not p or not c:
+        return None
+    a, b = _cls(p), _cls(c)
+    if a and b:
+        return "digits" if (at_end and a == "L" and b == "D") else "inside"
+    if c in APOSTROPHES and a == "L" and _cls(_at(norm, i + 1)) == "L":
+        return "inside"
+    if p in APOSTROPHES and b == "L" and _cls(_at(norm, i - 2)) == "L":
+        return "inside"
+    if c in ",." and a == "D" and _cls(_at(norm, i + 1)) == "D":
+        return "inside" if _separator_joins(norm, i) else ("digits" if at_end else None)
+    if p in ",." and b == "D" and _cls(_at(norm, i - 2)) == "D":
+        return "inside" if _separator_joins(norm, i - 1) else ("digits" if at_end else None)
+    return None
+
+
+def _is_cf(c):
+    return unicodedata.category(c) == "Cf"
+
+
+def span_jumps(page_spans):
+    """({span_end: span_start}, {span_start: span_end}) for the raw-text scans."""
+    return ({e: s for s, e, _ in page_spans}, {s: e for s, e, _ in page_spans})
+
+
+def _gap_after(raw, j, fwd):
+    """Skip whitespace, page markers and format characters from raw[j] on.
+    Returns (index of the next printed character, saw whitespace, saw a line
+    or page break)."""
+    ws = brk = False
+    n = len(raw)
+    while j < n:
+        ch = raw[j]
+        if j in fwd:                        # a page marker sits in the gap
+            j, ws, brk = fwd[j], True, True
+        elif ch.isspace():
+            ws, brk, j = True, brk or ch not in " \t\u00a0", j + 1
+        elif _is_cf(ch):
+            j += 1
+        else:
+            break
+    return j, ws, brk
+
+
+def _letter_before(raw, j):
+    """Is the printed character before raw[j] a letter?"""
+    while j > 0 and _is_cf(raw[j - 1]):
+        j -= 1
+    return _cls(_at(raw, j - 1)) == "L"
+
+
+def _hyphen_joins_at(raw, k, fwd):
+    """Is raw[k] ONE hyphen joining two word halves: a letter right before it,
+    and a letter right after it or after a line or page break?"""
+    if _at(raw, k) not in JOIN_DASHES or not _letter_before(raw, k):
+        return False
+    j, ws, brk = _gap_after(raw, k + 1, fwd)
+    return _cls(_at(raw, j)) == "L" and (not ws or brk)
+
+
+def _hyphen_before(raw, a, back, fwd=None):
+    """Is raw[a] the first letter of the SECOND half of a hyphenated word, or
+    the joining hyphen itself (a quote that starts "-binding")?"""
+    if fwd is not None and _hyphen_joins_at(raw, a, fwd):
+        return True
+    if _cls(_at(raw, a)) != "L":
+        return False
+    j, ws, brk = a, False, False
+    while j > 0:
+        ch = raw[j - 1]
+        if j in back:                       # a page marker sits in the gap
+            j, ws, brk = back[j], True, True
+        elif ch.isspace():
+            ws, brk, j = True, brk or ch not in " \t\u00a0", j - 1
+        elif _is_cf(ch) and ch != SOFT_HYPHEN:
+            j -= 1
+        else:
+            break
+    if j < 1:
+        return False
+    if raw[j - 1] == SOFT_HYPHEN:
+        if not brk:                 # mid-line: the views drop it and the letters touch
+            return False
+    elif raw[j - 1] not in JOIN_DASHES or (ws and not brk):
+        return False
+    j -= 1
+    while j > 0 and _is_cf(raw[j - 1]):
+        j -= 1
+    return _cls(_at(raw, j - 1)) == "L"
+
+
+def _hyphen_after(raw, b, fwd):
+    """Is raw[b-1] the last letter of the FIRST half of a hyphenated word, or
+    the joining hyphen itself (a quote that ends "non-")?"""
+    if _hyphen_joins_at(raw, b - 1, fwd):
+        return True
+    if _cls(_at(raw, b - 1)) != "L":
+        return False
+    j, n = b, len(raw)
+    soft = False
+    while j < n and _is_cf(raw[j]):
+        soft = soft or raw[j] == SOFT_HYPHEN
+        j += 1
+    if j < n and raw[j] in JOIN_DASHES:
+        j, soft = j + 1, False
+    elif not soft:
+        return False
+    ws = brk = False
+    while j < n:
+        ch = raw[j]
+        if j in fwd:
+            j, ws, brk = fwd[j], True, True
+        elif ch.isspace():
+            ws, brk, j = True, brk or ch not in " \t\u00a0", j + 1
+        elif _is_cf(ch):
+            j += 1
+        else:
+            break
+    if soft:                        # a soft hyphen joins only across a line break
+        return _cls(_at(raw, j)) == "L" and brk
+    return _cls(_at(raw, j)) == "L" and (not ws or brk)
+
+
+def match_edges(norm, omap, raw, s, e, jumps=({}, {}), check_start=True, check_end=True):
+    """Do the edges of norm[s:e] sit on source-token boundaries? Returns
+    "inside" (they do not: not a match), "digits" (a match, but digits follow
+    it directly) or None. The hyphen tests read the RAW text through omap,
+    because the folded view turns a hyphen into a space or drops it."""
+    if e <= s:
+        return None
+    verdict = None
+    if check_start:
+        if _cut(norm, s, False) == "inside" or _hyphen_before(raw, omap[s], jumps[0], jumps[1]):
+            return "inside"
+    if check_end:
+        verdict = _cut(norm, e, True)
+        if verdict == "inside" or _hyphen_after(raw, omap[e - 1] + 1, jumps[1]):
+            return "inside"
+    return verdict
+
+
+def token_context(norm, omap, raw, s, e):
+    """The source text around norm[s:e], widened to whole words, for a report."""
+    while s > 0 and norm[s - 1] != " ":
+        s -= 1
+    while e < len(norm) and norm[e] != " ":
+        e += 1
+    return raw[omap[s]:omap[e - 1] + 1][:280]
 
 
 def find_page_spans(raw):
@@ -288,24 +507,66 @@ def segment_regex(seg):
         elif len(inner) <= 2:
             parts.append(r".{0,4}")         # "[T]he", "[a]" — tiny substitution
         else:
-            parts.append(r".{0,%d}?" % (len(inner) + 30))
+            parts.append(r".{0,%d}?" % (len(inner) + BRACKET_SLACK))
         last = m.end()
     parts.append(re.escape(seg[last:]))
     return re.compile("".join(parts))
 
 
-def chain_match(src_norm, seg_res):
+def segment_free_edges(seg):
+    """(start, end, max_len) for a segment. start/end: edges that a
+    [bracketed] alteration occupies. The bracket stands for source text of
+    unknown length ("[T]he" for "the"), so no token boundary can be required
+    of that edge. max_len: the longest source text the segment's regex can
+    match, or None when it has no bracket and so only one way to match."""
+    ms = list(BRACKET_RE.finditer(seg))
+    if not ms:
+        return (False, False, None)
+    return (ms[0].start() == 0, ms[-1].end() == len(seg),
+            len(seg) + BRACKET_SLACK * len(ms))
+
+
+def search_segment(sre, src_norm, pos, edge=None, free=(False, False, None)):
+    """First match at or after pos whose edges sit on source-token boundaries.
+
+    A bracket wildcard can match more than one stretch of source from the same
+    start. In "The [official] may" against "The old mayor may issue", the lazy
+    wildcard first takes "old" and the segment ends inside "mayor"; taking
+    "old mayor" ends it on the word "may". So when a match ends inside a token,
+    every other ending from that start is tried before moving on."""
+    while True:
+        m = sre.search(src_norm, pos)
+        if not m or edge is None or m.end() == m.start():
+            return m
+        cs, ce = not free[0], not free[1]
+        if edge(m.start(), m.end(), cs, ce) != "inside":
+            return m
+        max_len = free[2] if len(free) > 2 else None
+        if max_len and edge(m.start(), m.end(), cs, False) != "inside":
+            for end in range(m.start() + 1, min(len(src_norm), m.start() + max_len) + 1):
+                if end == m.end():
+                    continue
+                alt = sre.fullmatch(src_norm, m.start(), end)
+                if alt and edge(alt.start(), alt.end(), cs, ce) != "inside":
+                    return alt
+        pos = m.start() + 1
+
+
+def chain_match(src_norm, seg_res, edge=None, free=None):
     """Match segments in order with bounded restarts. Returns (start, end,
-    gaps) of the first consistent chain, or None."""
+    gaps) of the first consistent chain, or None. `edge(s, e, check_start,
+    check_end)` rejects a segment that starts or ends inside a source token;
+    `free[i]` names the edges of segment i that a bracket leaves unchecked."""
+    free = free or [(False, False, None)] * len(seg_res)
     anchor_from = 0
     for _ in range(CHAIN_RESTARTS):
-        m0 = seg_res[0].search(src_norm, anchor_from)
+        m0 = search_segment(seg_res[0], src_norm, anchor_from, edge, free[0])
         if not m0:
             return None
         pos, gaps, spans = m0.end(), [], [(m0.start(), m0.end())]
         ok = True
-        for sre in seg_res[1:]:
-            m = sre.search(src_norm, pos)
+        for sre, fr in zip(seg_res[1:], free[1:]):
+            m = search_segment(sre, src_norm, pos, edge, fr)
             if not m:
                 ok = False
                 break
@@ -321,13 +582,20 @@ def chain_match(src_norm, seg_res):
 OCCURRENCE_LIMIT = 20
 
 
-def find_occurrences(src_norm, needle, limit=OCCURRENCE_LIMIT):
-    """Start offsets of up to `limit` non-overlapping occurrences."""
+def find_occurrences(src_norm, needle, limit=OCCURRENCE_LIMIT, edge=None, partial=None):
+    """Start offsets of up to `limit` non-overlapping occurrences. With `edge`
+    (a function of (start, end)), an occurrence that starts or ends inside a
+    source token is skipped and its offset appended to the `partial` list."""
     out, start = [], 0
     while len(out) < limit:
         i = src_norm.find(needle, start)
         if i < 0:
             break
+        if edge is not None and edge(i, i + len(needle)) == "inside":
+            if partial is not None and len(partial) < limit:
+                partial.append(i)
+            start = i + 1
+            continue
         out.append(i)
         start = i + max(1, len(needle))
     return out
@@ -452,19 +720,34 @@ def check_quote(raw, views, first_page, quote, pincite, fold_view=None):
     q_plain = normalize(quote, fold=False)[0]
     q_fold = normalize(quote, fold=True, join_tokens=views.get("src_tokens"))[0]
     pr = parse_pincite(pincite)
+    if "page_jumps" not in views:
+        views["page_jumps"] = span_jumps(find_page_spans(raw)[0])
+    jumps = views["page_jumps"]
+
+    def edges_in(view):
+        norm, omap = view[0], view[1]
+        return lambda s, e, cs=True, ce=True: match_edges(norm, omap, raw, s, e, jumps, cs, ce)
 
     status = span = mv = None
     occ = []
+    partial = None                 # (view, offset, length) of a rejected partial-token hit
     if q_plain:
         src_norm, _, _ = views[False]
-        occ = find_occurrences(src_norm, q_plain)
+        rejected = []
+        occ = find_occurrences(src_norm, q_plain, edge=edges_in(views[False]), partial=rejected)
+        if rejected:
+            partial = (views[False], rejected[0], len(q_plain))
         if occ:
             status, mv = "verbatim", views[False]
             span = (occ[0], occ[0] + len(q_plain))
     q_tokens = _tokens(q_fold)
     fsrc_norm, fomap, fbounds = fold_view(q_tokens) if fold_view else views[True]
+    fview = (fsrc_norm, fomap, fbounds)
     if status is None and q_fold:
-        occ = find_occurrences(fsrc_norm, q_fold)
+        rejected = []
+        occ = find_occurrences(fsrc_norm, q_fold, edge=edges_in(fview), partial=rejected)
+        if rejected and partial is None:
+            partial = (fview, rejected[0], len(q_fold))
         if occ:
             status, mv = "normalized", (fsrc_norm, fomap, fbounds)
             span = (occ[0], occ[0] + len(q_fold))
@@ -477,8 +760,9 @@ def check_quote(raw, views, first_page, quote, pincite, fold_view=None):
         marked = (len(segs) > 1 or BRACKET_RE.search(q_fold)
                   or ELLIPSIS_RE.search(q_fold))
         if segs and marked:
-            res = chain_match(fsrc_norm, [segment_regex(s) for s in segs])
-            if res:
+            res = chain_match(fsrc_norm, [segment_regex(s) for s in segs],
+                              edge=edges_in(fview), free=[segment_free_edges(s) for s in segs])
+            if res and res[1] > res[0]:   # an empty match (a bare "[T]") locates nothing
                 s, e, gaps = res
                 status, span, mv = "altered", (s, e), (fsrc_norm, fomap, fbounds)
                 out["note"] = ("matches with the draft's marked alterations honored "
@@ -495,11 +779,20 @@ def check_quote(raw, views, first_page, quote, pincite, fold_view=None):
         probe = max(segments_of(q_fold) or [q_fold], key=len)
         ratio, hint, window = fuzzy_hint(fsrc_norm, fomap, raw, probe)
         out["best_ratio"] = round(ratio, 2)
+        if partial:
+            pview, at, length = partial
+            out["partial_token_match"] = token_context(pview[0], pview[1], raw, at, at + length)
         if hint:
             out["hint"] = hint
             diff = word_diff(probe, window)
             if diff:
                 out["word_diff"] = diff
+        if partial:
+            out["reason"] = ("the quote's wording occurs in this source only INSIDE a longer "
+                            "word or number (partial_token_match shows the source's own "
+                            "words) — the quote starts or ends mid-token, so the source "
+                            "says something different")
+        elif hint:
             out["reason"] = ("closest source passage differs from the draft quote — "
                             "word_diff separates substantive differences "
                             "(draft_only/source_only/changed words) from cosmetic "
@@ -535,6 +828,11 @@ def check_quote(raw, views, first_page, quote, pincite, fold_view=None):
     s, e = span
     a, b = omap[s], omap[e - 1] + 1
     out["match_excerpt"] = raw[a:b][:280]
+    if status != "altered" and match_edges(norm, omap, raw, s, e, jumps) == "digits":
+        out["warnings"].append(
+            "match_abuts_digits — the source continues with digits directly after the "
+            "match (\"%s\"); usually a flattened footnote call, but confirm the quote "
+            "does not cut a number or identifier short" % raw[max(a, b - 12):b + 8].strip())
     if status == "normalized":
         # Inline hyphens inside the MATCHED passage that were joined to reach
         # the match: say so, since "estab-lished" may equally be a real hyphen.
@@ -661,6 +959,7 @@ def main(argv):
     views = {fold: normalize(raw, fold=fold, page_spans=spans) for fold in (False, True)}
     views["src_tokens"] = _tokens(views[True][0])
     views["src_candidates"] = source_join_candidates(raw)
+    views["page_jumps"] = span_jumps(spans)
     cache = {frozenset(): views[True]}
 
     def fold_view(tokens):

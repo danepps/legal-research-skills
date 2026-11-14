@@ -271,6 +271,162 @@ check("without a pincite: first occurrence, warning lists both pages",
       by_id["nopin"].get("page") == 10
       and any("pages [10, 15]" in w for w in by_id["nopin"]["warnings"]))
 
+print("token boundaries (regression 2026-11-14: substring matches passed as verbatim)")
+def _status(source, quote, extra=()):
+    rc, rep = run(source, [quote] + list(extra))
+    return rep["results"][0]
+
+for label, source, quote in (
+    ("dropped negative prefix (ineligible)", "It is ineligible for copyright protection.",
+     "eligible for copyright protection"),
+    ("dropped negative prefix (unreasonable)",
+     "It was unreasonable to exclude county and state nursing home facilities.",
+     "reasonable to exclude county and state nursing home facilities"),
+    ("truncated amount, quote ends at the comma", "They must pay more than $400,000 now.",
+     "pay more than $400,"),
+    ("truncated amount, no comma", "They must pay more than $400,000 now.", "pay more than $400"),
+    ("truncated decimal", "The fee rose to $3.5 million last year.", "The fee rose to $3"),
+    ("number cut at its start", "They must pay more than $400,000 now.", "000 now"),
+    ("word cut at its end", "The agency acted reasonably in this case.", "The agency acted reason"),
+    ("truncated digits", "under section 1983 of the Act", "under section 198"),
+    ("identifier cut before its letter", "liability under Rule 10b-5 is strict", "liability under Rule 10"),
+    ("contraction cut at the apostrophe", "The defendant can't be retried here.", "The defendant can"),
+    ("possessive cut at a curly apostrophe", "It reviewed the court’s findings.", "reviewed the court"),
+    ("hyphenated negative prefix", "That is non-binding precedent in this circuit.",
+     "binding precedent in this circuit"),
+    ("first half of a hyphenated compound", "the decision-making process was flawed", "the decision"),
+    ("prefix broken across a line", "The work is in-\neligible for copyright protection.",
+     "eligible for copyright protection"),
+    ("prefix broken across a page", "The work is in-\n\feligible for copyright protection.",
+     "eligible for copyright protection"),
+    ("soft hyphen inside the source word", "The work is in\u00adeligible for copyright protection.",
+     "eligible for copyright protection"),
+    ("accented letter before the match", "Their naïveté was plain.", "veté was plain"),
+    ("combining mark after the match", "The x\u0302 term governs here.", "The x"),
+    ("statute cite cut one digit short", "It was made under N.J.S.A. 47:1A-11 of the Act.",
+     "made under N.J.S.A. 47:1A-1"),
+    ("prefix split off by a soft hyphen at a line end",
+     "The rule is un\u00ad\nnecessary because the amendment covers it.",
+     "necessary because the amendment covers it"),
+    ("first half before a soft hyphen at a line end",
+     "We hold the rule is un\u00ad\nnecessary because the amendment covers it.", "We hold the rule is un"),
+):
+    r = _status(source, quote)
+    check("%s -> not_found, partial_token_match reported" % label,
+          r["status"] == "not_found" and r.get("partial_token_match")
+          and "INSIDE a longer" in r.get("reason", ""))
+
+r = _status("It is ineligible for copyright protection.", "eligible for copyright protection")
+check("the partial match names the source's own word",
+      "ineligible" in r["partial_token_match"]
+      and any(c["draft"] == "eligible" and "ineligible" in c["source"]
+              for c in r.get("word_diff", {}).get("changed", [])))
+
+for label, source, quote, want in (
+    ("identical text", "eligible for copyright protection", "eligible for copyright protection", "verbatim"),
+    ("whole amount", "They must pay more than $400,000 now.", "pay more than $400,000", "verbatim"),
+    ("whole word before a comma", "In 2020, 15 states acted.", "In 2020", "verbatim"),
+    ("whole word before a period", "It was eligible. The rest follows.", "It was eligible", "verbatim"),
+    ("whole hyphenated compound", "That is non-binding precedent.", "non-binding precedent", "verbatim"),
+    ("word after a closed-up em dash", "The plaintiff knows—or should know—of it.",
+     "or should know", "verbatim"),
+    ("word after a typed double hyphen", "The plaintiff knows--or should know--of it.",
+     "or should know", "verbatim"),
+    ("word after a suspended hyphen", "the pre- and post-trial motions", "and post-trial motions", "verbatim"),
+    ("page range cut at its hyphen", "See id. at 516-17 for the rule.", "See id. at 516", "verbatim"),
+    ("possessive kept whole", "It reviewed the court's findings.", "the court's findings", "verbatim"),
+    ("quoted word inside single quotes", "the 'reasonable' test applies", "reasonable", "verbatim"),
+    ("whole word across a wrap hyphen", "The work is in-\neligible for protection.",
+     "ineligible for protection", "normalized"),
+):
+    r = _status(source, quote)
+    check("%s still matches (%s)" % (label, want), r["status"] == want and not r["warnings"])
+
+r = _status("It is ineligible for protection here. Later it became eligible for protection again.",
+            "eligible for protection")
+check("a whole-token occurrence after a partial one is the match",
+      r["status"] == "verbatim" and r.get("occurrences") == 1
+      and r["match_excerpt"] == "eligible for protection")
+
+TWO_PAGES = ("<<pg. 10>> It is ineligible for protection. It is eligible for protection.\n"
+             "<<pg. 15>> Again, eligible for protection. And ineligible for protection.")
+with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as jf:
+    json.dump([{"id": "p15", "quote": "eligible for protection", "pincite": "15"}], jf)
+try:
+    rc, rep = run(TWO_PAGES, ["--json", jf.name])
+finally:
+    os.unlink(jf.name)
+r = rep["results"][0]
+check("occurrence counting and pincite selection skip partial hits",
+      r["status"] == "verbatim" and r.get("occurrences") == 2
+      and r.get("occurrence_pages") == [10, 15] and r.get("page") == 15 and r.get("pincite_ok") is True)
+
+r = _status("The work is “in\u00adeligible” for copy\u00adright protection.",
+            "eligible' for copyright protection")
+check("folded matching applies the same rule", r["status"] == "not_found")
+
+r = _status("The statute is clearly ineligible for protection under the Act.",
+            "The statute is . . . eligible for protection")
+check("an ellipsis segment may not start inside a word", r["status"] == "not_found")
+r = _status("The statute is clearly eligible for protection under the Act.",
+            "The statute is . . . eligible for protection")
+check("a whole-token ellipsis segment still matches", r["status"] == "altered")
+r = _status("The court said the statute was unreasonable to apply.",
+            "[T]he statute was . . . reasonable to apply")
+check("a segment after an ellipsis is checked even when another starts with a bracket",
+      r["status"] == "not_found")
+r = _status("Yesterday the court held that the claim fails.", "[T]he court held that the claim fails")
+check("a bracketed first letter still matches mid-word", r["status"] == "altered")
+r = _status("It said the agency was unreasonable in its view.", "the agency [is] reasonable in its view")
+check("a bracket does not excuse the segment's other edge",
+      _status("It said the agency was reasonable in its views.",
+              "the agency [is] reasonable in its view")["status"] == "not_found"
+      and r["status"] in ("altered", "not_found"))
+
+print("token boundaries: review of 2026-11-14 (source edges, bracket endings, a quoted hyphen)")
+for label, source, quote in (
+    ("quote ends before the source's final period", "The rule applies under section 1983.",
+     "The rule applies under section 1983"),
+    ("quote ends before the source's final quote mark", "It called this 'reasonable'", "reasonable"),
+    ("quote ends before a final apostrophe", "These are the plaintiffs'", "These are the plaintiffs"),
+    ("quote starts at the source's first character", "eligible for protection, it said.",
+     "eligible for protection"),
+    ("quote starts after the source's first character", "'eligible for protection', it said.",
+     "eligible for protection"),
+    ("quote is the whole source", "The rule applies under section 1983", "The rule applies under section 1983"),
+    ("quote ends with a suspended hyphen", "the pre- and post-trial motions", "the pre-"),
+):
+    r = _status(source, quote)
+    check("%s -> verbatim, no crash" % label, r["status"] == "verbatim" and not r["warnings"])
+for label, source, quote in (
+    ("quote ends with the hyphen of a compound", "The work is non-binding precedent.", "The work is non-"),
+    ("quote ends with a hyphen at a line end", "The work is in-\neligible for protection.", "The work is in-"),
+    ("quote starts with the hyphen of a compound", "The work is non-binding precedent.", "-binding precedent"),
+):
+    r = _status(source, quote)
+    check("%s -> not_found" % label, r["status"] == "not_found" and r.get("partial_token_match"))
+r = _status("The old mayor may issue an order.", "The [official] may")
+check("a bracket's longer expansion is tried when the shorter one ends inside a word",
+      r["status"] == "altered" and r["match_excerpt"] == "The old mayor may")
+r = _status("The old mayor issued an order.", "The [official] may")
+check("with no whole-word ending the bracketed quote is still not_found", r["status"] == "not_found")
+r = _status("The old mayor may issue an order, and the old mayor may not.",
+            "The [official] may . . . the [official] may not")
+check("the same holds for a later ellipsis segment", r["status"] == "altered")
+
+r = _status("\f ", "[T]")
+check("a bracket-only quote against an empty source is not_found, not a crash", r["status"] == "not_found")
+
+r = _status("The work receives copyright protection12 under the statute.", "receives copyright protection")
+check("a flattened footnote call after a word matches, with a warning",
+      r["status"] == "verbatim" and any(w.startswith("match_abuts_digits") for w in r["warnings"]))
+r = _status("The Act was passed in 1871.45 The Court later read it broadly.", "The Act was passed in 1871.")
+check("a footnote call after a sentence-ending number matches, with a warning",
+      r["status"] == "verbatim" and any(w.startswith("match_abuts_digits") for w in r["warnings"]))
+r = _status("Under section 1983,45 plaintiffs may sue.", "Under section 1983")
+check("a footnote call after a comma is not a thousands separator",
+      r["status"] == "verbatim" and any(w.startswith("match_abuts_digits") for w in r["warnings"]))
+
 rc, rep = run(SOURCE, [])
 check("no quotes -> usage error rc 2", rc == 2)
 
