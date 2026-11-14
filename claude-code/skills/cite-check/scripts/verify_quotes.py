@@ -15,8 +15,10 @@ Usage:
 SOURCE_FILE is extracted source text (e.g. `fetch_page.py <url> > src.txt`).
 QUOTES.json is a list of {"id": ..., "quote": "...", "pincite": "516-17"}.
 --first-page maps the source's first page to its printed number (default 1).
-Page boundaries are form feeds (as pdftotext emits) or explicit `<<pg. N>>`
-markers; with neither, pages are not reported and pincites aren't judged.
+Page boundaries are form feeds (as pdftotext emits), explicit `<<pg. N>>`
+markers, or star pagination (`*516` or `[*516]`); with none, pages are not
+reported and pincites aren't judged. A bracketed star marker is never text,
+and a word split by a soft hyphen at a line end is one word, at every tier.
 
 Match tiers, reported per quote as `status`:
   verbatim    exact text, modulo whitespace runs / line wraps
@@ -85,7 +87,12 @@ LIGATURES = {"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi",
              "ﬄ": "ffl", "ﬅ": "st", "ﬆ": "st"}
 
 PG_MARKER_RE = re.compile(r"<<pg\.\s*(\d+)>>")
-STAR_MARKER_RE = re.compile(r"\*(\d{1,4})")
+# Star pagination: a bare *516, or the bracketed [*516] that Lexis-style text
+# carries. A bracketed marker is a page marker wherever it appears, so it is
+# always treated as whitespace ([**12] and [***3], parallel reporters, too); a
+# bare *N counts only when the file holds a plausible page sequence.
+STAR_MARKER_RE = re.compile(r"\[\*{2,3}\d{1,4}\]|\[\*(\d{1,4})\]|\*(\d{1,4})")
+BRACKET_STAR_RE = re.compile(r"\[\*{1,3}\d{1,4}\]")
 # 3-4 dots with optional single spaces (covers "...", ". . .", four-dot close).
 ELLIPSIS_RE = re.compile(r"\.[ ]?\.[ ]?\.(?:[ ]?\.)?")
 BRACKET_RE = re.compile(r"\[([^\][]{0,80})\]")
@@ -116,7 +123,8 @@ CHAIN_RESTARTS = 50    # attempts to re-anchor segment 1 before giving up
 # ("protection12") and a number, a period, then one to three digits before a
 # new sentence ("in 1871.45 The Court").
 APOSTROPHES = frozenset("'\u2019\u02bc")
-SOFT_HYPHEN = "\u00ad"       # invisible unless it ends a line, where it splits a word
+SOFT_HYPHEN = "\u00ad"       # invisible unless it ends a line, where it splits a word;
+                             # followed by any whitespace it marks such a split
 _SENTENCE_OPENERS = frozenset("'\"\u2018\u201c([")
 
 
@@ -179,9 +187,12 @@ def _is_cf(c):
     return unicodedata.category(c) == "Cf"
 
 
-def span_jumps(page_spans):
-    """({span_end: span_start}, {span_start: span_end}) for the raw-text scans."""
-    return ({e: s for s, e, _ in page_spans}, {s: e for s, e, _ in page_spans})
+def span_jumps(page_spans, raw=""):
+    """({marker_end: marker_start}, {marker_start: marker_end}) for the raw-text
+    scans: the page spans, plus every bracketed star marker in raw."""
+    pairs = [(s, e) for s, e, _ in page_spans]
+    pairs += [(m.start(), m.end()) for m in BRACKET_STAR_RE.finditer(raw)]
+    return ({e: s for s, e in pairs}, {s: e for s, e in pairs})
 
 
 def _gap_after(raw, j, fwd):
@@ -240,7 +251,7 @@ def _hyphen_before(raw, a, back, fwd=None):
     if j < 1:
         return False
     if raw[j - 1] == SOFT_HYPHEN:
-        if not brk:                 # mid-line: the views drop it and the letters touch
+        if not ws:                  # mid-line: the views drop it and the letters touch
             return False
     elif raw[j - 1] not in JOIN_DASHES or (ws and not brk):
         return False
@@ -277,8 +288,8 @@ def _hyphen_after(raw, b, fwd):
             j += 1
         else:
             break
-    if soft:                        # a soft hyphen joins only across a line break
-        return _cls(_at(raw, j)) == "L" and brk
+    if soft:                        # a soft hyphen joins only across whitespace
+        return _cls(_at(raw, j)) == "L" and ws
     return _cls(_at(raw, j)) == "L" and (not ws or brk)
 
 
@@ -325,7 +336,8 @@ def find_page_spans(raw):
     spans = [(m.start(), m.end(), None) for m in re.finditer("\f", raw)]
     if spans:
         return spans, "form-feed"
-    stars = [(m.start(), m.end(), int(m.group(1))) for m in STAR_MARKER_RE.finditer(raw)]
+    stars = [(m.start(), m.end(), int(m.group(1) or m.group(2)))
+             for m in STAR_MARKER_RE.finditer(raw) if m.group(1) or m.group(2)]
     nums = [s[2] for s in stars]
     if len(stars) >= 3 and all(0 < b - a <= 5 for a, b in zip(nums, nums[1:])):
         return stars, "star"
@@ -393,10 +405,39 @@ def normalize(raw, fold, page_spans=(), join_tokens=None):
             pending_ws = True
             i += 1
             continue
+        if c == "[":
+            mk = BRACKET_STAR_RE.match(raw, i)
+            if mk:
+                # "[*516]" is a reporter's page marker, never text. Left in, its
+                # brackets blocked every quote that crossed a page.
+                pending_ws = True
+                i = mk.end()
+                continue
         if unicodedata.category(c) == "Cf":
             # Format characters are never printed: soft hyphen, zero-width
             # space/joiner/non-joiner, BOM, word joiner. Word output is full of
             # U+200B, and one of them inside a quote blocked every match tier.
+            if c == SOFT_HYPHEN and norm and norm[-1].isalpha() and not pending_ws:
+                # A soft hyphen shows only where a line breaks inside a word
+                # (pdftotext output is full of them). The halves are one word at
+                # every tier: without this "un<SHY>\nnecessary" read "un necessary".
+                # Any whitespace after it counts, since re-flowed or pasted text
+                # turns the line break into a space.
+                j, k, crossed = i + 1, si, []
+                while j < n:
+                    if k < len(spans) and j == spans[k][0]:
+                        crossed.append(spans[k][2])
+                        j, k = spans[k][1], k + 1
+                    elif raw[j].isspace() or unicodedata.category(raw[j]) == "Cf":
+                        j += 1
+                    elif raw[j] == "[" and BRACKET_STAR_RE.match(raw, j):
+                        j = BRACKET_STAR_RE.match(raw, j).end()
+                    else:
+                        break
+                if j < n and raw[j].isalpha():
+                    bounds.extend((len(norm), no) for no in crossed)
+                    si, i = k, j
+                    continue
             i += 1
             continue
         if fold:
@@ -438,6 +479,9 @@ def normalize(raw, fold, page_spans=(), join_tokens=None):
                     elif raw[j].isspace():
                         crossed_nl = crossed_nl or raw[j] in "\n\r\f\v"
                         j += 1
+                    elif raw[j] == "[" and BRACKET_STAR_RE.match(raw, j):
+                        j = BRACKET_STAR_RE.match(raw, j).end()   # a page marker in the gap
+                        crossed_nl = True
                     else:
                         break
                 had_ws = j > ws_start
@@ -721,7 +765,7 @@ def check_quote(raw, views, first_page, quote, pincite, fold_view=None):
     q_fold = normalize(quote, fold=True, join_tokens=views.get("src_tokens"))[0]
     pr = parse_pincite(pincite)
     if "page_jumps" not in views:
-        views["page_jumps"] = span_jumps(find_page_spans(raw)[0])
+        views["page_jumps"] = span_jumps(find_page_spans(raw)[0], raw)
     jumps = views["page_jumps"]
 
     def edges_in(view):
@@ -959,7 +1003,7 @@ def main(argv):
     views = {fold: normalize(raw, fold=fold, page_spans=spans) for fold in (False, True)}
     views["src_tokens"] = _tokens(views[True][0])
     views["src_candidates"] = source_join_candidates(raw)
-    views["page_jumps"] = span_jumps(spans)
+    views["page_jumps"] = span_jumps(spans, raw)
     cache = {frozenset(): views[True]}
 
     def fold_view(tokens):

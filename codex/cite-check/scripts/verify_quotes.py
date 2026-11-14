@@ -52,7 +52,12 @@ LIGATURES = {
     "ﬆ": "st",
 }
 PAGE_MARKER = re.compile(r"<<pg\.\s*(\d+)>>")
-STAR_MARKER = re.compile(r"(?<!\*)\*(?!\*)(\d{1,4})(?!\d)")
+# Star pagination: a bare *516, or the bracketed [*516] of Lexis-style text. A
+# bracketed marker is a page marker wherever it appears and is always treated as
+# whitespace, parallel-reporter forms ([**12], [***3]) included. A bare *N counts
+# only when the file holds a plausible page sequence.
+STAR_MARKER = re.compile(r"\[\*(\d{1,4})\]|(?<!\*)\*(?!\*)(\d{1,4})(?!\d)")
+BRACKET_STAR = re.compile(r"\[\*{1,3}\d{1,4}\]")
 ELLIPSIS = re.compile(r"\.[ ]?\.[ ]?\.(?:[ ]?\.)?")
 BRACKET = re.compile(r"\[([^\][]{0,80})\]")
 PUNCTUATION = re.compile(r"[^0-9A-Za-z]+")
@@ -163,9 +168,14 @@ def classify_cut(text: str, index: int, *, at_end: bool) -> str | None:
 
 def span_jumps(
     spans: list[tuple[int, int, int | None]],
+    raw: str = "",
 ) -> tuple[dict[int, int], dict[int, int]]:
-    """Map page-marker ends to starts and starts to ends for raw-text scans."""
-    return ({end: start for start, end, _ in spans}, {start: end for start, end, _ in spans})
+    """Map page-marker ends to starts and starts to ends for raw-text scans.
+
+    Covers the page spans and every bracketed star marker in raw."""
+    pairs = [(start, end) for start, end, _ in spans]
+    pairs += [(match.start(), match.end()) for match in BRACKET_STAR.finditer(raw)]
+    return ({end: start for start, end in pairs}, {start: end for start, end in pairs})
 
 
 def letter_precedes(raw: str, index: int) -> bool:
@@ -234,7 +244,7 @@ def hyphen_joins_before(
     if cursor < 1:
         return False
     if raw[cursor - 1] == SOFT_HYPHEN:
-        if not line_break:  # mid-line: the cut classifier sees the adjacent letters
+        if not whitespace:  # mid-line: the cut classifier sees the adjacent letters
             return False
     elif raw[cursor - 1] not in JOINING_HYPHENS or (whitespace and not line_break):
         return False
@@ -275,8 +285,8 @@ def hyphen_joins_after(raw: str, index: int, forward: dict[int, int]) -> bool:
             cursor += 1
         else:
             break
-    if soft:  # a soft hyphen joins only across a line break
-        return character_class(character_at(raw, cursor)) == "L" and line_break
+    if soft:  # a soft hyphen joins only across whitespace
+        return character_class(character_at(raw, cursor)) == "L" and whitespace
     return character_class(character_at(raw, cursor)) == "L" and (not whitespace or line_break)
 
 
@@ -336,7 +346,7 @@ def page_spans(raw: str, marker_follows: bool = False) -> tuple[list[tuple[int, 
     if form_feeds:
         return form_feeds, "form_feed"
     stars = [
-        (match.start(), match.end(), int(match.group(1)))
+        (match.start(), match.end(), int(match.group(1) or match.group(2)))
         for match in STAR_MARKER.finditer(raw)
     ]
     numbers = [row[2] for row in stars]
@@ -364,7 +374,7 @@ def normalize(
     pending_space = False
     page_rows = spans or []
     page_index = 0
-    parallel_stars = bool(page_rows and raw[page_rows[0][0]:].startswith("*"))
+    parallel_stars = bool(page_rows and raw[page_rows[0][0]:].startswith(("*", "[*")))
 
     def emit(character: str, source_index: int) -> None:
         nonlocal pending_space
@@ -396,6 +406,14 @@ def normalize(
             pending_space = True
             index += 1
             continue
+        if character == "[":
+            # "[*516]" is a reporter's page marker, never text. Left in, its
+            # brackets blocked every quotation that crossed a page.
+            bracketed = BRACKET_STAR.match(raw, index)
+            if bracketed:
+                pending_space = True
+                index = bracketed.end()
+                continue
         if fold:
             # Compose combining sequences without losing raw-file offsets.
             cursor = index + 1
@@ -407,6 +425,28 @@ def normalize(
                 index = cursor
                 continue
             if unicodedata.category(character) == "Cf":
+                if character == SOFT_HYPHEN and output and output[-1].isalpha() and not pending_space:
+                    # A soft hyphen shows only where a line breaks inside a word.
+                    # Rejoin the halves across any whitespace (re-flowed text turns
+                    # the break into a space); stop at a page boundary, which the
+                    # loop above must record.
+                    cursor = index + 1
+                    while cursor < len(raw) and not (
+                        page_index < len(page_rows) and cursor == page_rows[page_index][0]
+                    ):
+                        if raw[cursor].isspace() or unicodedata.category(raw[cursor]) == "Cf":
+                            cursor += 1
+                        elif raw[cursor] == "[" and BRACKET_STAR.match(raw, cursor):
+                            cursor = BRACKET_STAR.match(raw, cursor).end()  # type: ignore[union-attr]
+                        else:
+                            break
+                    if (
+                        cursor < len(raw)
+                        and raw[cursor].isalpha()
+                        and not (page_index < len(page_rows) and cursor == page_rows[page_index][0])
+                    ):
+                        index = cursor
+                        continue
                 index += 1
                 continue
             if character in "‒–—―−":
@@ -438,9 +478,16 @@ def normalize(
                     cursor += 1
                 whitespace_start = cursor
                 crossed_line = False
-                while cursor < len(raw) and raw[cursor].isspace():
-                    crossed_line = crossed_line or raw[cursor] in "\n\r\f\v"
-                    cursor += 1
+                while cursor < len(raw):
+                    if raw[cursor].isspace():
+                        crossed_line = crossed_line or raw[cursor] in "\n\r\f\v"
+                        cursor += 1
+                    elif raw[cursor] == "[" and BRACKET_STAR.match(raw, cursor):
+                        # A bracketed page marker in the gap of a word broken at a line end.
+                        cursor = BRACKET_STAR.match(raw, cursor).end()  # type: ignore[union-attr]
+                        crossed_line = True
+                    else:
+                        break
                 had_whitespace = cursor > whitespace_start
                 if (
                     previous_is_letter
@@ -743,7 +790,7 @@ def check_quote(
     span: tuple[int, int] | None = None
     selected_view: bool | str = False
     if "page_jumps" not in views:
-        views["page_jumps"] = span_jumps(page_spans(raw)[0])  # type: ignore[assignment]
+        views["page_jumps"] = span_jumps(page_spans(raw)[0], raw)  # type: ignore[assignment]
     jumps = views["page_jumps"]
 
     def edges_in(view_key: bool | str) -> EdgeCheck:
@@ -1066,7 +1113,7 @@ def main() -> int:
         views["dehyphenated"] = normalize(
             raw, fold=True, spans=spans, dehyphenate_line_breaks=True
         )
-        views["page_jumps"] = span_jumps(spans)  # type: ignore[assignment]
+        views["page_jumps"] = span_jumps(spans, raw)  # type: ignore[assignment]
         results = [
             check_quote(raw, views, marker, args.first_page, item)
             for item in items

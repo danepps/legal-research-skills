@@ -87,8 +87,10 @@ def marked(s: str) -> str:
     sits inside one source token."""
     s = html.unescape(s)
     s = s.replace(JOIN, "").replace(LETTER, "")
-    # a soft hyphen at a line end splits one word; the space it leaves carries the join
-    s = re.sub(r"(?<=%s)\u00ad[ \t]*\n\s*(?=%s)" % (_L, _L), JOIN + "\n", s)
+    s = re.sub(r"\[\*{1,3}\d{1,4}\]", " ", s)   # a reporter's page marker ([*516]) is never text
+    # a soft hyphen at a line end splits one word (re-flowed text leaves a space after
+    # it); rejoin the halves and keep the join
+    s = re.sub(r"(?<=%s)\u00ad\s+(?=%s)" % (_L, _L), JOIN, s)
     s = s.replace("­", "").replace("​", "").replace("﻿", "")
     if not s.isascii():
         s = unicodedata.normalize("NFC", s)
@@ -135,8 +137,7 @@ def cuts_token(text: str, joins, i: int, at_end: bool) -> bool:
     if left and right:
         return not (at_end and left == "L" and right == "D")
     if at_end:
-        # the second test is a soft hyphen at a line end: only its space is left
-        return (text[i] in "-',." and (i + 1) in joins) or (text[i] == " " and i in joins)
+        return text[i] in "-',." and (i + 1) in joins
     # the space after a hyphen at a line end carries the join ("in- eligible")
     return i in joins or (text[i - 1] == " " and (i - 1) in joins)
 
