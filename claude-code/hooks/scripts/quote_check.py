@@ -21,6 +21,10 @@ SEGMENT_MIN_WORDS or more words must match. A quotation whose line carries
 "[unverified]" is skipped, so the model can flag an honest recollection without
 pretending it was checked.
 
+A quotation must cover whole source words and numbers: one that begins or ends
+inside a source word or number is not in the source ("eligible" against
+"ineligible", "$400" against "$400,000"). See the token-boundary section below.
+
 Gate: nothing happens unless one of the plugin's skills was invoked this session
 (see quote_common.skill_active). Off switch: LEGAL_RESEARCH_QUOTE_CHECK=off. The
 hook also stands down when Dan's quote-guard mod is loaded, which does the same
@@ -35,6 +39,7 @@ import os
 import re
 import sys
 import tempfile
+import unicodedata
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from quote_common import (  # noqa: E402
@@ -49,24 +54,107 @@ CHECKED_EXT = {".md", ".markdown", ".txt", ".html", ".htm"}
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit"}
 
 
-def norm(s: str) -> str:
+# ---- Token boundaries (added 2026-11-14) --------------------------------------
+# The check used to be a bare substring test, so a quotation that began or ended inside a
+# source word or number passed: "eligible for copyright protection" against a source that
+# says "ineligible for copyright protection", "pay more than $400," against "$400,000".
+# Now a quotation segment must start and end on a source-token boundary. A cut is INSIDE a
+# token when it falls between two letters, two digits, or a digit and a following letter
+# ("10b"), or at one of the joins that marked() records while the line breaks and case
+# that identify them are still there:
+#   - a single hyphen between two word halves, closed up ("non-binding" is not "binding")
+#     or broken across a line ("in-\neligible", soft hyphens included); dashes and
+#     "pre- and post-" are boundaries
+#   - an apostrophe with a letter on each side ("can't" is not "can")
+#   - a thousands comma (a comma and exactly three digits) or a decimal point in a number
+# Allowed, because a flattened footnote call looks like this: a word followed directly by
+# digits ("protection12"), and a number, a period, then one to three digits before a new
+# sentence ("in 1871.45 The Court").
+JOIN = "\x01"        # marks a join inside a token; removed again, its offsets kept
+LETTER = "\x02"      # stands for any letter outside a-z, so "naïveté" stays one word
+_L = r"[^\W\d_]"     # any letter
+_JOINS = [
+    (re.compile(r"(?<=%s)-(?=%s)" % (_L, _L)), "-" + JOIN),
+    (re.compile(r"(?<=%s)-[ \t]*\n\s*(?=%s)" % (_L, _L)), "-" + JOIN + "\n"),
+    (re.compile(r"(?<=%s)'(?=%s)" % (_L, _L)), "'" + JOIN),
+    (re.compile(r"(?<=\d),(?=\d{3}(?!\d))"), "," + JOIN),
+    (re.compile(r"(?<=\d)\.(?=\d)(?!\d{1,3}\s+['\"(\[]?[A-Z])"), "." + JOIN),
+]
+
+
+def marked(s: str) -> str:
+    """Normalized text with a JOIN after every hyphen, apostrophe, comma or period that
+    sits inside one source token."""
     s = html.unescape(s)
+    s = s.replace(JOIN, "").replace(LETTER, "")
+    # a soft hyphen at a line end splits one word; the space it leaves carries the join
+    s = re.sub(r"(?<=%s)\u00ad[ \t]*\n\s*(?=%s)" % (_L, _L), JOIN + "\n", s)
     s = s.replace("­", "").replace("​", "").replace("﻿", "")
+    if not s.isascii():
+        s = unicodedata.normalize("NFC", s)
     s = re.sub(r"[‘’‚‛′]", "'", s)
     s = re.sub(r"[“”„‟″]", '"', s)
-    s = re.sub(r"[‐-―−]", "-", s)
+    s = re.sub(r"[‐‑]", "-", s)         # true hyphens now; dashes after the joins
     s = s.replace(" ", " ")
     s = re.sub(r"(?m)^\s*\d+\t", "", s)          # Read tool line numbers
     s = re.sub(r"(?m)^\s*\d+→", "", s)      # cat -n style arrows in Edit echoes
     s = re.sub(r"<[^>\n]{1,200}>", " ", s)        # HTML / XML tags in raw fetches
+    for pattern, repl in _JOINS:
+        s = pattern.sub(repl, s)
+    s = re.sub(r"[‒-―−]", "-", s)   # figure, en, em dashes, bar, minus
     s = s.lower()
-    s = re.sub(r"[^a-z0-9§'\"$%&/.,;:!?()\[\]-]+", " ", s)
+    s = re.sub(r"[^\W\d_a-z]|[̀-ͯ]", LETTER, s)
+    s = re.sub(r"[^a-z0-9§'\"$%&/.,;:!?()\[\]\x01\x02-]+", " ", s)
     s = re.sub(r"\s+", " ", s)
     return s.strip()
 
 
+def norm(s: str) -> str:
+    return marked(s).replace(JOIN, "")
+
+
+def norm_source(s: str):
+    """(normalized text, offsets that sit just after a join inside a token)."""
+    pieces = marked(s).split(JOIN)
+    joins, at = set(), 0
+    for piece in pieces[:-1]:
+        at += len(piece)
+        joins.add(at)
+    return "".join(pieces), joins
+
+
+def _kind(c: str) -> str:
+    return "L" if ("a" <= c <= "z" or c == LETTER) else "D" if "0" <= c <= "9" else ""
+
+
+def cuts_token(text: str, joins, i: int, at_end: bool) -> bool:
+    """Whether the cut before text[i] falls inside a source word or number."""
+    if i <= 0 or i >= len(text):
+        return False
+    left, right = _kind(text[i - 1]), _kind(text[i])
+    if left and right:
+        return not (at_end and left == "L" and right == "D")
+    if at_end:
+        # the second test is a soft hyphen at a line end: only its space is left
+        return (text[i] in "-',." and (i + 1) in joins) or (text[i] == " " and i in joins)
+    # the space after a hyphen at a line end carries the join ("in- eligible")
+    return i in joins or (text[i - 1] == " " and (i - 1) in joins)
+
+
+def occurs(seg: str, text: str, joins, free=(False, False)) -> bool:
+    """seg is in text, starting and ending on token boundaries. free = edges that a
+    bracketed alteration occupies ("[T]he" for "the"), which have no boundary to test."""
+    at = text.find(seg)
+    while at >= 0:
+        if not ((not free[0] and cuts_token(text, joins, at, False)) or
+                (not free[1] and cuts_token(text, joins, at + len(seg), True))):
+            return True
+        at = text.find(seg, at + 1)
+    return False
+
+
 def words(s: str) -> int:
-    return len(re.findall(r"[a-z0-9]+", s))
+    return len(re.findall(r"[a-z0-9\x02]+", s))
 
 
 def is_prompt(o) -> bool:
@@ -234,15 +322,25 @@ def extract_quotes(text: str):
 
 
 def trim(s: str) -> str:
-    return re.sub(r"^[^a-z0-9§$]+|[^a-z0-9%)]+$", "", s)
+    return re.sub(r"^[^a-z0-9§$\x02]+|[^a-z0-9%)\x02]+$", "", s)
 
 
 def segments(q: str):
-    parts = re.split(r"\.\s?\.\s?\.|…|\[[^\]]*\]", q)
-    return [p for p in (trim(norm(p)) for p in parts) if words(p) >= SEGMENT_MIN_WORDS]
+    """Split a quotation at ellipses and bracketed alterations. Each item is
+    (segment, (starts at a bracket, ends at a bracket))."""
+    parts = re.split(r"(\.\s?\.\s?\.|…|\[[^\]]*\])", q)
+    out = []
+    for n in range(0, len(parts), 2):
+        seg = trim(norm(parts[n]))
+        if words(seg) >= SEGMENT_MIN_WORDS:
+            out.append((seg, (n > 0 and parts[n - 1].startswith("["),
+                              n + 1 < len(parts) and parts[n + 1].startswith("["))))
+    return out
 
 
-def unmatched_quotes(text, corpus_n, seen):
+def unmatched_quotes(text, corpus, seen):
+    """corpus = norm_source(...) of everything that counts as a source."""
+    corpus_n, joins = corpus
     out = []
     for q, line in extract_quotes(text):
         qn = norm(q)
@@ -251,8 +349,8 @@ def unmatched_quotes(text, corpus_n, seen):
         seen.add(qn)
         if "[unverified]" in line.lower():
             continue
-        segs = segments(q) or [trim(qn)]
-        if all(s in corpus_n for s in segs):
+        segs = segments(q) or [(trim(qn), (False, False))]
+        if all(occurs(s, corpus_n, joins, free) for s, free in segs):
             continue
         out.append(q.strip())
     return out
@@ -277,7 +375,7 @@ def main():
     last = data.get("last_assistant_message") or sess.last_assistant or ""
     if not last.strip() and not sess.turn_files:
         return
-    corpus_n = norm("\n".join(sess.corpus))
+    corpus_n = norm_source("\n".join(sess.corpus))
 
     seen = set()
     problems = []                                   # (where, quote)

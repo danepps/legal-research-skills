@@ -125,6 +125,139 @@ def main() -> int:
         assert "multiple_matches" in row["warnings"]
         assert len(row["source_sha256"]) == 64
 
+    # Token boundaries (2026-11-14): substring search accepted quotations that
+    # began or ended inside a source word or number as verbatim.
+    def status_of(source: str, quote: str) -> dict:
+        return run([quote], source)[1]["results"][0]
+
+    for source, quote in (
+        ("It is ineligible for copyright protection.", "eligible for copyright protection"),
+        (
+            "It was unreasonable to exclude county and state nursing home facilities.",
+            "reasonable to exclude county and state nursing home facilities",
+        ),
+        ("They must pay more than $400,000 now.", "pay more than $400,"),
+        ("They must pay more than $400,000 now.", "pay more than $400"),
+        ("The fee rose to $3.5 million last year.", "The fee rose to $3"),
+        ("They must pay more than $400,000 now.", "000 now"),
+        ("The agency acted reasonably in this case.", "The agency acted reason"),
+        ("under section 1983 of the Act", "under section 198"),
+        ("liability under Rule 10b-5 is strict", "liability under Rule 10"),
+        ("The defendant can't be retried here.", "The defendant can"),
+        ("It reviewed the court’s findings.", "reviewed the court"),
+        ("That is non-binding precedent in this circuit.", "binding precedent in this circuit"),
+        ("the decision-making process was flawed", "the decision"),
+        ("The work is in-\neligible for copyright protection.", "eligible for copyright protection"),
+        ("The work is in-\n\feligible for copyright protection.", "eligible for copyright protection"),
+        ("The work is in\u00adeligible for copyright protection.", "eligible for copyright protection"),
+        ("Their naïveté was plain.", "veté was plain"),
+        ("The x\u0302 term governs here.", "The x"),
+        ("It was made under N.J.S.A. 47:1A-11 of the Act.", "made under N.J.S.A. 47:1A-1"),
+        (
+            "The rule is un\u00ad\nnecessary because the amendment covers it.",
+            "necessary because the amendment covers it",
+        ),
+        (
+            "We hold the rule is un\u00ad\nnecessary because the amendment covers it.",
+            "We hold the rule is un",
+        ),
+    ):
+        result = status_of(source, quote)
+        assert result["status"] == "not_found", (source, quote, result)
+        assert "partial_token_match" in result["warnings"], (source, quote, result)
+        assert result["partial_token_match"], (source, quote, result)
+    result = status_of("It is ineligible for copyright protection.", "eligible for copyright protection")
+    assert "ineligible" in result["partial_token_match"]
+
+    for source, quote, expected in (
+        ("eligible for copyright protection", "eligible for copyright protection", "verbatim"),
+        ("They must pay more than $400,000 now.", "pay more than $400,000", "verbatim"),
+        ("In 2020, 15 states acted.", "In 2020", "verbatim"),
+        ("It was eligible. The rest follows.", "It was eligible", "verbatim"),
+        ("That is non-binding precedent.", "non-binding precedent", "verbatim"),
+        ("The plaintiff knows—or should know—of it.", "or should know", "verbatim"),
+        ("The plaintiff knows--or should know--of it.", "or should know", "verbatim"),
+        ("the pre- and post-trial motions", "and post-trial motions", "verbatim"),
+        ("See id. at 516-17 for the rule.", "See id. at 516", "verbatim"),
+        ("It reviewed the court's findings.", "the court's findings", "verbatim"),
+        ("the 'reasonable' test applies", "reasonable", "verbatim"),
+        ("The work is in-\neligible for protection.", "ineligible for protection", "normalized"),
+    ):
+        result = status_of(source, quote)
+        assert result["status"] == expected and not result["warnings"], (source, quote, result)
+
+    # A genuine occurrence after a partial one is the match and the only count.
+    result = status_of(
+        "It is ineligible for protection here. Later it became eligible for protection again.",
+        "eligible for protection",
+    )
+    assert result["status"] == "verbatim" and result["occurrences"] == 1
+    assert result["match_excerpt"] == "eligible for protection"
+
+    # Page selection and occurrence counting ignore partial hits on other pages.
+    paged = (
+        "<<pg. 10>> It is ineligible for protection. It is eligible for protection.\n"
+        "<<pg. 15>> Again, eligible for protection. And ineligible for protection."
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        source_path = Path(directory) / "paged.txt"
+        source_path.write_text(paged, encoding="utf-8")
+        items = Path(directory) / "items.json"
+        rows = [
+            {"quote": "eligible for protection", "pincite": "15"},
+            {"quote": "ineligible for protection", "pincite": "15"},
+        ]
+        items.write_text(json.dumps(rows), encoding="utf-8")
+        process = subprocess.run(
+            [sys.executable, str(SCRIPT), str(source_path), "--json", str(items)],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        first, second = json.loads(process.stdout)["results"]
+        assert first["status"] == "verbatim" and first["occurrences"] == 2
+        assert first["page"] == 15 and first["pincite_ok"] is True
+        assert second["status"] == "verbatim" and second["occurrences"] == 2
+        assert second["page"] == 15 and second["pincite_ok"] is True
+
+    # Folded typography and marked alterations follow the same rule.
+    result = status_of(
+        "The work is “in\u00adeligible” for copy\u00adright protection.",
+        "eligible' for copyright protection",
+    )
+    assert result["status"] == "not_found"
+    result = status_of(
+        "The statute is clearly ineligible for protection under the Act.",
+        "The statute is . . . eligible for protection",
+    )
+    assert result["status"] == "not_found"
+    result = status_of(
+        "The statute is clearly eligible for protection under the Act.",
+        "The statute is . . . eligible for protection",
+    )
+    assert result["status"] == "altered"
+    result = status_of(
+        "The court said the statute was unreasonable to apply.",
+        "[T]he statute was . . . reasonable to apply",
+    )
+    assert result["status"] == "not_found"
+    result = status_of(
+        "Yesterday the court held that the claim fails.", "[T]he court held that the claim fails"
+    )
+    assert result["status"] == "altered"
+    result = status_of(
+        "It said the agency was reasonable in its views.", "the agency [is] reasonable in its view"
+    )
+    assert result["status"] == "not_found"
+
+    # Flattened footnote calls are accepted, flagged for a reader.
+    for source, quote in (
+        ("The work receives copyright protection12 under the statute.", "receives copyright protection"),
+        ("The Act was passed in 1871.45 The Court later read it broadly.", "The Act was passed in 1871."),
+        ("Under section 1983,45 plaintiffs may sue.", "Under section 1983"),
+    ):
+        result = status_of(source, quote)
+        assert result["status"] == "verbatim", (source, quote, result)
+        assert "match_abuts_digits" in result["warnings"] and result["requires_judgment"] is True
+
     print("verify_quotes tests passed")
     return 0
 
