@@ -377,8 +377,12 @@ verify agent 150k from the web or 80k when Zotero put the text on disk; a dedica
 agent 200k web / 100k Zotero; a verify tail batch (4 single-quote web sources) 130k and a
 support tail batch (3 single-unit web sources) 210k; a secondary-existence batch of 5 web
 sources 130k (sources matched in Zotero cost no agent); a case-existence batch of 30 cites 90k;
-a history batch of 8 cases 110k; segmentation 150k per chunk; re-verification 100k per finding;
-form 130k; the report 250k. Before step 4, add it up
+a history batch of 8 cases 350k (raised from 110k on 2026-11-12, when a run measured about
+779k per batch with no tool cap; re-measure now that the batch is capped); the pre-report Zotero
+sweep 60k per 40 quotes; segmentation 150k per chunk; re-verification 100k per finding;
+form 130k; the report 250k. The workflow holds back three quote re-verifications and two support
+re-verifications (never more than a tenth and a twentieth of the cap) from the verify and support
+passes, so count 500k of the cap as spoken for on a run with support. Before step 4, add it up
 from the counts the scripts printed (`unit_count` quotes, whose unique sources are fewer, often
 by half; `unique_secondary_cites` less the Zotero `matched`; `unique_case_cite_count`; with
 `support:true` the support `unique_sources` less those with Zotero text) and tell the user in
@@ -471,8 +475,12 @@ Workflow({
    dedicated pass — and every skipped unit is disclosed as not read.
 4. **Verify-the-verifier** — a MANDATORY independent re-derivation of every high-severity finding
    (mismatch / not-found / syllabus / superseded) from the full footnote + body sentence, to catch
-   the checker artifacts that context-deprivation produces (the practice run had five). Confirmed
-   artifacts are dropped; genuine findings are restated with source text. With the support pass
+   the checker artifacts that context-deprivation produces (the practice run had five). A finding
+   the second checker clears (verbatim after all) is dropped as an artifact; one it corrects to a
+   DIFFERENT finding (a mismatch that is really a syllabus quote or a wrong pincite) is reported
+   under the corrected verdict with the first verdict named; genuine findings are restated with
+   source text. Under budget pressure the pass re-derives as many findings as fit, not none
+   (changed 2026-11-15), and the rest are labelled single-checker. With the support pass
    on, every `not_supported` / `contradicted` verdict gets the same second derivation, checking
    the support-specific artifact classes (a paraphrased claim, a misread signal, the clause vs the
    sentence, the wrong antecedent or page, undisclosed posture).

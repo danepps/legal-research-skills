@@ -208,3 +208,35 @@ disk from Zotero. Causes and fixes are in CHANGELOG 1.6.2: unresolved `Id.`/`sup
 silently skipped ids (now retried), a history pass with no tool cap that ate the budget (now capped
 and run last), Zotero lookup gaps for manuscripts and book chapters, and no last check of
 unverifiable quotes against the texts already on disk (now `scripts/zotero_sweep.py`).
+
+## Addendum 2026-11-15 — code review of the workflow script (no live run)
+
+Found by reading the script and running it under stubbed agents; `scripts/test_workflow_quotes.py`
+holds the regression cases. None came from a live run, so each is "the script allowed this", not
+"this happened".
+
+- **A corrected finding vanished.** `upheld=false` from the second checker meant "artifact"
+  whatever verdict came back, so a mismatch corrected to a syllabus quote or a wrong pincite left
+  the report, was counted "verbatim after all", and its ledger instance read `existence-only`.
+  Only a corrected verdict that clears the quote is an artifact now (the rule the support pass
+  already had); a different finding is reported under the corrected verdict. A cleared finding's
+  instance is `verified`.
+- **Re-verify joined by echoed id.** The prompt showed the unit id only inside `--ids N N+1`; an
+  agent echoing N+1 rewrote another quote's verdict into a re-verified high-severity finding. Both
+  re-verify passes join by job position, and the prompt states the id.
+- **Quote verdicts joined by echoed id.** A verify agent's verdict for a quote it was not given
+  was accepted and the quote counted twice. Verdicts are kept only for the ids the job was given;
+  the rest are dropped and counted in `degradation`.
+- **Re-verify was all-or-nothing, on a reserve in the old unit.** 40k was held back against a
+  100k agent, so a budget-bound run with two or more high-severity findings skipped the pass
+  whole. The reserve is now three quote re-verifies and two support re-verifies (capped at a tenth
+  and a twentieth of the cap), and both passes launch as many as fit (`gatedFanout` in strict
+  mode: a job launches only if its whole cost fits).
+- **Dead existence batch**: no retry and no line in `degradation`. It retries once, and cites or
+  keys nobody answered for are counted. Verify tail batches retry once too.
+- **Scratch files** were `/tmp/src-<slug>.txt` and `/tmp/q-<slug>.json` with an agent-chosen
+  slug, shared by every agent on the machine. Each agent now gets a prefix unique to the run and
+  to itself (`/tmp/cc-<run tag>-<agent tag>`).
+- **Report prompt** sent secondary-source items to sections G and H (history and support since
+  2026-10); they go to E, I and J.
+- **SKILL.md** quoted the history batch at 110k against the script's 350k.

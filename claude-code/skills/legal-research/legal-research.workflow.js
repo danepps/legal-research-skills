@@ -70,8 +70,14 @@ const PER_READ = 12_000 // rough output-token cost of one full read
 // Deep cap raised 600k -> 1M (2026-07-15): a deep historical run bound mid-ladder and left 35 of
 // 43 citations unchecked, forcing manual rescue passes. Cite-check is the stage that must finish.
 let SOFT_CAP = DEEP ? 1_000_000 : 250_000 // output tokens; governs only when no user budget is set
+// budget.spent() is turn-global (the main loop and every workflow this turn), so the soft cap is
+// measured from where THIS run started. Without the baseline, tokens spent earlier in the turn
+// (pre-flight, an earlier attempt, another workflow) came out of this run's cap: with 200k already
+// spent, a lean run trimmed its reads from 8 to 3 (2026-11-15 review). The proofread and
+// cite-check workflows already baselined.
+const SPENT0 = budget.spent()
 const remainingTokens = () =>
-  budget.total ? budget.remaining() : Math.max(0, SOFT_CAP - budget.spent())
+  budget.total ? budget.remaining() : Math.max(0, SOFT_CAP - (budget.spent() - SPENT0))
 const tight = (need) => remainingTokens() < need
 
 // Lever 3 — model map:
@@ -123,6 +129,7 @@ const SKILLS = A.skillsDir || '$HOME/.claude/skills'
 const CHECK_CITE = `${SKILLS}/legal-research/check_cite.py`
 const FETCH_PAGE = `${SKILLS}/legal-research/fetch_page.py`
 const CL_TOOLS = `${SKILLS}/legal-research/cl_case_tools.py`
+const PROBE = `${SKILLS}/legal-research/probe_sources.py`
 // Deterministic quote verifier (lives in the sibling cite-check skill, shipped in the same plugin).
 const VERIFY_QUOTES = `${SKILLS}/cite-check/scripts/verify_quotes.py`
 
@@ -260,6 +267,14 @@ async function must(label, fn) {
   if (!r) { log(`${label} agent died — retrying once`); r = await fn() }
   if (!r) throw new Error(`${label} agent failed twice — aborting run`)
   return r
+}
+
+// A dead non-critical agent (survey vector, reader) is retried once; a second death returns null
+// and the caller records the hole. It never surfaces as a clean, empty result.
+async function retryOnce(label, fn) {
+  let r = await fn()
+  if (!r) { log(`${label} died — retrying once`); r = await fn() }
+  return r || null
 }
 
 const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
@@ -596,38 +611,15 @@ INSTRUCTIONS:
 - If the directory is empty of relevant material, return {"candidates": []}. Never invent files.`
 
 phase('Survey')
-const surveyJobs = vectors.map((v) => () =>
-  agent(surveyPrompt(v), {
-    label: `survey:${v.label}`.slice(0, 60),
-    phase: 'Survey',
-    schema: CANDIDATES_SCHEMA,
-    model: SCOUT_MODEL,
-    effort: 'low',
-  })
-)
-if (DO_SCHOLARSHIP) {
-  surveyJobs.push(() =>
-    agent(zoteroSurveyPrompt, {
-      label: 'survey:zotero-library',
-      phase: 'Survey',
-      schema: CANDIDATES_SCHEMA,
-      model: SCOUT_MODEL,
-      effort: 'low',
-    })
-  )
-}
-if (PROJECT_DIR) {
-  surveyJobs.push(() =>
-    agent(localSurveyPrompt, {
-      label: 'survey:local-corpus',
-      phase: 'Survey',
-      schema: CANDIDATES_SCHEMA,
-      model: SCOUT_MODEL,
-      effort: 'low',
-    })
-  )
-}
-const surveys = await parallel(surveyJobs)
+// Each survey job is retried once if its agent dies; a vector that still returns nothing is a
+// coverage gap, named in the result and in the memo's Limits (2026-11-15 review: a dead vector,
+// the direct-answer lane included, used to drop out with no trace and the run could end "complete").
+const surveyOpts = (label) => ({ label, phase: 'Survey', schema: CANDIDATES_SCHEMA, model: SCOUT_MODEL, effort: 'low' })
+const surveyPlan = vectors.map((v) => ({ label: `survey:${v.label}`.slice(0, 60), what: `search vector "${v.label}"${/\[DIRECT-ANSWER\]/.test(v.goal || '') ? ' (the DIRECT-ANSWER lane)' : ''}`, prompt: surveyPrompt(v) }))
+if (DO_SCHOLARSHIP) surveyPlan.push({ label: 'survey:zotero-library', what: "the sweep of the user's Zotero library", prompt: zoteroSurveyPrompt })
+if (PROJECT_DIR) surveyPlan.push({ label: 'survey:local-corpus', what: 'the sweep of the local project files', prompt: localSurveyPrompt })
+const surveys = await parallel(surveyPlan.map((j) => () => retryOnce(j.label, () => agent(j.prompt, surveyOpts(j.label)))))
+const deadSurveys = surveyPlan.filter((_, i) => !surveys[i])
 
 // Lever 1: dedup the candidate pool in PLAIN CODE before any page is fetched, so the same source
 // is never read twice across overlapping vectors.
@@ -638,10 +630,13 @@ for (const s of surveys.filter(Boolean)) {
     if (!k) continue
     if (!poolMap.has(k)) poolMap.set(k, c)
     else {
-      // keep the richer record; prefer the higher apparent authority
+      // keep the richer record; prefer the higher apparent authority. Either way the merged
+      // record keeps a URL and a Zotero key if EITHER copy had one (the Zotero copy of a source
+      // the web survey also found used to lose its key, and with it the full-text route).
       const cur = poolMap.get(k)
       const rank = { high: 3, medium: 2, low: 1 }
-      if ((rank[c.authority] || 0) > (rank[cur.authority] || 0)) poolMap.set(k, { ...cur, ...c })
+      const [win, lose] = (rank[c.authority] || 0) > (rank[cur.authority] || 0) ? [c, cur] : [cur, c]
+      poolMap.set(k, { ...lose, ...win, url: win.url || lose.url, zoteroKey: win.zoteroKey || lose.zoteroKey })
     }
   }
 }
@@ -674,8 +669,12 @@ ISSUES: ${(plan.issues || []).join(' | ')}
 CANDIDATES:
 ${pool.map((c, i) => `[${i}] (${c.authority || '?'}) ${c.citation} — ${c.why || ''}`).join('\n')}`,
     { schema: TRIAGE_SCHEMA, label: 'triage', phase: 'Read', model: READ_MODEL, effort: 'low' }
-  ).catch(() => ({ selected: [] }))
-  selectedIdx = (triage.selected || []).filter((i) => i >= 0 && i < pool.length).slice(0, READ_CAP)
+  ).catch(() => null)
+  // agent() returns null when the agent dies (it rejects only when the budget is spent), so the
+  // .catch alone left `triage.selected` to throw a TypeError after the surveys were paid for.
+  // Indices are de-duplicated: a repeated index read the same source twice.
+  selectedIdx = [...new Set((triage?.selected || []).filter((i) => Number.isInteger(i) && i >= 0 && i < pool.length))].slice(0, READ_CAP)
+  if (!triage) log('Triage agent returned nothing — falling back to survey order for the read list.')
 }
 if (!selectedIdx.length) selectedIdx = pool.slice(0, READ_CAP).map((_, i) => i)
 // Budget check: trim the read list (worst-ranked first) rather than die before Draft. The floor
@@ -712,6 +711,13 @@ INSTRUCTIONS:
   * articles — a digital-commons repository copy or the author's faculty page (one WebSearch like
     "<title>" digitalcommons OR site:.edu to locate a mirror).
   HARD CAP: 3 fetch attempts total. Do not browse beyond locating this one source.
+- PROBE FIRST when you hold more than one candidate URL (the given one plus a mirror or two):
+  test them ALL in ONE Bash call before fetching any —
+    python3 "${PROBE}" "<url1>" "<url2>" ...
+  It returns, per URL, fetchable true/false, the HTTP status, the host rule that applies (SSRN,
+  bepress, HeinOnline and sign-in walls are known blocks) and a Wayback snapshot URL when one
+  exists. Fetch only what it marks fetchable (or the snapshot). A URL it marks not fetchable
+  counts as one of your attempts without a fetch; do not try variants of it.
 - ACCESS DISCIPLINE: use only WebSearch, WebFetch, and the capped fetcher below. NEVER use
   browser-automation tools, library proxies, SSO/login flows, or PDF-download acrobatics to get
   past a paywall or bot wall (HeinOnline, WAF-protected repositories, publisher sites) —
@@ -753,17 +759,21 @@ ${BLUEBOOK}
 ${SOURCES}`
 
 phase('Read')
+const readAgent = (c) => agent(readPrompt(c), {
+  label: `read:${(c.citation || c.url || '').slice(0, 50)}`,
+  phase: 'Read',
+  schema: READ_SCHEMA,
+  model: READ_MODEL,
+  effort: 'low',
+})
 const readResults = await parallel(
-  toRead.map((c) => () =>
-    agent(readPrompt(c), {
-      label: `read:${(c.citation || c.url || '').slice(0, 50)}`,
-      phase: 'Read',
-      schema: READ_SCHEMA,
-      model: READ_MODEL,
-      effort: 'low',
-    })
-  )
+  toRead.map((c) => () => retryOnce(`read:${(c.citation || c.url || '').slice(0, 50)}`, () => readAgent(c)))
 )
+// Selected sources whose reader died twice. They used to vanish: dropped from the read results
+// and, being "selected", excluded from the unread leads too, so triage's top pick could be
+// missing from the draft's findings with the run still "complete" (2026-11-15 review). They are
+// carried as unread leads and counted as a coverage gap.
+const deadReads = toRead.filter((_, i) => !readResults[i])
 
 // Findings = the fully-read sources, PLUS the un-selected candidates carried as unread leads
 // (Lever 2: breadth without paying to fetch them — the draft may mention, but must hedge, these).
@@ -788,10 +798,22 @@ for (const f of readFindings.filter((r) => r.opened)) {
 const poolLeads = pool
   .filter((_, i) => !selectedSet.has(i))
   .map((c) => ({ ...c, proposition: c.why || '', opened: false }))
-const leads = [...poolLeads, ...citedWithin].slice(0, LEADS_CAP)
+const deadReadLeads = deadReads.map((c) => ({ ...c, proposition: c.why || '', opened: false, fetchNote: 'selected for a full read, but the reading agent failed twice — unread' }))
+// The harvest gets its own share of the lead slots. It used to be appended after the pool's
+// leftovers and then cut at LEADS_CAP, and the leftovers alone usually filled the cap (40
+// candidates less 8 reads is 32 against a cap of 16), so the harvested authorities never reached
+// the draft while the log said they were carried (2026-11-15 review). A third of the slots are
+// kept for them, taken round-robin across the read sources so one source cannot fill the share.
+const harvestBySource = new Map()
+for (const h of citedWithin) { if (!harvestBySource.has(h.why)) harvestBySource.set(h.why, []); harvestBySource.get(h.why).push(h) }
+const harvestOrdered = []
+for (let r = 0; harvestOrdered.length < citedWithin.length; r++) for (const list of harvestBySource.values()) if (list[r]) harvestOrdered.push(list[r])
+const HARVEST_SLOTS = Math.min(harvestOrdered.length, Math.ceil(LEADS_CAP / 3))
+const harvestLeads = harvestOrdered.slice(0, HARVEST_SLOTS)
+const leads = [...deadReadLeads, ...poolLeads.slice(0, Math.max(0, LEADS_CAP - HARVEST_SLOTS - deadReadLeads.length)), ...harvestLeads]
 const findings = [...readFindings, ...leads]
 const openedCount = readFindings.filter((f) => f.opened).length
-log(`Read ${openedCount} sources in full; carrying ${leads.length} unread leads (${citedWithin.length} harvested from within read sources).`)
+log(`Read ${openedCount} sources in full; carrying ${leads.length} unread leads (${harvestLeads.length} of ${citedWithin.length} harvested from within read sources${deadReads.length ? `; ${deadReads.length} selected source(s) unread after a reader failure` : ''}).`)
 
 // ---- Phase 4: draft the memo from findings --------------------------------
 const memoFormat =
@@ -1063,7 +1085,12 @@ const chunkAgent = (ch) => agent(chunkPrompt(ch), {
 const chunkJob = (ch) => async () => {
   let o = await chunkAgent(ch)
   if (!o) { log(`verify:${ch[0].gi}-${ch[ch.length - 1].gi} died — retrying once`); o = await chunkAgent(ch) }
-  return (o && o.verdicts) || []
+  // Verdicts are joined to authorities by the echoed index. An index that is not in THIS chunk
+  // would stamp this checker's verdict on an authority another checker was given (first one
+  // wins), the same harm as the positional fallback removed in v4. Such a verdict loses its
+  // index and can only be joined by its citation (2026-11-15 review).
+  const mine = new Set(ch.map((c) => c.gi))
+  return ((o && o.verdicts) || []).map((v) => (mine.has(v.index) ? v : { ...v, index: undefined }))
 }
 
 // Deep mode: each load-bearing authority gets 3 independent refutation votes; ≥2 refutes kill it.
@@ -1266,6 +1293,10 @@ const strongestBasis = (vs) => {
 const refuteGaps = []
 // Authorities the panel verified over a minority refutation: {gi, citation, objections[]}.
 const panelObjections = []
+// Authorities where a minority of voters proposed a citation correction: {gi, citation, disputed[]}.
+const panelDisputes = []
+// Authorities whose voters reported different current treatment: {gi, citation}.
+const panelTreatmentSplits = []
 const REFUTE_ROUTE_NAMES = { 1: 'record', 2: 'passage in context', 3: 'adverse reading' }
 const refuteJob = (c) => () =>
   parallel(
@@ -1281,8 +1312,38 @@ const refuteJob = (c) => () =>
     // differentiated that was the adverse-reading voter's (Codex review, 2026-11-03).
     const vs = votes.map((v, i) => (v ? { ...v, k: i + 1 } : null)).filter(Boolean)
     const refutes = vs.filter((v) => v.refuted).length
-    const corrected = vs.find((v) => v.correctedCitation)?.correctedCitation
-    const treatment = vs.find((v) => v.currentTreatment)?.currentTreatment
+    // Majority of the votes that actually came back: 3 votes → 2 refutes kill; 2 votes → 1;
+    // 1 vote → that vote decides and is flagged single-voter. A short panel never verifies more
+    // easily than a full one.
+    const killAt = Math.ceil(vs.length / 2)
+    // CORRECTIONS (2026-11-15 review). The first voter to offer a correctedCitation used to win:
+    // one voter's proposal (on a citation-only basis, in the test) replaced a citation the other
+    // two had found accurate, and Finalize was told to apply it. A correction is adopted only
+    // when a majority of the returned voters propose the same one; otherwise it is carried as a
+    // disputed proposal for Finalize to disclose, and the citation stands.
+    const proposals = new Map()
+    for (const v of vs) {
+      const cc = (v.correctedCitation || '').trim()
+      if (!cc || norm(cc) === norm(c.citation)) continue
+      const key = norm(cc)
+      if (!proposals.has(key)) proposals.set(key, { text: cc, voters: [] })
+      proposals.get(key).voters.push(v.k)
+    }
+    const adopted = [...proposals.values()].find((p) => p.voters.length > vs.length / 2) // a strict majority: 2 of 3, 2 of 2, 1 of 1
+    const corrected = adopted ? adopted.text : undefined
+    const disputed = [...proposals.values()].filter((p) => p !== adopted)
+      .map((p) => `PROPOSED CORRECTION NOT ADOPTED (voter${p.voters.length === 1 ? '' : 's'} #${p.voters.join(', #')} of ${vs.length}): ${p.text}`)
+    // TREATMENT (2026-11-15 review). The first non-empty currentTreatment used to win, so voter
+    // #1's "no negative treatment found" hid voter #3's "overruled by ..." (the voter whose route
+    // leads with adverse treatment). Every distinct report is kept, attributed to its voter.
+    const treatments = []
+    for (const v of vs) {
+      const t = (v.currentTreatment || '').trim()
+      if (t && !treatments.some((x) => norm(x.t) === norm(t))) treatments.push({ k: v.k, t })
+    }
+    const treatment = treatments.length <= 1
+      ? treatments[0]?.t
+      : `VOTERS REPORT DIFFERENT TREATMENT — ${treatments.map((x) => `voter #${x.k} (${REFUTE_ROUTE_NAMES[x.k] || 'route'}): ${x.t}`).join(' || ')}`
     const basis = strongestBasis(vs)
     const reasons = vs
       .filter((v) => v.reason)
@@ -1298,10 +1359,6 @@ const refuteJob = (c) => () =>
         notes: 'NOT CHECKED — all 3 refutation voters failed (after one retry each); no evidence either way',
       }]
     }
-    // Majority of the votes that actually came back: 3 votes → 2 refutes kill; 2 votes → 1;
-    // 1 vote → that vote decides and is flagged single-voter. A short panel never verifies more
-    // easily than a full one.
-    const killAt = Math.ceil(vs.length / 2)
     const verdict = refutes >= killAt ? 'unverified' : corrected ? 'needs-correction' : 'verified'
     const panelNote = vs.length < 3 ? `${vs.length === 1 ? 'SINGLE-VOTER' : 'SHORT PANEL'} — ${3 - vs.length} of 3 refutation voters returned nothing` : ''
     // A refutation the majority outvoted is not resolved by the majority: it is carried to
@@ -1311,6 +1368,8 @@ const refuteJob = (c) => () =>
       ? vs.filter((v) => v.refuted).map((v) => `MINORITY OBJECTION (voter #${v.k}, ${REFUTE_ROUTE_NAMES[v.k] || 'route'}): ${v.reason || '(no reason given)'}`)
       : []
     if (objections.length) panelObjections.push({ gi: c.gi, citation: c.citation, objections })
+    if (disputed.length) panelDisputes.push({ gi: c.gi, citation: c.citation, disputed })
+    if (treatments.length > 1) panelTreatmentSplits.push({ gi: c.gi, citation: c.citation })
     return [{
       index: c.gi,
       citation: c.citation,
@@ -1319,7 +1378,7 @@ const refuteJob = (c) => () =>
       correctedCitation: corrected,
       currentTreatment: treatment,
       objections,
-      notes: [...objections, panelNote, basis ? '' : 'basis not reported by any voter', reasons || `${refutes}/${vs.length} refute votes`].filter(Boolean).join(' | '),
+      notes: [...objections, ...disputed, panelNote, basis ? '' : 'basis not reported by any voter', reasons || `${refutes}/${vs.length} refute votes`].filter(Boolean).join(' | '),
     }]
   })
 
@@ -1374,20 +1433,40 @@ const vFor = (c) => {
     noVerdict.push({ gi: c.gi, citation: c.citation })
     v = { verdict: 'unverified', notes: 'NOT CHECKED — no verdict returned (cite-check agent failed after one retry, or skipped this index)' }
   }
-  // A source a research agent opened and quoted this run is direct-full-text even if the
-  // cite-checker (told to skip existence re-checks for it) reported a weaker basis.
-  if (c.wasRead && v.verdict === 'verified') v.basis = 'direct-full-text'
+  // A source a research agent opened and quoted this run was read, so the cite-checker (told to
+  // skip existence re-checks for it) may have reported a weaker basis than the run achieved.
+  // It used to be stamped "direct-full-text" outright. But readers are told to prefer
+  // CourtListener / LII HTML, which this vocabulary calls a reproduction, and the checker did not
+  // re-open the source: the floor is "authoritative-reproduction", a checker's own stronger
+  // report stands, and the note says whose read the basis rests on (2026-11-15 review).
+  if (c.wasRead && v.verdict === 'verified') {
+    const lvl = BASIS_LEVELS.indexOf(v.basis)
+    const floor = BASIS_LEVELS.indexOf('authoritative-reproduction')
+    v = {
+      ...v,
+      basis: lvl >= 0 && lvl <= floor ? v.basis : 'authoritative-reproduction',
+      notes: [v.notes, "basis rests on this run's research read of the source; the cite-checker did not re-open it"].filter(Boolean).join(' — '),
+    }
+  }
   return v
 }
 const checkKind = (c, v) => {
   if (v.verdict === 'unchecked') return 'not validated (budget)'
   if (/NOT CHECKED/.test(v.notes || '')) return 'not validated (checker failure)'
+  // The label follows the verdict (2026-11-15 review): an authority the panel REFUTED used to be
+  // labelled "verified (3-voter refutation panel)" beside an "unverified" verdict.
   if (panelSet.has(c.gi)) {
     const short = /SHORT PANEL|SINGLE-VOTER/.test(v.notes || '')
     const obj = (v.objections || []).length
-    return `verified (${short ? 'short' : '3-voter'} refutation panel${obj ? `, ${obj} objection${obj === 1 ? '' : 's'} unresolved` : ''})`
+    const panel = `${short ? 'short' : '3-voter'} refutation panel`
+    if (v.verdict === 'unverified') return `refuted (${panel})`
+    return `${v.verdict === 'needs-correction' ? 'corrected' : 'verified'} (${panel}${obj ? `, ${obj} objection${obj === 1 ? '' : 's'} unresolved` : ''})`
   }
-  return 'checked (existence + citing-opinion treatment probe)'
+  if (v.verdict === 'unverified') return 'checked — could not be confirmed'
+  // The citing-opinion probe resolves judicial opinions only; a statute or an article got the
+  // existence and citation check and nothing else.
+  const t = authorityType(c)
+  return t === 'statute' || t === 'secondary' ? 'checked (existence + citation; no treatment probe for this source type)' : 'checked (existence + citing-opinion treatment probe)'
 }
 const tagged = toVerify.map((c) => { const v = vFor(c); return { ...c, v, check: checkKind(c, v) } })
 const okCount = tagged.filter((t) => t.v.verdict === 'verified').length
@@ -1400,6 +1479,8 @@ const refuteNoVotes = refuteGaps.filter((g) => g.votes === 0)
 const refuteShort = refuteGaps.filter((g) => g.votes > 0)
 if (refuteNoVotes.length) coverageGaps.push(`${refuteNoVotes.length} load-bearing authorit${refuteNoVotes.length === 1 ? 'y' : 'ies'} got NO refutation votes (all 3 voters failed after one retry each) — marked unverified / NOT CHECKED`)
 if (refuteShort.length) coverageGaps.push(`${refuteShort.length} load-bearing authorit${refuteShort.length === 1 ? 'y' : 'ies'} decided on a short refutation panel (1–2 of 3 voters returned) — flagged in the cite-check results`)
+if (panelDisputes.length) coverageGaps.push(`${panelDisputes.length} load-bearing authorit${panelDisputes.length === 1 ? 'y has' : 'ies have'} a citation correction proposed by a minority of the panel — not applied; listed in Limits for the author to confirm`)
+if (panelTreatmentSplits.length) coverageGaps.push(`${panelTreatmentSplits.length} load-bearing authorit${panelTreatmentSplits.length === 1 ? 'y' : 'ies'} drew different treatment reports from the panel's voters — every report is carried into the memo`)
 if (panelObjections.length) coverageGaps.push(`${panelObjections.length} load-bearing authorit${panelObjections.length === 1 ? 'y' : 'ies'} verified over a minority refutation — the objection is carried into the memo's text or its Limits section, not resolved by the majority`)
 if (noVerdict.length) coverageGaps.push(`${noVerdict.length} cited authorit${noVerdict.length === 1 ? 'y' : 'ies'} got no cite-check verdict at all (agent failure after one retry, or skipped index) — marked unverified / NOT CHECKED`)
 const checkGapReport = [
@@ -1428,6 +1509,10 @@ const gapReport = tagged
   )
   .join('\n')
 
+const researchGapReport = [
+  ...deadSurveys.map((j) => `- ${j.what} did not run (the search agent failed twice)`),
+  ...deadReads.map((c) => `- ${c.citation || c.url} — selected for a full read, never read (the reading agent failed twice); it appears in the findings only as an unread lead`),
+].join('\n')
 const final = await must('Finalize', () => agent(
   `You are finalizing a legal research memo. Apply the cite-check results to the draft with the
 LIGHTEST touch needed — preserve the draft's prose verbatim except where an edit below requires a
@@ -1436,6 +1521,13 @@ change. Do not rewrite, restyle, or compress.
 Apply these edits:
 - Replace any "needs-correction" citation with its corrected form.
 - Where a currentTreatment notes negative treatment, reflect it in the text (e.g. "overruled by…").
+  A treatment that begins "VOTERS REPORT DIFFERENT TREATMENT" lists what each checker found: if
+  ANY of them reports negative treatment, reflect that one in the text, say that the checkers
+  differed, and name the authority in Limits as needing a citator check. One checker's "no
+  negative treatment found" does not cancel another's overruling.
+- A note reading "PROPOSED CORRECTION NOT ADOPTED" is one checker's proposed citation that the
+  other checkers did not share. Do NOT apply it. Keep the citation as written and list it in
+  Limits under "Citation corrections proposed but not confirmed", with the proposal quoted.
 - For any "unverified" authority: either remove the sentence's reliance on it or downgrade it to an
   explicit caveat ("reportedly / could not be independently confirmed"). Never present an unverified
   authority as settled law.
@@ -1472,14 +1564,22 @@ ${panelObjections.length ? `- MINORITY OBJECTIONS: the authorities below were ve
   authority under its own heading in Limits, "Verified over an objection", with the objection
   quoted. Never present such an authority as settled support.
 ${panelObjections.map((p) => `  - ${p.citation}: ${p.objections.join(' | ')}`).join('\n')}` : ''}
+${researchGapReport ? `- RESEARCH COVERAGE GAPS: the parts of the research below did NOT run or did not return (agent
+  failures, not judgments about the sources). State each in the Limits section in plain words. If
+  a search vector did not run, do not let the memo make an absence claim ("no court has", "the
+  literature does not address") that depends on what that vector would have searched.
+${researchGapReport}` : ''}
 ${gapReport ? `- POST-DRAFT ADDITIONS: the authorities below were retrieved after drafting to fill
   gaps the draft itself flagged. Weave each into the memo where the draft noted the gap, with its
   cite — subject to its cite-check verdict above. Remove the corresponding gap notes.` : ''}
 - Append two sections:
   * **Table of Authorities** (only verified/corrected authorities, grouped by type), with a
     **Validation** column copied from each authority's "tier:" label in the cite-check results:
-    "verified (3-voter refutation panel)" / "verified (short refutation panel)" / "checked
-    (existence + citing-opinion treatment probe)" / "not validated (...)". A checked case and a
+    "verified (3-voter refutation panel)" / "verified (short refutation panel)" / "corrected
+    (... refutation panel)" / "checked (existence + citing-opinion treatment probe)" / "checked
+    (existence + citation; no treatment probe for this source type)" / "not validated (...)". An
+    authority labelled "refuted (...)" or "checked — could not be confirmed" is unverified and
+    does not belong in the table. A checked case and a
     panel-verified case look identical in prose, so the label is the only place the reader can
     tell them apart. Under the table, ONE sentence naming which authorities got the refutation
     panel and why (load-bearing), and which were only checked; if NO authority got the panel
@@ -1514,6 +1614,8 @@ Return the final memo in Markdown via the memo field.`,
 const failedOpens = readFindings.filter((f) => !f.opened).length
 const unrecoveredGaps = Math.max(0, (draft.missingAuthorities || []).length - gapFindings.length)
 if (failedOpens) coverageGaps.push(`${failedOpens} selected sources could not be opened`)
+if (deadReads.length) coverageGaps.push(`${deadReads.length} selected source${deadReads.length === 1 ? '' : 's'} never read — the reading agent failed twice (carried as unread leads)`)
+if (deadSurveys.length) coverageGaps.push(`${deadSurveys.length} survey lane${deadSurveys.length === 1 ? '' : 's'} did not run (agent failure after one retry): ${deadSurveys.map((j) => j.what).join('; ')}`)
 if (unrecoveredGaps) coverageGaps.push(`${unrecoveredGaps} draft-flagged authorities never retrieved`)
 // Dead-checker gaps (refuteGaps / noVerdict) are already in coverageGaps, so a run in which every
 // voter died can never end "complete".
@@ -1543,6 +1645,10 @@ return {
     notCheckedAgentFailure: refuteNoVotes.length + noVerdict.length, // counted inside `unverified`
     shortRefutationPanel: refuteShort.length,
     panelObjections: panelObjections.length,
+    panelDisputedCorrections: panelDisputes.length,
+    panelTreatmentSplits: panelTreatmentSplits.length,
+    surveyLanesFailed: deadSurveys.length,
+    readsFailed: deadReads.length,
   },
   memo: final.memo,
 }

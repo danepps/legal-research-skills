@@ -38,11 +38,13 @@ const STYLE = !!A.style
 // near-final read. Consistency, verify, and report always inherit the session
 // model — verify is the false-positive gate and report is the deliverable.
 const PROOF_MODEL = A.fable ? 'fable' : 'opus'
-// HARD READ-ONLY GATE: every agent runs as the 'Explore' type, which has no
-// Edit/Write/NotebookEdit tools — a proofing agent CANNOT modify the draft (or
-// anything else) even if it goes off the rails. The draft itself is never
-// referenced here anyway: agents only ever see the scratchpad snapshot's
-// extraction artifacts (SKILL.md forbids passing draftPath into args).
+// READ-ONLY GATE: every agent runs as the 'Explore' type, which has no
+// Edit/Write/NotebookEdit tools. That is a strong guard, not an absolute one: Explore
+// agents keep the Bash tool (the revised-find check below uses it to grep), so the gate
+// rests on three things together — no file-editing tools, the ground rule against shell
+// writes, and the fact that the draft's path is never given to any agent (they see only
+// the write-protected scratchpad snapshot's extraction artifacts; SKILL.md forbids
+// passing draftPath into args).
 const RO = { agentType: 'Explore' }
 const FULLTEXT = OUT_DIR + '/fulltext.txt'
 const FULLTEXT_FMT = OUT_DIR + '/fulltext_fmt.txt'
@@ -518,9 +520,20 @@ ${JSON.stringify(batch.map(({ id, location, find, problem, fix, severity, catego
 Return a verdict for EVERY id.`,
     { label: `verify:batch-${bi}`, phase: 'Verify', schema: VERIFY_SCHEMA, ...RO }), (r) => !!r && Array.isArray(r.verdicts))
 ))
-for (const r of verifyResults.filter(Boolean)) {
-  for (const v of (r.verdicts || [])) verdictById.set(v.id, v)
-}
+// A verdict counts only for a finding in the batch that verifier was given, and the first one
+// per id stands (2026-11-15 review). Verdicts used to be keyed by the echoed id across ALL
+// batches, last one winning, so a verifier that returned an id from another batch replaced that
+// batch's verdict — confirming or rejecting a finding it had never been shown.
+let foreignVerdicts = 0
+verifyResults.forEach((r, bi) => {
+  if (!r) return
+  const mine = new Set(batches[bi].map((f) => f.id))
+  for (const v of (r.verdicts || [])) {
+    if (!mine.has(v.id) || verdictById.has(v.id)) { foreignVerdicts++; continue }
+    verdictById.set(v.id, v)
+  }
+})
+if (foreignVerdicts) degradation.push(`${foreignVerdicts} verify verdict(s) dropped — returned for a finding outside the verifier's batch, or a duplicate`)
 // Reconcile: every finding sent to verify should have a verdict. Those without one (a batch
 // that died twice, or a verifier that skipped ids) ship as UNVETTED and are disclosed.
 const deadBatches = batches.map((b, bi) => bi).filter((bi) => !verifyResults[bi])

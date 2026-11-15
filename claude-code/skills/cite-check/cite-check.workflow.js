@@ -145,8 +145,6 @@ const COST = Object.assign({
   report: 250_000,
 }, (A.costModel && typeof A.costModel === 'object') ? A.costModel : {})
 const RESERVE_REPORT = 60_000
-const RESERVE_REVERIFY = 40_000
-const RESERVE_SUPPORT_AUDIT = 30_000 // kept back from the support pass so its adverse verdicts can be re-derived
 const MAX_WAVE = Number(A.maxWave) || 12 // agents per wave in gatedFanout (near the concurrency cap, so the barrier is cheap)
 // Caps in the same unit. The 2026-10-26 run (30 footnotes, support on, agents searching Zotero
 // by hand) measured 7.4M; the 2026-10-27 run after the fixes measured 2.7M with the support pass
@@ -158,6 +156,14 @@ if (SUPPORT_ON) SOFT_CAP += 3_000_000     // the support pass reads sources the 
 // enforces it as an output-token ceiling, which is far looser (output is a few percent of this
 // unit), so the projection binds first.
 const CAP = budget.total || SOFT_CAP
+// Reserves for the second derivations, in the cost model's unit (2026-11-15 review). They were
+// 40k and 30k, left over from the output-token gates, against a re-verify agent costed at 100k:
+// a budget-bound run reached Re-verify with room for less than one agent, and the pass, then
+// all-or-nothing, was skipped whole. Three quote re-verifies and two support re-verifies are now
+// held back from Verify and Support (never more than a tenth / a twentieth of the cap, so a small
+// cap is not all reserve), and Re-verify launches as many as fit.
+const RESERVE_REVERIFY = Math.min(3 * COST.reverify, Math.round(CAP * 0.1))
+const RESERVE_SUPPORT_AUDIT = Math.min(2 * COST.reverify, Math.round(CAP * 0.05)) // kept back from the support pass so its adverse verdicts can be re-derived
 let projected = 0
 const remaining = () => Math.max(0, CAP - projected)
 const tight = (need) => remaining() < need
@@ -214,7 +220,9 @@ const perAgentProjected = () => (agentsSoFar ? Math.round(projected / agentsSoFa
 // job's projected cost. Results align with jobs (null where a job was never launched); `dropped`
 // lists the indexes that were not launched. A wave always holds at least one job while any
 // budget beyond the reserve remains, so a phase that passed its gate is never dropped whole.
-async function gatedFanout(jobs, costs, reserve) {
+// `strict` turns that off: a job launches only if its whole cost fits (the re-verify passes,
+// which have no gate of their own in front of them).
+async function gatedFanout(jobs, costs, reserve, strict = false) {
   const results = new Array(jobs.length).fill(null)
   const dropped = []
   let i = 0
@@ -223,7 +231,7 @@ async function gatedFanout(jobs, costs, reserve) {
     const wave = []
     while (i + wave.length < jobs.length && wave.length < MAX_WAVE) {
       const c = costs[i + wave.length] || 0
-      if (room - c < 0 && wave.length) break
+      if (room - c < 0 && (strict || wave.length)) break
       if (room - c < 0 && room <= 0) break
       room -= c
       wave.push(jobs[i + wave.length])
@@ -237,6 +245,22 @@ async function gatedFanout(jobs, costs, reserve) {
 }
 
 const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+
+// Scratch files (2026-11-15 review; the legal-research workflow fixed the same thing as CLAUDE-07).
+// Agents run concurrently and share /tmp. The prompts used to name /tmp/src-<slug>.txt and
+// /tmp/q-<slug>.json with a slug the agent chose, so two re-verify agents on the same source could
+// overwrite each other's quote file between the write and the verifier run. Every agent now gets a
+// path prefix unique to the run and to itself. Date.now()/Math.random() are unavailable in workflow
+// scripts, so the run tag is a hash of the run's inputs; args.runTag overrides.
+const RUN_TAG = (() => {
+  const given = String(A.runTag || '').replace(/[^A-Za-z0-9_-]/g, '')
+  if (given) return given.slice(0, 24)
+  let h = 5381
+  const s = `${EXTRACT_PATH}|${DRAFT_NAME}|${UNIT_COUNT}|${(UNIT_IDS || []).join(',')}`
+  for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0
+  return h.toString(36)
+})()
+const scratch = (tag) => `/tmp/cc-${RUN_TAG}-${tag}`
 
 // Collapse a resolved citation to a unique-source key: drop the pincite and any
 // parenthetical so a case cited 30 times at different pages fetches ONCE.
@@ -415,18 +439,21 @@ const SOURCES = `FREE / OPEN-WEB SOURCES ONLY (no Westlaw/Lexis):
 TOOLS: WebSearch and WebFetch. If not callable, first run ToolSearch query "select:WebSearch,WebFetch".`
 
 // Deterministic quote check: the model proposes, the script proves. Shared by
-// every prompt whose agent fetches source text (verify / tail / re-verify).
-const DETERMINISTIC_CHECK = `DETERMINISTIC QUOTE CHECK (MANDATORY before judging any quote by eye):
+// every prompt whose agent fetches source text (verify / tail / re-verify). `sp` is the agent's
+// own scratch prefix (see scratch()).
+const deterministicCheck = (sp) => `DETERMINISTIC QUOTE CHECK (MANDATORY before judging any quote by eye):
 save each fetched source's FULL text to a scratch file with --out (this bypasses the stdout
 truncation caps — a plain "> file" redirect does NOT) and run the deterministic verifier over every
 quote you were given, e.g.:
-  python3 "${FETCH_PAGE}" "<url>" --out /tmp/src-<slug>.txt
-  python3 "${VERIFY_QUOTES}" /tmp/src-<slug>.txt --json /tmp/q-<slug>.json
+  python3 "${FETCH_PAGE}" "<url>" --out ${sp}-src-<slug>.txt
+  python3 "${VERIFY_QUOTES}" ${sp}-src-<slug>.txt --json ${sp}-q-<slug>.json
 where <slug> is a short filename-safe tag for the source (letters, digits, dashes — no spaces) and
 the JSON file holds [{"id":..,"quote":"..","pincite":".."}] with every quote copied EXACTLY. Always
 use the --json route: passing quotes as shell arguments breaks on any quote that contains a double
 quote, a dollar sign, a backtick or an apostrophe, and a quote mangled by the shell is reported
 not_found through no fault of the draft.
+Use EXACTLY that path prefix: other agents are running at the same time in the same /tmp, and a
+shared filename would let you verify a quote against someone else's source or quote list.
 (--out prints a one-line summary; NEVER cat the file into your context — it can be an entire
 book-length source. Read at most targeted excerpts around the verifier's reported matches.)
 The same check applies to source text you obtained ANY other way — Zotero fulltext (write the
@@ -434,7 +461,7 @@ tool's returned text to a scratch file VERBATIM, unedited), a saved page, a past
 it in a file and run the verifier against it. Once source text is in hand, no quote gets a
 verbatim/mismatch verdict by eye.
 For pincite checking, add --first-page to the same command:
-  python3 "${VERIFY_QUOTES}" /tmp/src-<slug>.txt --json /tmp/q-<slug>.json --first-page <printed page no. of the PDF's first page>
+  python3 "${VERIFY_QUOTES}" ${sp}-src-<slug>.txt --json ${sp}-q-<slug>.json --first-page <printed page no. of the PDF's first page>
 Per quote it reports a status — verbatim | normalized (typographic-only differences: curly vs
 straight quotes, dashes, hyphenation, ligatures — identical as printed) | altered (matches with the
 draft's MARKED ellipses/brackets honored) | not_found — plus the printed PAGE of the match when the
@@ -735,8 +762,8 @@ const REVERIFY_SCHEMA = {
   required: ['id', 'upheld', 'verdict'],
   properties: {
     id: { type: 'integer' },
-    upheld: { type: 'boolean', description: 'false if the original high-severity verdict was a checker artifact' },
-    verdict: { type: 'string', enum: ['verbatim', 'altered_marked', 'fragment_framing', 'mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off', 'misattributed', 'unverifiable'] },
+    upheld: { type: 'boolean', description: 'false if the original high-severity verdict was wrong — whether the quote is in fact fine, or a different problem is the real one (then give that verdict)' },
+    verdict: { type: 'string', enum: ['verbatim', 'altered_marked', 'fragment_framing', 'mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source', 'pincite_off', 'misattributed', 'unverifiable'], description: 'the verdict YOU reached' },
     severity: { type: 'string', enum: ['high', 'medium', 'low'] },
     sourceText: { type: 'string' },
     reason: { type: 'string', description: 'why the original stands or was an artifact — name the artifact class if any (truncation / missing-framing / wrong-antecedent / syllabus)' },
@@ -1007,12 +1034,22 @@ const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + existBatches.length
 const casePassRan = !CASE_CITES.length || existGate
 const secondaryPassRan = !secWeb.length || existGate
 if (!secondaryPassRan) degradation.push(`secondary-source existence pass skipped for ${secWeb.length} sources not in Zotero (budget) — they are UNCHECKED in the ledger`)
+// A dead existence batch used to leave up to EXIST_BATCH case cites with no result and no line in
+// `degradation` (2026-11-15 review): every other fan-out retried, this one did not. Retry once;
+// what is still missing is counted below.
 const existJobs = []
-if (casePassRan) for (const b of existBatches) existJobs.push(() =>
-  spawn(existPrompt(b), { label: `exist:${b.length}`, phase: 'Existence', schema: EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' }))
-if (secondaryPassRan) for (const b of secBatches) existJobs.push(() =>
-  spawn(secPrompt(b), { label: `exist-secondary:${b.length}`, phase: 'Existence', schema: SECONDARY_EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' })
-    .then((o) => o && o.sources ? { _secondary: o.sources } : o))
+const existAgent = (b) => spawn(existPrompt(b), { label: `exist:${b.length}`, phase: 'Existence', schema: EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' })
+const secAgent = (b) => spawn(secPrompt(b), { label: `exist-secondary:${b.length}`, phase: 'Existence', schema: SECONDARY_EXIST_SCHEMA, model: VERIFY_MODEL, effort: 'low' })
+if (casePassRan) for (const b of existBatches) existJobs.push(async () => {
+  let o = await existAgent(b)
+  if (!o) { log(`exist:${b.length} died — retrying once`); o = await existAgent(b) }
+  return o
+})
+if (secondaryPassRan) for (const b of secBatches) existJobs.push(async () => {
+  let o = await secAgent(b)
+  if (!o) { log(`exist-secondary:${b.length} died — retrying once`); o = await secAgent(b) }
+  return o && o.sources ? { _secondary: o.sources } : o
+})
 const existRaw = existJobs.length ? await parallel(existJobs) : []
 const existence = []
 const secondaryExistence = []
@@ -1048,6 +1085,14 @@ const secMetaSoft = [...secMetaAll.filter((m) => !EVIDENCED.test(m)), ...secConf
 log(`Secondary-source existence: ${secondaryExistence.length}/${SECONDARY_CITES.length} checked, ${secBad.length} not found, ${secUnconfirmed.length} unconfirmed, ${secMeta.length} metadata findings.`)
 const existBad = existence.filter((e) => e.exists === false)
 const existFixed = existence.filter((e) => e.corrected)
+// Cites the existence pass ran for but got no result on (dead batch after the retry, or an agent
+// that skipped them). They end "unchecked" in the ledger; say so in the degradation list too.
+const existAnswered = new Set(existence.map((e) => norm(e.citation)))
+const existMissing = casePassRan ? CASE_CITES.filter((c) => !existAnswered.has(norm(c))) : []
+if (existMissing.length) degradation.push(`${existMissing.length} case cite(s) got no existence result (agent failure or skipped cites) — UNCHECKED in the ledger`)
+const secAnswered = new Set(secondaryExistence.map((x) => x.key))
+const secMissing = secondaryPassRan ? secWeb.filter((x) => !secAnswered.has(x.key)) : []
+if (secMissing.length) degradation.push(`${secMissing.length} secondary source(s) got no existence result (agent failure or skipped keys) — UNCHECKED in the ledger`)
 log(`Case existence: ${existence.length} checked, ${existBad.length} unconfirmed, ${existFixed.length} reporter typos.`)
 
 // ===========================================================================
@@ -1065,6 +1110,7 @@ for (const r of resolutions) {
 let bundleList = [...bundles.values()]
 // Order: sources carrying the most quotes first (they're the load-bearing ones).
 bundleList.sort((a, b) => b.quotes.length - a.quotes.length)
+bundleList.forEach((b, i) => { b.tag = `v${i}` }) // scratch-file tag, one per verify agent
 log(`Collapsed ${resolutions.length} quotes onto ${bundleList.length} unique sources.`)
 
 // Budget degradation: if a full verify won't fit, verify multi-quote sources
@@ -1112,7 +1158,7 @@ for. Load the units (proposition sentence, full footnote, signal, parenthetical)
   python3 "${PREPARE_SUPPORT}" "${EXTRACT_PATH}" --pick ${units.map((u) => u.id).join(' ')}
 ${units.map(supportUnitLine).join('\n')}
 Read a pincited page from your saved source file with:
-  python3 "${VERIFY_QUOTES}" /tmp/src-<slug>.txt --page <pincite> [--first-page <printed no. of the PDF's first page>]
+  python3 "${VERIFY_QUOTES}" ${scratch(b.tag)}-src-<slug>.txt --page <pincite> [--first-page <printed no. of the PDF's first page>]
 Return one entry per support id in supportVerdicts (separate from the quote verdicts).
 ${SUPPORT_RULES}
 `
@@ -1159,7 +1205,7 @@ unlock path — do NOT keep retrying):
   must support the proposition. Dead link -> try archive.org and report the archived URL in
   urlFinding. SSRN/bepress 403s are bot-blocks, not dead — mark "bot-blocked but presumptively live".
 
-${DETERMINISTIC_CHECK}
+${deterministicCheck(scratch(b.tag))}
 
 PER-QUOTE VERDICTS (see the discipline rules below — apply them strictly):
 - verbatim: matches the source word-for-word.
@@ -1215,7 +1261,7 @@ ${CALIBRATION}
 ${SOURCES}`
 
 // Tail batch prompt for the degraded (single-quote long-tail) sources.
-const tailPrompt = (chunk) => `You are a cite-checker doing a QUICK verbatim check on several
+const tailPrompt = (chunk, i) => `You are a cite-checker doing a QUICK verbatim check on several
 single-quote sources a law-review draft cites (budget mode — one fetch each, be efficient).
 For EACH, fetch the source once (${MIRROR_CAP} attempts max), check the one quote, and return a
 verdict per the schema. Echo each sourceKey and each quote id exactly.
@@ -1225,7 +1271,7 @@ ${chunk.map((b) => `- key ${b.key} | ${b.kind} | ${b.source}\n    [id ${b.quotes
 
 ${TOOL_CAP(2 + 3 * chunk.length)}
 
-${DETERMINISTIC_CHECK}
+${deterministicCheck(scratch(`t${i}`))}
 
 ${CALIBRATION}
 ${SOURCES}`
@@ -1253,14 +1299,19 @@ for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
   const chunk = light.slice(i, i + VERIFY_CHUNK)
   verifyJobKeys.push(chunk.map((b) => b.key))
   verifyJobCosts.push(COST.verifyTail)
-  verifyJobs.push(() => spawn(tailPrompt(chunk), {
+  const tailAgent = () => spawn(tailPrompt(chunk, i), {
     label: `verify-tail:${i}`,
     phase: 'Verify',
     // the tail schema is the same shape but one object per source; ask for an array wrapper
     schema: { type: 'object', required: ['sources'], properties: { sources: { type: 'array', items: VERIFY_SCHEMA } } },
     model: VERIFY_MODEL,
     effort: 'low',
-  }).then((o) => o && o.sources ? { _multi: o.sources } : o))
+  })
+  verifyJobs.push(async () => {
+    let o = await tailAgent()
+    if (!o) { log(`verify-tail:${i} died — retrying once`); o = await tailAgent() }
+    return o && o.sources ? { _multi: o.sources } : o
+  })
 }
 
 // Waves sized to the budget: a verify phase can no longer launch every source at once and
@@ -1268,12 +1319,28 @@ for (let i = 0; i < light.length; i += VERIFY_CHUNK) {
 const { results: verifyRaw, dropped: verifyDropped } = await gatedFanout(verifyJobs, verifyJobCosts, RESERVE_REPORT + RESERVE_REVERIFY)
 const budgetDroppedKeys = new Set(verifyDropped.flatMap((j) => verifyJobKeys[j]))
 if (budgetDroppedKeys.size) degradation.push(`verify: ${budgetDroppedKeys.size} source(s) never fetched — the budget ran out mid-phase (ask for a "+Nk" budget to lift the cap); their quotes are listed as NOT CHECKED`)
-// Flatten (tail batches return {_multi:[...]}).
+// Flatten (tail batches return {_multi:[...]}), keeping only the quote verdicts each job was asked
+// for (2026-11-15 review). Verdicts used to be joined by the echoed id alone, so an agent that
+// returned an id belonging to another source stamped that quote with a verdict from the wrong
+// source and the quote was counted twice. The job index says which ids an agent was given; a
+// verdict for any other id, or a second verdict for the same id, is dropped and counted.
 const verifyResults = []
-for (const v of verifyRaw.filter(Boolean)) {
-  if (v._multi) verifyResults.push(...v._multi)
-  else verifyResults.push(v)
-}
+let foreignVerdicts = 0
+verifyRaw.forEach((v, j) => {
+  if (!v) return
+  const allowed = new Set(verifyJobKeys[j].flatMap((k) => ((bundles.get(k) || {}).quotes || []).map((q) => q.id)))
+  const seen = new Set()
+  for (const one of (v._multi ? v._multi : [v])) {
+    if (!one) continue
+    const kept = (one.verdicts || []).filter((q) => {
+      if (!allowed.has(q.id) || seen.has(q.id)) { foreignVerdicts++; return false }
+      seen.add(q.id)
+      return true
+    })
+    verifyResults.push({ ...one, verdicts: kept })
+  }
+})
+if (foreignVerdicts) degradation.push(`${foreignVerdicts} quote verdict(s) dropped — returned for a quote the agent was not given, or a duplicate`)
 
 // Support verdicts the verify agents returned for folded-in units (the source was on disk).
 const supportRaw = []
@@ -1386,7 +1453,7 @@ log(`Verified ${findings.length} quotes across ${verifyResults.length} sources; 
 // Phase 3b — SUPPORT (opt-in; dedicated agents for sources no verify agent fetched)
 // ===========================================================================
 mark('Support')
-const supportPrompt = (bundles) => `You are checking whether sources a law-review draft cites WITHOUT quoting them
+const supportPrompt = (bundles, tag) => `You are checking whether sources a law-review draft cites WITHOUT quoting them
 actually SUPPORT the propositions they are cited for (the opt-in proposition-support pass). This is a
 judgment call, so the discipline below matters more than speed. ${bundles.length === 1 ? 'ONE source; fetch it once.' : `${bundles.length} sources, one unit each; fetch each once.`}
 
@@ -1403,12 +1470,13 @@ parenthetical, opinion note), via Bash (load it with ToolSearch "select:Bash" if
 
 STEP 2 — fetch each source ONCE (stop after ${MIRROR_CAP} attempts; then every unit on it is
 "unverifiable" with the unlock path). Save the FULL text with --out (never cat it into context):
-  python3 "${FETCH_PAGE}" "<url>" --out /tmp/sup-<slug>.txt
-A source whose ZOTERO line says its text is on disk needs no fetch at all: use that file as
-/tmp/sup-<slug>.txt and go straight to reading the pincited page.
+  python3 "${FETCH_PAGE}" "<url>" --out ${scratch(tag)}-sup-<slug>.txt
+(<slug> is a short filename-safe tag for the source. Use exactly that prefix: other agents share /tmp.)
+A source whose ZOTERO line says its text is on disk needs no fetch at all: read the pincited page
+straight from that file.
 For a case, CourtListener's HTML opinion or CAP static HTML carries star pagination; for a journal
 PDF, pass the printed number of its first page. Then read the PINCITED page of each unit:
-  python3 "${VERIFY_QUOTES}" /tmp/sup-<slug>.txt --page <pincite> [--first-page <printed first page>]
+  python3 "${VERIFY_QUOTES}" ${scratch(tag)}-sup-<slug>.txt --page <pincite> [--first-page <printed first page>]
 (a range "512-514" works; if the file has no page boundaries the tool says so — then grep -n the
 proposition's key terms and read a targeted excerpt with sed -n). For a WHOLE-WORK unit, read the
 holding / abstract / introduction and the part that bears on the claim; cap your effort.
@@ -1454,7 +1522,7 @@ if (SUPPORT_ON && (supportDedicated.length || foldedKeys.size)) {
   const light = supportDedicated.filter((b) => b.units.length < 2)
   const jobUnits = heavy.map((b) => b.units) // job index -> units, for budget accounting
   const jobCosts = heavy.map((b) => (b.zotero && b.zotero.text ? COST.supportZotero : COST.support))
-  const jobs = heavy.map((b) => () => spawn(supportPrompt([b]), {
+  const jobs = heavy.map((b, hi) => () => spawn(supportPrompt([b], `s${hi}`), {
     label: `support:${(b.source || b.key).slice(0, 44)}`, cost: b.zotero && b.zotero.text ? 'supportZotero' : 'support',
     phase: 'Support', schema: SUPPORT_SCHEMA,
     model: VERIFY_MODEL, effort: 'medium', // a judgment, not a string match: never low
@@ -1463,7 +1531,7 @@ if (SUPPORT_ON && (supportDedicated.length || foldedKeys.size)) {
     const chunk = light.slice(i, i + SUPPORT_TAIL)
     jobUnits.push(chunk.flatMap((b) => b.units))
     jobCosts.push(chunk.every((b) => b.zotero && b.zotero.text) ? COST.supportZotero : COST.supportTail)
-    jobs.push(() => spawn(supportPrompt(chunk), {
+    jobs.push(() => spawn(supportPrompt(chunk, `st${i}`), {
       label: `support-tail:${i}`, phase: 'Support',
       schema: { type: 'object', required: ['sources'], properties: { sources: { type: 'array', items: SUPPORT_SCHEMA } } },
       model: VERIFY_MODEL, effort: 'medium',
@@ -1556,8 +1624,11 @@ finding. Five of the six gravest findings in the practice run were checker ARTIF
 errors — your job is to catch that before it reaches the report. Re-derive the verdict from the FULL
 context; do not defer to the first checker.
 
+THE UNIT ID IS ${f.id} — return exactly that number in the id field.
+
 STEP 1 — load the full unit (home footnote, body sentence, Id.-chain antecedents, supra targets):
   python3 "${PREPARE}" "${EXTRACT_PATH}" --ids ${f.id} ${f.id + 1}
+(the second number is the end of the range, not a unit)
 
 FIRST CHECKER SAID: verdict "${f.verdict}" — ${f.note || '(no note)'}
 Source it read: ${f.sourceIdentified || f.source}
@@ -1578,43 +1649,61 @@ STEP 2 — independently determine the truth, checking specifically for these ar
   (a real but different finding), and note the opinion's equivalent language if you can find it.
 Open the source yourself (${MIRROR_CAP} attempts max) to confirm. If the original finding holds after
 all this, upheld=true and restate it with the source text. Fill sourceText whenever you read it.
+WHAT "upheld" MEANS: upheld=false is for a first verdict that was wrong. Give the verdict you
+actually reached. If the quote turns out to be fine (verbatim / altered_marked / fragment_framing),
+the finding is withdrawn. If the first verdict was wrong but a DIFFERENT problem is real (a
+syllabus_quote, a pincite_off, a misattributed quote, a superseded_source), return that verdict
+with its severity and source text: it is reported as the finding, in place of the first one.
 
 ${TOOL_CAP(10)}
 
-${DETERMINISTIC_CHECK}
+${deterministicCheck(scratch(`r${f.id}`))}
 
 ${CALIBRATION}
 ${SOURCES}`
 
+// 2026-11-15 review, three changes here:
+// (1) The pass was all-or-nothing: if every high-severity finding did not fit the budget, none
+//     was re-derived. It now launches as many as fit (gatedFanout) and flags the rest.
+// (2) Results were joined by the id the agent echoed, and the prompt showed the id only inside
+//     "--ids N N+1": an agent echoing N+1 rewrote a different quote's verdict into a "re-verified"
+//     high-severity finding. Results are now joined by job position.
+// (3) upheld=false used to mean "artifact, drop it" whatever verdict came back, so a mismatch
+//     corrected to a syllabus quote or a wrong pincite vanished from the report and was counted
+//     as "verbatim after all". Only a corrected verdict that CLEARS the quote is an artifact; a
+//     different finding stays reported in its new place (the rule the support pass already had).
+const CLEARED_V = new Set(['verbatim', 'altered_marked', 'fragment_framing'])
+const SEV_DEFAULT = (v) => (['mismatch', 'not_found_in_sources', 'syllabus_quote', 'superseded_source'].includes(v) ? 'high' : ['pincite_off', 'misattributed'].includes(v) ? 'medium' : 'low')
 let reverified = new Map()
-if (highSev.length && !tight(highSev.length * COST.reverify)) {
-  const outs = await parallel(highSev.map((f) => () =>
-    spawn(reverifyPrompt(f), {
+const supportAdverseCount = supportFindings.filter((f) => f.verdict === 'contradicted' || f.verdict === 'not_supported').length
+if (highSev.length) {
+  const { results: outs, dropped: rvDropped } = await gatedFanout(
+    highSev.map((f) => () => spawn(reverifyPrompt(f), {
       label: `re-verify:n.${f.footnote ?? '?'}#${f.id}`,
       phase: 'Re-verify',
       schema: REVERIFY_SCHEMA,
       model: REVERIFY_MODEL,
       effort: 'medium',
-    })
-  ))
-  for (const o of outs.filter(Boolean)) reverified.set(o.id, o)
+    })),
+    highSev.map(() => COST.reverify),
+    Math.min(RESERVE_SUPPORT_AUDIT, supportAdverseCount * COST.reverify), true) // leave room for the support re-verify that follows
+  outs.forEach((o, i) => { if (o) reverified.set(highSev[i].id, o) })
   const flipped = [...reverified.values()].filter((r) => r.upheld === false).length
-  const lost = highSev.filter((f) => !reverified.has(f.id)).length
+  const lost = highSev.length - rvDropped.length - reverified.size
+  if (rvDropped.length) degradation.push(`verify-the-verifier skipped for ${rvDropped.length} of ${highSev.length} high-severity finding(s) (budget) — flagged as single-checker`)
   if (lost) degradation.push(`${lost} high-severity finding(s) got no re-verify verdict (agent failure) — flagged as single-checker`)
-  log(`Re-verify complete: ${reverified.size} high-severity findings re-derived, ${flipped} were checker artifacts (corrected)${lost ? `; ${lost} not re-verified` : ''}.`)
-} else if (highSev.length) {
-  degradation.push(`verify-the-verifier skipped for ${highSev.length} findings (budget) — flagged as single-checker`)
-  log(`Budget tight — verify-the-verifier skipped; high-severity findings flagged single-checker.`)
+  log(`Re-verify complete: ${reverified.size} of ${highSev.length} high-severity findings re-derived, ${flipped} not upheld (withdrawn or corrected)${rvDropped.length ? `; ${rvDropped.length} not launched (budget)` : ''}${lost ? `; ${lost} not re-verified (agent failure)` : ''}.`)
 }
 
-// Apply re-verify results: replace verdict/severity, mark artifacts.
+// Apply re-verify results: replace verdict/severity; only a verdict that clears the quote is an artifact.
 for (const f of findings) {
   const rv = reverified.get(f.id)
   if (!rv) continue
   f.reverified = true
-  f.artifact = rv.upheld === false
+  f.artifact = rv.upheld === false && CLEARED_V.has(rv.verdict)
+  if (rv.verdict !== f.verdict) f.firstVerdict = f.verdict
   f.verdict = rv.verdict
-  f.severity = rv.severity || f.severity
+  f.severity = f.artifact ? 'low' : (rv.severity || (f.firstVerdict ? SEV_DEFAULT(rv.verdict) : f.severity))
   if (rv.sourceText) f.sourceText = rv.sourceText
   f.reverifyReason = rv.reason || ''
 }
@@ -1627,6 +1716,8 @@ cite-check run: the first checker said this cite does NOT support (or contradict
 cited for. Support verdicts are judgment calls and the quote pass showed five of six grave findings
 were checker artifacts; re-derive this one from the FULL context and do not defer to the first checker.
 
+THE SUPPORT UNIT ID IS ${f.id} — return exactly that number in the id field.
+
 STEP 1 — load the unit (proposition sentence, preceding sentence, clause before a mid-sentence
 marker, FULL footnote, footnote prose, signal, parenthetical, opinion note), via Bash:
   python3 "${PREPARE_SUPPORT}" "${EXTRACT_PATH}" --pick ${f.id}
@@ -1635,8 +1726,8 @@ FIRST CHECKER SAID: verdict "${f.verdict}" — ${f.reason || '(no reason)'}
 Source it read: ${f.sourceIdentified || f.source}; locator: ${f.locator || '(none)'}; posture: ${f.posture || '(none)'}
 Source text it reported: ${f.sourceText ? `"${f.sourceText}"` : '(none reported)'}
 
-STEP 2 — open the source yourself (${MIRROR_CAP} attempts max; --out to /tmp/resup-${f.id}.txt, then
-  python3 "${VERIFY_QUOTES}" /tmp/resup-${f.id}.txt --page <pincite> [--first-page N])
+STEP 2 — open the source yourself (${MIRROR_CAP} attempts max; --out to ${scratch(`rs${f.id}`)}.txt, then
+  python3 "${VERIFY_QUOTES}" ${scratch(`rs${f.id}`)}.txt --page <pincite> [--first-page N])
 and check specifically for these artifact classes:
 - PARAPHRASED CLAIM: did the first checker test a stronger claim than the draft's own words (its
   hedges, its framing verb)? Judge the draft's sentence as written.
@@ -1657,15 +1748,17 @@ ${SUPPORT_RULES}
 ${SOURCES}`
 const supportToReverify = supportFindings.filter((f) => f.verdict === 'contradicted' || f.verdict === 'not_supported')
 const supportReverified = new Map()
-if (supportToReverify.length && !tight(supportToReverify.length * COST.reverify)) {
-  const outs = await parallel(supportToReverify.map((f) => () =>
-    spawn(supportReverifyPrompt(f), { label: `re-verify-support:n.${f.footnote}#${f.id}`, phase: 'Re-verify', schema: SUPPORT_REVERIFY_SCHEMA, model: REVERIFY_MODEL, effort: 'medium' })))
-  for (const o of outs.filter(Boolean)) supportReverified.set(o.id, o)
-  const lost = supportToReverify.filter((f) => !supportReverified.has(f.id)).length
+if (supportToReverify.length) {
+  // Same two changes as the quote re-verify above: as many as fit, and joined by job position.
+  const { results: outs, dropped: srDropped } = await gatedFanout(
+    supportToReverify.map((f) => () =>
+      spawn(supportReverifyPrompt(f), { label: `re-verify-support:n.${f.footnote}#${f.id}`, phase: 'Re-verify', schema: SUPPORT_REVERIFY_SCHEMA, model: REVERIFY_MODEL, effort: 'medium' })),
+    supportToReverify.map(() => COST.reverify), 0, true)
+  outs.forEach((o, i) => { if (o) supportReverified.set(supportToReverify[i].id, o) })
+  const lost = supportToReverify.length - srDropped.length - supportReverified.size
+  if (srDropped.length) degradation.push(`support re-verify skipped for ${srDropped.length} of ${supportToReverify.length} adverse verdict(s) (budget) — listed as not re-derived, not as findings`)
   if (lost) degradation.push(`${lost} adverse support verdict(s) got no re-verify result (agent failure) — listed as not re-derived, not as findings`)
-  log(`Support re-verify: ${supportReverified.size} findings re-derived, ${[...supportReverified.values()].filter((r) => r.upheld === false).length} were checker artifacts (corrected).`)
-} else if (supportToReverify.length) {
-  degradation.push(`support re-verify skipped for ${supportToReverify.length} adverse verdict(s) (budget) — listed as not re-derived, not as findings`)
+  log(`Support re-verify: ${supportReverified.size} of ${supportToReverify.length} findings re-derived, ${[...supportReverified.values()].filter((r) => r.upheld === false).length} were checker artifacts (corrected).`)
 }
 for (const f of supportFindings) {
   const rv = supportReverified.get(f.id)
@@ -1722,7 +1815,9 @@ const substantive = (x) => !XREF_KINDS.has(x.k) && x.k !== 'text' && x.k !== 'in
 // note's only substantive instance; (3) prefix match on the verbatim citation text.
 const instVerdicts = new Map()
 for (const f of findings) {
-  if (f.artifact) continue
+  // A withdrawn finding (artifact) carries the clearing verdict the second checker reached, so it
+  // counts here like any other verified quote; skipping it left the instance "existence-only",
+  // i.e. reported as never read, after two agents had read it (2026-11-15 review).
   const res = resById.get(f.id)
   const src = (res && res.source) || f.source || ''
   const k = f.ledgerKey || (res && res.ledgerKey) || sourceKey(src)
@@ -1768,7 +1863,7 @@ for (const x of LEDGER) {
   else if (sd === 'support-unverifiable') x.d = 'support-unverifiable'
   else if (exists === true) x.d = 'existence-only'
   else if (ex) x.d = 'unverifiable'
-  else x.d = ran ? 'unchecked' : 'unchecked'
+  else x.d = 'unchecked'
   if (x.d === 'unchecked') x.why = ran ? 'not reached by any pass' : 'existence pass skipped (budget)'
 }
 const ledgerCounts = {}
@@ -2119,7 +2214,7 @@ const fmtFinding = (f) => {
     (f.pinciteFinding ? `\n    pincite: ${f.pinciteFinding}` : '') +
     (f.versionDrift ? `\n    version-drift: ${f.versionDrift}` : '') +
     (f.note ? `\n    note: ${f.note}` : '') +
-    (f.reverifyReason ? `\n    re-verify: ${f.reverifyReason}` : '') +
+    (f.reverifyReason ? `\n    re-verify: ${f.reverifyReason}${f.firstVerdict && f.firstVerdict !== f.verdict ? ` (first checker said ${f.firstVerdict}; corrected by the second)` : ''}` : '') +
     `\n    basis: ${f.basis || 'unstated'}`
 }
 
@@ -2223,7 +2318,9 @@ REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sect
 
 CRITICAL — do not resurrect checker artifacts: ${counts.artifactsCaught} high-severity findings were
 re-derived and found to be CHECKER ARTIFACTS (verbatim after all). They are EXCLUDED from the
-findings below. Do not mention them as problems.
+findings below. Do not mention them as problems. A finding whose re-verify line says "first
+checker said X; corrected by the second" is NOT an artifact: the second checker found a different,
+real problem, and the finding is reported under the corrected verdict.
 
 REPORT DISCIPLINE (each rule below is standing feedback from the professor on a real report):
 - FINDINGS ONLY. Never include items you checked and cleared ("Confirmed clean, for the record:
@@ -2313,8 +2410,8 @@ ${findings.filter((f) => f.verdict === 'unverifiable').map((f) => fmtFinding(f) 
 === QUOTES NOT CHECKED — agent failure, not a finding (section I; list by footnote) ===
 ${[...unresolvedIds.map((i) => `- n.${UNIT_NOTES.get(i) ?? '?'} unit ${i} — no source resolution`), ...unverifiedUnits.map((r) => `- n.${r.footnote ?? '?'} unit ${r.id} — ${budgetUnits.has(r.id) ? 'source never fetched (budget)' : 'no verdict'}: "${(r.quote || '').slice(0, 120)}"`)].join('\n') || '(none)'}
 
-=== SECONDARY-SOURCE EXISTENCE (sections E/G) ===
-${secondaryExistence.length}/${SECONDARY_CITES.length} unique unquoted secondary sources existence-checked${secondaryPassRan ? '' : ' — PASS SKIPPED (budget); list them as UNCHECKED in section H'}.
+=== SECONDARY-SOURCE EXISTENCE (sections E/I/J) ===
+${secondaryExistence.length}/${SECONDARY_CITES.length} unique unquoted secondary sources existence-checked${secondaryPassRan ? '' : ' — PASS SKIPPED (budget); they are the UNCHECKED instances in section J'}.
 NOT FOUND (draft cites a source no catalog/site could locate — section E, phrase as "not found in the sources checked"):
 ${secBad.map((s) => `- key ${s.key}: ${s.note || ''}`).join('\n') || '(none)'}
 UNCONFIRMED (section I, with what would unlock each):
