@@ -682,10 +682,20 @@ def main() -> int:
         if claim.get("importance") in {"dispositive", "material"}
         and claim.get("status") in {"open", "unresolved"}
     )
+    outstanding = {}
+    for field in ("blockers", "unresolved"):
+        entries = string_list(manifest.get(field, []))
+        if entries is None or any(not entry.strip() for entry in entries):
+            errors.append(f"manifest {field} must be a list of nonempty strings")
+            entries = []
+        outstanding[field] = entries
+        if entries:
+            warnings.append(f"{field}: {'; '.join(entries)}")
     ready = (
         bool(claims)
         and not errors
         and not material_open
+        and not any(outstanding.values())
         and all(
             gate_statuses.get(gate) == "pass"
             if gate in non_waivable_gates
@@ -719,6 +729,8 @@ def main() -> int:
         unresolved = manifest.get("unresolved")
         if not isinstance(unresolved, list) or not unresolved:
             errors.append("complete_with_limits requires a nonempty unresolved list")
+        if set(outstanding["blockers"]) - set(outstanding["unresolved"]):
+            errors.append("complete_with_limits requires every remaining blocker in unresolved for disclosure")
         if gate_statuses.get("limitations_disclosed") != "pass":
             errors.append("complete_with_limits requires limitations_disclosed=pass")
         if schema_version >= 4 and gate_statuses.get("quantifier_audit") != "pass":

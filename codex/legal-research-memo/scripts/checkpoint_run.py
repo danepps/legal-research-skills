@@ -69,6 +69,7 @@ def main() -> int:
     parser.add_argument("--unresolved", action="append", default=[])
     parser.add_argument("--resolve-unresolved", action="append", default=[])
     parser.add_argument("--blocker", action="append", default=[])
+    parser.add_argument("--resolve-blocker", action="append", default=[])
     parser.add_argument("--coverage-cell", action="append", default=[])
     parser.add_argument("--budget", action="append", default=[], metavar="NAME=VALUE")
     parser.add_argument("--actual-usage", action="append", default=[], metavar="NAME=VALUE")
@@ -136,6 +137,14 @@ def main() -> int:
         manifest["unresolved"] = [
             item for item in manifest.setdefault("unresolved", []) if item not in args.resolve_unresolved
         ]
+    if args.resolve_blocker:
+        manifest["blockers"] = [
+            item for item in manifest.setdefault("blockers", []) if item not in args.resolve_blocker
+        ]
+    if manifest.get("status") == "complete" and (manifest.get("blockers") or manifest.get("unresolved")):
+        parser.error("complete status requires resolved blockers and unresolved issues; use complete_with_limits for disclosed gaps")
+    if manifest.get("status") == "complete_with_limits" and set(manifest.get("blockers", [])) - set(manifest.get("unresolved", [])):
+        parser.error("complete_with_limits requires every remaining blocker in unresolved for disclosure")
     coverage_cells = manifest.setdefault("coverage_cells", [])
     for cell in args.coverage_cell:
         cell = cell.strip()

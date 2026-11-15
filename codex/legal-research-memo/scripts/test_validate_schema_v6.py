@@ -143,6 +143,51 @@ def main() -> int:
         )
         assert valid.returncode == 0, valid.stdout + valid.stderr
 
+        # Passing gates must not erase unresolved work or worker failures.
+        for field in ('blockers', 'unresolved'):
+            manifest[field] = ['Adverse-authority worker failed; coverage is missing.']
+            write_json(manifest_path, manifest)
+            blocked = subprocess.run(
+                [sys.executable, str(VALIDATOR), str(run), '--require-ready'],
+                capture_output=True, text=True,
+            )
+            assert blocked.returncode == 1, blocked.stdout + blocked.stderr
+            assert field in blocked.stdout
+            # The supported checkpoint path also refuses false completion,
+            # leaving the manifest and event log unchanged on rejection.
+            before = (manifest_path.read_bytes(), events.read_bytes())
+            checkpoint = HERE / 'checkpoint_run.py'
+            completed = subprocess.run(
+                [sys.executable, str(checkpoint), str(run), '--phase', 'deliver',
+                 '--event', 'Attempted delivery', '--status', 'complete'],
+                capture_output=True, text=True,
+            )
+            assert completed.returncode != 0
+            assert before == (manifest_path.read_bytes(), events.read_bytes())
+            resolution = '--resolve-blocker' if field == 'blockers' else '--resolve-unresolved'
+            recovered = subprocess.run(
+                [sys.executable, str(checkpoint), str(run), '--phase', 'audit',
+                 '--event', 'Worker coverage recovered', resolution, manifest[field][0]],
+                capture_output=True, text=True,
+            )
+            assert recovered.returncode == 0, recovered.stderr
+            manifest = json.loads(manifest_path.read_text())
+            assert manifest[field] == []
+            recovered_check = subprocess.run(
+                [sys.executable, str(VALIDATOR), str(run), '--require-ready'], capture_output=True, text=True,
+            )
+            assert recovered_check.returncode == 0, recovered_check.stdout + recovered_check.stderr
+
+        manifest.update(status='complete_with_limits', phase='deliver',
+                        blockers=['Adverse-authority worker failed.'],
+                        unresolved=['Adverse-authority worker failed.'])
+        write_json(manifest_path, manifest)
+        limited = subprocess.run([sys.executable, str(VALIDATOR), str(run)], capture_output=True, text=True)
+        assert limited.returncode == 0, limited.stdout + limited.stderr
+        assert 'ready=no' in limited.stdout
+        manifest.update(status='active', phase='audit', blockers=[], unresolved=[])
+        write_json(manifest_path, manifest)
+
         claim["status"] = "disputed"
         claim["supporting_source_ids"] = []
         (run / "claim-ledger.jsonl").write_text(json.dumps(claim) + "\n", encoding="utf-8")

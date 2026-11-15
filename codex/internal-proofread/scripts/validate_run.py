@@ -318,6 +318,39 @@ def main() -> int:
                     if audit.get("source_sha256") != source_hash or audit.get("rejection_status") not in REJECTION_STATUSES:
                         errors.append(f"invalid rejection-audit result row: {audit.get('finding_id')}")
         audit_by_id = {row.get("finding_id"): row for row in audits}
+        if len(audit_by_id) != len(audits):
+            errors.append("verifier-audit.jsonl contains duplicate finding IDs")
+        finding_by_id = {row.get("finding_id"): row for row in findings}
+        for finding_id, audit in audit_by_id.items():
+            if finding_id not in finding_by_id:
+                errors.append(f"verifier audit references unknown finding: {finding_id}")
+                continue
+            if audit.get("audit_status") not in AUDIT_STATUSES:
+                errors.append(f"invalid verifier audit status: {finding_id}")
+            if audit.get("source_sha256") != source_hash:
+                errors.append(f"verifier audit has stale source hash: {finding_id}")
+            disposition = disposition_by_id.get(finding_id, {})
+            if audit.get("audit_status") == "retracted" and disposition.get("status") != "rejected":
+                errors.append(f"retracted audit conflicts with disposition: {finding_id}")
+            if audit.get("audit_status") == "revised":
+                final = audit.get("final_disposition")
+                fields = ("status", "suggestion", "rationale")
+                if not isinstance(final, dict) or any(not isinstance(final.get(key), str) or not final[key].strip() for key in fields):
+                    errors.append(f"revised audit requires final_disposition: {finding_id}")
+                    continue
+                # Compare against the exact values the report renderer uses.
+                finding = finding_by_id[finding_id]
+                rendered = {
+                    "status": disposition.get("status"),
+                    "suggestion": disposition.get("suggestion") or finding.get("suggestion") or "Review manually.",
+                    "rationale": disposition.get("rationale") or finding.get("message") or "",
+                }
+                if any(final[key] != rendered[key] for key in fields):
+                    errors.append(f"revised audit conflicts with final disposition: {finding_id}")
+                if final["status"] not in REPORT_VISIBLE_STATUSES:
+                    errors.append(f"revised audit must retain a visible finding; use retracted to clear it: {finding_id}")
+                if final["suggestion"] == finding.get("suggestion") and final["rationale"] == finding.get("message"):
+                    errors.append(f"revised audit must change the diagnosis or suggestion: {finding_id}")
         rejection_audit_by_id = {row.get("finding_id"): row for row in rejection_audits}
         if len(rejection_audit_by_id) != len(rejection_audits):
             errors.append("rejection-audit.jsonl contains duplicate finding IDs")
@@ -335,10 +368,6 @@ def main() -> int:
                 audit = audit_by_id.get(row.get("finding_id"))
                 if not audit or audit.get("audit_status") not in AUDIT_STATUSES:
                     errors.append(f"high-impact finding lacks verifier audit: {row.get('finding_id')}")
-                elif audit.get("source_sha256") != source_hash:
-                    errors.append(f"verifier audit has stale source hash: {row.get('finding_id')}")
-                elif audit.get("audit_status") == "retracted" and status != "rejected":
-                    errors.append(f"retracted audit conflicts with disposition: {row.get('finding_id')}")
             if (
                 manifest.get("rejection_audit_required", False)
                 and row.get("impact") == "high"

@@ -115,6 +115,18 @@ Read the [ledger field reference](ledger-fields.md) before writing rows; it list
 - `quote-checks.jsonl`: one or more deterministic source-file checks per prepared quotation, linked to its citation unit and source, with source path/hash, match status, page basis, and review flags.
 - `verdicts.jsonl`: one row per unit with status, severity, category, basis, evidence, suggested action, and adverse-finding draft string.
 - `verifier-audit.jsonl`: independent audit rows with `verdict_id`, `audit_status`, evidence, notes, and auditor identity/session when available.
+
+For quotation and other non-support audits, update the single final verdict in
+place. `retracted` clears the finding: the final status must be `verified` or
+`not_applicable`, never a live adverse finding. Use `revised` when a real problem
+remains under a corrected diagnosis (for example, a quotation mismatch becomes
+a pincite error). Record `initial_verdict` and `final_verdict` objects containing
+`status`, `category`, `severity`, and `suggested_action`; the latter must exactly
+match the final ledger row, at least one field must change, and both statuses
+must be adverse (`mismatch`, `partial`, or `unverified`). Keep the corrected item
+in the report under its final category. A bare `revised` flag is insufficient.
+Existing `confirmed` audits remain valid. Proposition-support audits use their
+separate transition rules below.
 - `case-review.jsonl` (schema v6): one history/treatment coverage row per case source, including skipped checks and advisory findings.
 - `findings.json` (schema v6): content-keyed findings generated from final ledgers; prior findings and diff stay in the hidden run.
 - `report.md`: canonical report; `report.docx` is an optional synchronized derivative.

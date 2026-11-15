@@ -790,6 +790,7 @@ def main() -> int:
                             f"verified quotation unit {unit_id} lacks a confirmed pincite match"
                         )
         audit_by_verdict = {row.get("verdict_id"): row for row in audits}
+        verdict_by_id = {row.get("verdict_id"): row for row in verdicts}
         audit_ids = [row.get("verdict_id") for row in audits]
         if len(audit_ids) != len(set(audit_ids)):
             errors.append("verifier-audit.jsonl contains duplicate verdict_id rows")
@@ -800,6 +801,27 @@ def main() -> int:
                 errors.append(f"verifier-audit.jsonl row {index}: invalid audit_status")
             if audit.get("evidence") in (None, "", []):
                 errors.append(f"verifier-audit.jsonl row {index}: missing evidence")
+            verdict = verdict_by_id.get(audit.get("verdict_id"))
+            # Support audits have their own stricter transition contract below.
+            if verdict is None or (support_enabled and isinstance(verdict.get("support"), dict)):
+                continue
+            if audit.get("audit_status") == "retracted" and verdict.get("status") not in {"verified", "not_applicable"}:
+                errors.append(f"retracted audit must clear the final verdict: {audit.get('verdict_id')}")
+            if audit.get("audit_status") == "revised":
+                fields = ("status", "category", "severity", "suggested_action")
+                initial, final = audit.get("initial_verdict"), audit.get("final_verdict")
+                if not all(isinstance(value, dict) and all(nonempty_string(value.get(key)) for key in fields)
+                           for value in (initial, final)):
+                    errors.append(f"revised audit requires initial_verdict and final_verdict: {audit.get('verdict_id')}")
+                    continue
+                if any(final[key] != verdict.get(key) for key in fields):
+                    errors.append(f"revised audit conflicts with final verdict: {audit.get('verdict_id')}")
+                if all(initial[key] == final[key] for key in fields):
+                    errors.append(f"revised audit must change the finding: {audit.get('verdict_id')}")
+                if (initial["status"] not in {"mismatch", "partial", "unverified"}
+                        or initial["severity"] not in SEVERITIES
+                        or final["status"] not in {"mismatch", "partial", "unverified"}):
+                    errors.append(f"revised audit must retain a corrected adverse finding; use retracted to clear it: {audit.get('verdict_id')}")
         for verdict in verdicts:
             adverse = verdict.get("status") in {"mismatch", "unverified", "partial"}
             exact_one_page = (
