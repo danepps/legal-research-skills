@@ -142,7 +142,13 @@ workflow runs in the background and notifies you on completion.
 ### 5. Deliver
 The workflow returns `{ memo, exitState, degradation, counts, ... }`.
 - **Check `exitState` BEFORE presenting.** `complete` → deliver. `complete_with_limits` → deliver,
-  surfacing the documented gaps (listed in `degradation` and the memo's Limits section).
+  surfacing the documented gaps (listed in `degradation` and the memo's Limits section). Since
+  2026-11-15 those gaps include agent failures that used to leave no trace: a search vector that
+  did not run (`counts.surveyLanesFailed`; say which, and treat any absence claim that depended on
+  it as untested), a selected source nobody read (`counts.readsFailed`), a citation correction
+  only a minority of the panel proposed (`counts.panelDisputedCorrections`; not applied, listed in
+  Limits), and panel voters who reported different treatment for the same case
+  (`counts.panelTreatmentSplits`; every report is in the memo, and the case needs a citator check).
   `budget_exhausted` → the budget guard cut actual coverage (trimmed reads, skipped gap-fill,
   unchecked cites — see `degradation` for specifics); the memo is not yet the deliverable. The proven
   rescue pattern (July 2026 pre-1960 run): launch targeted read-and-verify Agent passes — one per
@@ -213,9 +219,14 @@ When editing or extending a memo BY HAND, hold your own prose to the same gate �
 "no scholarship directly addresses X," run the phenomenon-named search yourself.
 
 ## Guardrails
-- **No hallucinated law.** The workflow only lets the memo cite authorities that an independent
-  agent confirmed (in deep mode, that survived adversarial refutation). Preserve that discipline;
-  never add cites from memory when relaying or editing.
+- **No hallucinated law.** Every authority the memo cites goes to a cite-check, and the Table of
+  Authorities says what each one got. That is not the same as "every cite was independently
+  confirmed": an authority a checker could not confirm stays only with an explicit caveat, one
+  the budget left unchecked is tagged as such, and a source a reader opened this run is checked
+  for citation form and treatment but its quote is not re-read (its basis is reported as a
+  reproduction resting on the research read). In deep mode the load-bearing authorities also face
+  the refutation panel. Preserve that discipline; never add cites from memory when relaying or
+  editing.
 - **Open-web only.** Coverage is narrower than Westlaw/Lexis and treatment flags
   (KeyCite/Shepard's) are approximated, not authoritative. Always convey this caveat.
 - **Opinions, articles and dockets that postdate the model's training data are real.** A 2025 or

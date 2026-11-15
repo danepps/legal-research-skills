@@ -133,8 +133,10 @@ Record the snapshot time; the extractor computes the snapshot's SHA-256 (in `pro
 **The draft is read-only to this skill — structurally, not just by convention.** The
 original draft's path goes into the `cp` above and NOWHERE else: never into Workflow args,
 never into an agent prompt. Everything downstream reads only the write-protected snapshot's
-extraction artifacts, and every workflow agent runs as the read-only `Explore` type (no
-Edit/Write tools). The ONLY file this skill ever creates outside the scratchpad is the
+extraction artifacts, and every workflow agent runs as the `Explore` type (no Edit/Write
+tools). `Explore` agents do keep a shell, which the workflow uses to grep the snapshot, so
+the guarantee rests on the path never reaching an agent and on the snapshot being
+write-protected, not on the agent type alone. The ONLY file this skill ever creates outside the scratchpad is the
 report (step 5) — a new `.md` next to the draft, written by you, never the `.docx` itself.
 
 ### 3. Extract + lint (deterministic — run yourself, near-zero tokens)
@@ -233,7 +235,8 @@ The workflow returns `{ report, counts, exitState, degradation, rejectedFindings
 ## Guardrails (never relax)
 - **The draft is never edited.** Read-only by construction: the original path is used once
   (the snapshot `cp`) and never reaches the workflow; the snapshot is `chmod a-w`; all
-  agents run as the tool-gated read-only `Explore` type. This skill reports findings — it
+  agents run as the `Explore` type, which has no file-editing tools (it does have a shell,
+  so the first two protections are the ones that matter). This skill reports findings — it
   never applies them. If the user wants fixes applied, that is a separate, explicit request
   outside this skill, made against the live draft with their eyes on it.
 - **Quoted language is never a draft error.** Archaic spelling and odd grammar in quotes

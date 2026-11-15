@@ -126,14 +126,25 @@ with tempfile.TemporaryDirectory() as td:
     check(sorted(v for v in r["ledger"].values() if v.startswith("support-")) == ["support-finding", "support-finding"], "ledger: two support-finding instances")
 
     print("adverse, re-verify skipped for budget (Codex item 1)")
-    r = run("budget-tight", {"costModel": {"reverify": 5_000_000}})
+    # 8M is more than the whole cap, so neither second derivation fits.
+    r = run("budget-tight", {"costModel": {"reverify": 8_000_000}})
     s = r["support"]
-    check(any("re-verify skipped" in d for d in r["degradation"]), "degradation records the skipped audit")
+    check(any("re-verify skipped for 2 of 2" in d for d in r["degradation"]), "degradation records the skipped audit")
+    check(r["spend"]["byPhase"]["Verify"]["agents"] == 1 and r["spend"]["byPhase"]["Support"]["agents"] == 2,
+          "the reserve held back for re-verify is capped by the run cap, so an inflated re-verify cost does not starve Verify or Support")
     check(s["notSupported"] == 0 and s["contradicted"] == 0 and s["unauditedAdverse"] == 2, "unaudited adverse verdicts are NOT counted as findings (%s)" % {k: s[k] for k in ("notSupported", "contradicted", "unauditedAdverse")})
     check(r["items"] == [], "no support finding items exported")
     check(all(f["unaudited"] for f in r["findings"] if f["verdict"] in ("not_supported", "contradicted")), "the verdicts carry the unaudited flag")
     check("support-finding" not in r["ledger"].values() and list(r["ledger"].values()).count("support-unverifiable") == 2, "ledger: unaudited adverse instances are support-unverifiable, never support-finding (%s)" % r["ledger"])
     check(len(r["exported"]["read"]) == 4, "export: only the four audited/non-adverse reads count as read")
+
+    print("adverse, the budget fits one of the two second derivations (2026-11-15: no longer all-or-nothing)")
+    r = run("budget-tight", {"costModel": {"reverify": 5_000_000}})
+    s = r["support"]
+    check(any("re-verify skipped for 1 of 2" in d for d in r["degradation"]), "degradation says one of two was skipped (%s)" % r["degradation"])
+    check(s["unauditedAdverse"] == 1 and s["notSupported"] + s["contradicted"] == 1, "one adverse verdict re-derived and reported, the other unaudited (%s)" % {k: s[k] for k in ("notSupported", "contradicted", "unauditedAdverse")})
+    check(len(r["items"]) == 1 and list(r["ledger"].values()).count("support-finding") == 1 and list(r["ledger"].values()).count("support-unverifiable") == 1,
+          "the re-derived one is a finding; the other is support-unverifiable in the ledger")
 
     print("adverse, reviewer returns nothing")
     r = run("lost-reviewer")

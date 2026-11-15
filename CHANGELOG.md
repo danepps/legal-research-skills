@@ -2,6 +2,36 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.5 (2026-11-15)
+
+Fixes from a code review of the three workflow scripts. Each defect was reproduced by running the script under stubbed agents and has a regression test; none was observed in a live run. The review, organized by kind of mistake, is in `reviews/2026-11-15-claude-workflow-review-for-codex.md`. Codex plugin unchanged (1.7.2).
+
+`cite-check`:
+
+- A high-severity finding that the second checker corrected to a different finding (a mismatch that is really a syllabus quotation or a wrong pincite) was dropped from the report as a "checker artifact" and counted as verbatim. It is now reported under the corrected verdict, with the first verdict named. Only a correction that clears the quotation withdraws the finding, and a cleared finding's ledger entry is `verified`, not `existence-only`.
+- Re-verification results were matched to findings by the id the agent echoed, and the prompt showed the id only inside a command. An agent echoing the neighbouring id turned a clean quotation into a re-verified high-severity finding. Results are matched by job position, and the prompt states the id. Verify agents' verdicts are likewise kept only for the quotations the agent was given.
+- Re-verification was all-or-nothing under budget pressure, and the reserve held back for it (40k) was less than one re-verify agent (100k), so a budget-bound run with two or more high-severity findings skipped the pass. The reserve is now three quote and two support re-verifications (capped at a tenth and a twentieth of the cap), and the pass re-derives as many findings as fit. **This changes budget-bound runs:** up to two fewer sources are verified so that findings can be re-derived; sources not reached are listed as not checked, as before.
+- A case-existence batch whose agent died is retried once, and cites nobody answered for are listed in `degradation`. Verify tail batches retry once.
+- Each agent writes its scratch files under a path unique to the run and to itself. Agents used to share `/tmp/src-<slug>.txt` and `/tmp/q-<slug>.json`.
+- The report prompt sent secondary-source items to sections G and H (history and support); they go to E, I and J. `SKILL.md` quoted the history batch at 110k against the script's 350k.
+
+`legal-research`:
+
+- Deep mode, refutation panel: negative treatment reported by one voter was dropped when an earlier voter had written "none found". Every distinct report now reaches the memo, attributed. A citation correction proposed by one voter of three replaced a citation the other two found accurate; a correction now needs a strict majority, and a minority proposal is disclosed in the memo's Limits section.
+- A refuted authority was labelled "verified (3-voter refutation panel)". Validation labels now follow the verdict, and statutes and secondary sources no longer claim a citing-opinion probe.
+- A dead survey vector or reader left no trace, and the run could end `complete` with its top-ranked source missing from the draft. Both retry once; a second failure is a named coverage gap (`counts.surveyLanesFailed`, `counts.readsFailed`), passed to the memo's Limits section, and the unread source stays visible as an unread lead. A dead triage agent no longer crashes the run.
+- Authorities harvested from the read sources never reached the draft, because the search leftovers filled the lead cap first. A third of the lead slots are kept for them.
+- The soft cap is measured from the start of the run, not the start of the turn.
+- A source a reader opened this run is no longer stamped `direct-full-text`; its basis is at least `authoritative-reproduction`, with a note that the cite-checker did not re-open it.
+- Readers are told to probe candidate URLs with `probe_sources.py` in one call, as `SKILL.md` has said since 1.6.0. The "no hallucinated law" guardrail in `SKILL.md` now describes what the cite-check does and does not confirm.
+
+`proofread`:
+
+- A verifier's verdict for a finding outside its batch could overwrite that batch's verdict. Verdicts count only for the findings the verifier was given.
+- The read-only guarantee is described accurately: the agent type has no file-editing tools but does have a shell, so the guarantee rests on the draft's path never reaching an agent and on the write-protected snapshot.
+
+Tests: `cite-check/scripts/test_workflow_quotes.py`, `legal-research/test_workflow_pipeline.py`, `proofread/scripts/test_workflow_verify.py` (new, each with a stubbed-agent harness); `cite-check/scripts/test_workflow_support.py` updated for partial re-verification.
+
 ## 1.6.4 (2026-11-14)
 
 The two reports from issue #2 that 1.6.3 left open. Both were correct quotations wrongly rejected.

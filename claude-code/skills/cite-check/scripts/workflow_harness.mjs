@@ -74,7 +74,7 @@ async function agent(prompt, opts) {
     if (scenario === 'segment-id-stuck') return { resolutions: units.map((id) => ({ id, footnote: 5, quote: 'q', source: 'Id.', kind: 'unknown', pincite: '' })) }
     return { resolutions: units.map((id) => ({ id, footnote: 1, quote: 'q', source: 'McCulloch v. Maryland, 17 U.S. (4 Wheat.) 316, 431 (1819)', kind: 'case', pincite: '431' })) }
   }
-  if (L.startsWith('exist-secondary')) return { sources: [...prompt.matchAll(/- key (\S+)/g)].map((m) => ({ key: m[1], exists: true, basis: 'web' })) }
+  if (L.startsWith('exist-secondary')) return { sources: [...prompt.matchAll(/- key (.+?) \| /g)].map((m) => ({ key: m[1], exists: true, basis: 'web' })) }
   if (L.startsWith('exist')) return { results: [...prompt.matchAll(/"(\d+ [A-Za-z. ]+ \d+)"/g)].map((m) => ({ citation: m[1], exists: true, caseName: 'X v. Y', dateFiled: '1819-03-06', basis: 'courtlistener-api' })) }
   if (L.startsWith('history')) return { cases: [...prompt.matchAll(/- cite: ([^|]+?) \|/g)].map((m) => ({ cite: m[1].trim(), status: 'checked', historyBasis: 'none-found', confidence: 'moderate' })) }
   if (L.startsWith('verify-tail')) return { sources: [] }
