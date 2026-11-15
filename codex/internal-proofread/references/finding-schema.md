@@ -111,7 +111,19 @@ Write one row per high-impact finding that is confirmed, likely, queried, or fix
 {"finding_id":"A123","source_sha256":"...","audit_status":"confirmed","verifier":"proofread-verifier","rationale":"Independent review of the full paragraph confirms an omitted word."}
 ```
 
-Valid audit statuses are `confirmed`, `revised`, and `retracted`. A retracted finding must ultimately be rejected.
+Valid audit statuses are `confirmed`, `revised`, and `retracted`. A retracted finding must ultimately be rejected, regardless of impact or the proposed disposition; do not preserve it as a style item, waiver, or prepublication item. Audit IDs must be unique, refer to existing findings, and carry the current source hash.
+
+For `revised`, record a `final_disposition` object with `status`, `suggestion`,
+and `rationale`. Apply those fields to the finding's disposition so the report
+shows the corrected diagnosis and action. The final status must remain visible
+(use `retracted` when clearing the finding), and the suggestion or rationale
+must differ from the original finding's suggestion or message. The validator
+compares the audit outcome with the exact fields used by the report renderer.
+For example:
+
+```json
+{"finding_id":"A123","source_sha256":"...","audit_status":"revised","final_disposition":{"status":"query","suggestion":"Confirm whether a word is missing here.","rationale":"The sentence is ambiguous, not demonstrably incomplete."}}
+```
 
 ## Rejection audit
 

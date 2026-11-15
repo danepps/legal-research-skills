@@ -1,5 +1,16 @@
 # Codex plugin changes
 
+## 1.7.3 — 2026-11-14
+
+- Reconcile citation and proofreading audits with the final finding. Retractions
+  cannot leave live findings, and revisions must apply their recorded outcome.
+  Reject duplicate, unknown, and stale proofreading audit rows.
+- Prevent research memos from passing full readiness with unresolved issues or
+  blockers, even when completion gates are marked passed. Add explicit blocker
+  resolution and preserve delivery with disclosed limits.
+- Add offline regressions for the inconsistent states and successful correction,
+  retraction, recovery, and limited-delivery paths.
+
 ## 1.7.2 — 2026-11-14
 
 - Treat a word split by a soft hyphen at a line end as one word in `cite-check`

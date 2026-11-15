@@ -92,6 +92,17 @@ python3 <skill-dir>/scripts/checkpoint_run.py RUN_DIR \
 
 Use the same script to record artifacts, gates, and actual or estimated usage. Label estimates as estimates; when usage is not exposed, leave it `unavailable` rather than inventing numbers.
 
+When a worker fails or returns no usable packet, record the affected coverage as
+`--blocker "..."` and `--unresolved "..."`; an empty successful search is a
+different outcome. Mark the affected gate blocked until the coverage is recovered.
+After recovery, use `--resolve-blocker "..."` and `--resolve-unresolved "..."`
+with the exact recorded strings and explain the recovery in the event detail.
+Do not simply mark all gates passed: unresolved issues or blockers prevent
+`complete` and `--require-ready` even when the gates say pass. If a remaining gap
+is acceptable for delivery, use `complete_with_limits`, include each remaining
+blocker in `unresolved`, and satisfy the existing limitations-disclosure gate.
+The helper checks recorded state; the lead must record every failed worker.
+
 On resume:
 
 1. Read `manifest.json` and the last events.
