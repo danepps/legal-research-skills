@@ -7,13 +7,14 @@ export const meta = {
     { title: 'Read', detail: 'dedup, triage, then fully read each chosen source once' },
     { title: 'Draft', detail: 'synthesize a memo from the findings' },
     { title: 'Verify', detail: 'confirm only the authorities actually cited' },
-    { title: 'Finalize', detail: 'apply corrections, flag unverified, add appendices' },
+    { title: 'Finalize', detail: 'apply corrections as edits, flag unverified, add appendices' },
   ],
 }
 
 // ---- args (passed from the skill) -------------------------------------------
 // args = { skillsDir: '<plugin root>/skills', question, mode: 'caselaw'|'scholarship'|'both', outputStyle: 'academic'|'practitioner',
-//          jurisdiction, asOfDate, notes, deep:boolean, projectDir:string }
+//          jurisdiction, asOfDate, notes, deep:boolean, projectDir:string,
+//          finalizeModel:string (optional; unset = the session model), escalate:boolean (default true) }
 let A = args || {}
 if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
 const QUESTION = A.question || 'No question provided.'
@@ -81,11 +82,21 @@ const remainingTokens = () =>
 const tight = (need) => remainingTokens() < need
 
 // Lever 3 — model map:
-// - Scope, Draft, and Finalize carry NO model override: they inherit the session model (Fable when
-//   Fable is on). These are three calls total; Scope's leverage-per-token is the highest in the
-//   pipeline (its vectors steer everything downstream), Draft is the analytical synthesis, and
-//   Finalize re-emits the memo — an override there would launder session-model prose through a
-//   cheaper model.
+// - Scope and Draft (and the deep calibration pass) carry NO model override: they inherit the
+//   session model (Fable when Fable is on). Scope's leverage-per-token is the highest in the
+//   pipeline (its vectors steer everything downstream) and Draft is the analytical synthesis.
+// - Finalize inherits the session model too UNLESS the skill passes args.finalizeModel. Nothing
+//   is hard-coded here, so a session run entirely on Sonnet or Opus stays on that model; the
+//   skill passes a cheaper model only when the session model sits above it (2026-11-16: 'opus'
+//   on a Fable session, where Fable use is capped). That became safe when Finalize stopped
+//   re-emitting the memo: every post-Draft pass now returns find-and-replace edits and this
+//   script applies them, so a cheaper model can no longer launder the Draft's prose (see
+//   applyEdits below).
+// - With finalizeModel set, the changes that alter what the memo can CLAIM are not left to the
+//   cheaper model: a load-bearing authority that failed verification or drew negative treatment,
+//   a minority objection, and the weaving-in of gap-fill authorities go to one call on the
+//   session model first (the "call-in", label finalize:revise), which also returns edits. It
+//   runs only when the cite-check results contain such an item; args.escalate:false turns it off.
 // - Sonnet does the accuracy-critical mid-volume work: triage (decides what gets read), the full
 //   reads (a misread here becomes a confident wrong proposition in the draft, and lean verify
 //   won't re-open the source to catch it), and cite-verification.
@@ -94,6 +105,10 @@ const tight = (need) => remainingTokens() < need
 const SCOUT_MODEL = 'haiku'   // survey: search-snippet harvesting only
 const READ_MODEL = 'sonnet'   // triage, full reads, gap-fill reads
 const VERIFY_MODEL = 'sonnet' // cite-checking
+// Finalize's clerical pass and the edit-repair round. '' = no override (the session model).
+const FINALIZE_MODEL = String(A.finalizeModel || '').trim().replace(/[^A-Za-z0-9._-]/g, '')
+const withFinalizeModel = (opts) => (FINALIZE_MODEL ? { ...opts, model: FINALIZE_MODEL } : opts)
+const ESCALATE = A.escalate !== false && A.escalate !== 'false'
 
 const SOURCES = `Opinions, articles and dockets that POSTDATE your training data are real — a 2025 or 2026
 decision you do not recognize is not a hallucination signal; the fetched record is, your recall is not.
@@ -444,6 +459,7 @@ const VERDICT_SCHEMA = {
           },
           correctedCitation: { type: 'string' },
           quoteAccurate: { type: 'boolean' },
+          examined: { type: 'boolean', description: 'false ONLY if you ran no check of your own on this authority (no lookup, no citator, nothing opened); otherwise true or omitted' },
           currentTreatment: { type: 'string' },
           notes: { type: 'string' },
         },
@@ -473,10 +489,161 @@ const REFUTE_SCHEMA = {
   },
 }
 
+// ---- Edits, not re-emission (2026-11-16) -----------------------------------------------------
+// Every pass that changes the memo after Draft (deep calibration, the substantive call-in,
+// Finalize) returns find-and-replace edits and this script applies them. Three reasons: the
+// memo's prose cannot drift, because text no edit names is never retyped; the output is the
+// edits alone instead of the whole memo a second and third time, which is most of what those
+// passes used to cost; and it lets Finalize run on a cheaper model than the Draft.
+const EDIT_ITEM = {
+  type: 'object',
+  required: ['find', 'replace'],
+  properties: {
+    find: { type: 'string', description: 'text copied CHARACTER FOR CHARACTER from the memo, long enough to occur exactly once (include neighbouring words); at most about 1,500 characters' },
+    replace: { type: 'string', description: 'the full text that takes its place (an empty string deletes it). To INSERT, repeat the find text here with the addition beside it' },
+    all: { type: 'boolean', description: 'true ONLY to replace every occurrence of a short recurring string, such as a citation being corrected' },
+    why: { type: 'string', description: 'one short line: which instruction this edit carries out, and for which authority' },
+  },
+}
+const EDITS_SCHEMA = {
+  type: 'object',
+  required: ['edits'],
+  properties: { edits: { type: 'array', items: EDIT_ITEM, description: 'the changes to make; an empty array if nothing needs changing' } },
+}
 const FINAL_SCHEMA = {
   type: 'object',
-  required: ['memo'],
-  properties: { memo: { type: 'string', description: 'the final memo in Markdown — nothing else' } },
+  required: ['edits', 'tableOfAuthorities', 'limits'],
+  properties: {
+    edits: { type: 'array', items: EDIT_ITEM, description: 'the changes to the memo text; an empty array if none are needed' },
+    tableOfAuthorities: { type: 'string', description: 'the complete Table of Authorities section in Markdown, starting with its heading' },
+    limits: { type: 'string', description: 'the complete Limits of this research section in Markdown, starting with its heading' },
+  },
+}
+const EDIT_RULES = `HOW TO RETURN CHANGES — you do NOT return the memo. You return a list of edits, and a script applies
+each one to the memo exactly as you wrote it. Text that no edit names stays as it is, so there is
+nothing to preserve by retyping it.
+- find: copy the passage CHARACTER FOR CHARACTER from the memo below (same punctuation, same
+  Markdown marks), and quote enough of the sentence that it occurs exactly ONCE. Keep it short:
+  the clause or sentence you are changing, not the paragraph around it, and never more than about
+  1,500 characters. An edit whose find text is not in the memo, or is in it more than once, is
+  not applied.
+- replace: the full text that takes its place. To insert a sentence, quote the sentence it follows
+  as find and give that sentence plus the new one as replace. To delete, give an empty replace.
+- all: set true only for a short string that must change everywhere it appears (a citation being
+  corrected). Otherwise leave it out.
+- why: one short line naming the instruction and the authority.
+- Edits are applied in the order given, each to the result of the one before, so do not write two
+  edits whose find texts overlap. Make the fewest edits that do the job; return an empty list if
+  nothing needs changing.`
+const EDIT_MAX_FIND = 4000
+const QUOTES_SINGLE = "'‘’‚′"
+const QUOTES_DOUBLE = '"“”„″'
+const DASHES = '-‐‑‒–—'
+// The find text is matched exactly first. If that fails, runs of whitespace and the straight/curly
+// quote and hyphen/dash variants are treated as equal: those are the characters a model changes
+// without noticing when it copies a passage, and tolerating them only LOCATES the passage (the
+// replacement is still whatever the model wrote).
+const tolerantPattern = (find) => {
+  const body = find.trim().split(/\s+/).map((tok) => [...tok].map((ch) => {
+    if (QUOTES_SINGLE.includes(ch)) return `[${QUOTES_SINGLE}]`
+    if (QUOTES_DOUBLE.includes(ch)) return `[${QUOTES_DOUBLE}]`
+    if (DASHES.includes(ch)) return `[${DASHES}]`
+    return ch.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&')
+  }).join('')).join('\\s+')
+  return (/^\s/.test(find) ? '\\s+' : '') + body + (/\s$/.test(find) ? '\\s+' : '')
+}
+// Apply edits in order. Returns the new text, how many applied, and every edit that did not
+// (with the reason, which goes back to the repair round and, failing that, into the result).
+function applyEdits(text, edits) {
+  let out = String(text || '')
+  const failed = []
+  let applied = 0
+  for (const raw of Array.isArray(edits) ? edits : []) {
+    const e = raw || {}
+    const find = typeof e.find === 'string' ? e.find : ''
+    const replace = typeof e.replace === 'string' ? e.replace : ''
+    const fail = (reason) => failed.push({ find, replace, all: !!e.all, why: String(e.why || ''), reason })
+    if (!find.trim()) { fail('the find text was empty'); continue }
+    if (find === replace) continue
+    if (find.length > EDIT_MAX_FIND) {
+      fail(`the find text is ${find.length} characters long (limit ${EDIT_MAX_FIND}): quote only the sentence being changed, and split a long change into several edits`)
+      continue
+    }
+    let spans = []
+    for (let i = out.indexOf(find); i >= 0; i = out.indexOf(find, i + find.length)) spans.push([i, i + find.length])
+    if (!spans.length) {
+      try {
+        for (const m of out.matchAll(new RegExp(tolerantPattern(find), 'g'))) if (m[0].length) spans.push([m.index, m.index + m[0].length])
+      } catch { spans = [] }
+    }
+    if (!spans.length) { fail('the find text does not occur in the memo (it must be copied character for character)'); continue }
+    if (spans.length > 1 && !e.all) { fail(`the find text occurs ${spans.length} times in the memo: quote more of the sentence so it is unique, or set all:true if every occurrence should change`); continue }
+    for (let k = spans.length - 1; k >= 0; k--) out = out.slice(0, spans[k][0]) + replace + out.slice(spans[k][1])
+    applied++
+  }
+  return { text: out, applied, failed }
+}
+// Apply a pass's edits, with ONE repair round for those whose find text did not match. Restating
+// a find string is clerical, so the repair runs on the Finalize model whatever model wrote the
+// edits. Edits still unapplied after it are returned, never dropped: the caller discloses them.
+async function applyWithRepair(memo, edits, what, phaseName) {
+  const before = String(memo || '')
+  const first = applyEdits(before, edits)
+  let { text, applied, failed } = first
+  if (failed.length && !tight(RESERVE_FINALIZE)) {
+    log(`${what}: ${failed.length} of ${(edits || []).length} edits did not match the memo text — one repair round.`)
+    const fix = await agent(
+      `A script tried to apply edits to the legal memo below, and ${failed.length} of them did not match its
+text. Restate each one so that it applies. Do NOT change what an edit does: keep its replace text,
+changing it only where it must change to fit a corrected find text. For each failed edit, locate
+the passage in the memo that it meant, and return the edit with find copied CHARACTER FOR CHARACTER
+from the memo as it stands now. Return the edits in the same order, one per failed edit. If the
+memo already reads the way an edit intended, return that edit with find and replace both set to
+the passage as it stands.
+
+${EDIT_RULES}
+
+=== FAILED EDITS ===
+${failed.map((f, i) => `[${i + 1}] why: ${f.why || '(not stated)'}
+    it failed because: ${f.reason}
+    find: <<<${f.find}>>>
+    replace: <<<${f.replace}>>>${f.all ? '\n    all: true' : ''}`).join('\n')}
+
+=== MEMO ===
+${text}`,
+      withFinalizeModel({ schema: EDITS_SCHEMA, label: `finalize:repair (${what})`, phase: phaseName, effort: 'low' })
+    ).catch(() => null)
+    if (fix && Array.isArray(fix.edits)) {
+      const second = applyEdits(text, fix.edits)
+      text = second.text
+      applied += second.applied
+      // An edit the repair round did not return is still unapplied.
+      failed = [...second.failed, ...failed.slice(fix.edits.length)]
+    }
+  }
+  // A pass that cut the memo by more than 40% did something other than edit it.
+  if (text.length < before.length * 0.6) {
+    log(`${what}: the edits would have cut the memo from ${before.length} to ${text.length} characters — discarded.`)
+    return { text: before, applied: 0, failed: [], rejected: true }
+  }
+  return { text, applied, failed, rejected: false }
+}
+// Does a cite-checker's currentTreatment text report NEGATIVE treatment? It is free text that
+// usually says there is none ("no negative treatment found", "citator: no Negative/Caution
+// treatment"), so a signal word counts only if no negation precedes it in the same sentence.
+// Errs toward yes: a false yes costs one call on the session model, a false no leaves a
+// treatment note to the clerical pass.
+const NEGATIVE_SIGNAL = /overrul|abrogat|supersed|revers|vacat|disapprov|repudiat|no longer good law|called into (?:doubt|question)|limited (?:by|to|in)|narrowed|questioned|criticiz|declined to follow|negative|caution/gi
+const NEGATOR = /\b(?:no|not|none|never|without|nor|neither)\b|n't/i
+const hasNegativeTreatment = (treatment) => {
+  const s = String(treatment || '')
+  for (const m of s.matchAll(NEGATIVE_SIGNAL)) {
+    if (/^no longer/i.test(m[0])) return true
+    const sentenceStart = Math.max(s.lastIndexOf('.', m.index), s.lastIndexOf(';', m.index), s.lastIndexOf('|', m.index), s.lastIndexOf('\n', m.index), s.lastIndexOf('—', m.index))
+    const lead = s.slice(Math.max(sentenceStart + 1, m.index - 60), m.index)
+    if (!NEGATOR.test(lead)) return true
+  }
+  return false
 }
 
 // ---- Phase 1: scope --------------------------------------------------------
@@ -904,12 +1071,15 @@ const cited = (draft.citedAuthorities || []).filter((c) => c && c.citation)
 // into unsupported generalizations. Deep runs get one bounded calibration pass on the draft —
 // quantifiers, selection effects, source roles, boundary dates, rival readings — working from the
 // draft alone (compact input; no re-reading of the corpus). Lean runs rely on the calibration
-// rules already injected into the Draft prompt plus the Finalize audit.
+// rules already injected into the Draft prompt plus the Finalize audit. The reviewer returns
+// edits (2026-11-16), not a second copy of the draft: same model as before, a fraction of the
+// output, and no chance of the draft coming back shortened.
+const calibrationUnapplied = []
 if (DEEP && !tight(RESERVE_FINALIZE + 35_000)) {
   const cal = await agent(
     `You are an adversarial calibration reviewer for a legal research memo. Do NOT re-research, add,
 or remove authorities. Your only job is to make the memo's CLAIMS match its EVIDENCE. Audit the
-draft below and return a revised draft (same structure, lightest touch) fixing:
+draft below and return edits (same structure, lightest touch) fixing:
 1. QUANTIFIERS: every "first/last/only/never/always/settled/overwhelmingly/dominant/rare/erased/
    dead" — was the research designed to support that? If not, downgrade to sample-scoped language
    ("in the leading cases reviewed", "the earliest clean statement found in this research").
@@ -924,18 +1094,23 @@ draft below and return a revised draft (same structure, lightest touch) fixing:
 Preserve every citation, quote, and pincite exactly as written. If nothing needs fixing in a
 section, leave it untouched.
 
+${EDIT_RULES}
+
 QUESTION: ${QUESTION}
 
 === DRAFT ===
 ${draft.memoDraft || ''}`,
-    { schema: { type: 'object', required: ['memoDraft'], properties: { memoDraft: { type: 'string' } } },
-      label: 'calibrate:thesis', phase: 'Draft', effort: 'high' }
+    { schema: EDITS_SCHEMA, label: 'calibrate:thesis', phase: 'Draft', effort: 'high' }
   ).catch(() => null)
-  if (cal && cal.memoDraft && cal.memoDraft.length > (draft.memoDraft || '').length * 0.6) {
-    draft.memoDraft = cal.memoDraft
-    log('Deep calibration pass applied to the draft.')
+  if (cal && Array.isArray(cal.edits) && cal.edits.length) {
+    const r = await applyWithRepair(draft.memoDraft, cal.edits, 'calibration', 'Draft')
+    draft.memoDraft = r.text
+    if (r.failed.length) calibrationUnapplied.push(...r.failed)
+    log(r.rejected
+      ? 'Deep calibration edits discarded — keeping the draft as written.'
+      : `Deep calibration: ${r.applied} edit${r.applied === 1 ? '' : 's'} applied to the draft${r.failed.length ? `, ${r.failed.length} could not be located` : ''}.`)
   } else if (cal) {
-    log('Deep calibration returned a suspiciously short draft — keeping the original.')
+    log('Deep calibration found nothing to change.')
   }
 }
 
@@ -992,14 +1167,27 @@ phase('Verify')
 // gi = stable global index used to join verdicts back to authorities. wasRead marks authorities a
 // research agent already opened and quoted THIS run — cite-checkers skip existence re-confirmation
 // for those and spend their effort on citation format + negative treatment.
-const readKeys = new Set(readFindings.filter((f) => f.opened).map((f) => norm(f.citation)))
+// Matched on the reporter cite, not the whole string (second live run, 2026-11-16): a reader
+// returns its citation with pincites, a parallel cite or an opinion parenthetical
+// ("364 U.S. 587, 596-97", "595 U.S. 360 (2022) (Kavanaugh, J., concurring…)"), the Draft cites
+// the bare case, and on whole-string equality four of eight read opinions lost the tag and were
+// reported as load-bearing authorities checked at citation level only. A citation with no
+// reporter cite (an article, a statute) still matches on the normalized string.
+const CITE_TRIPLE = /\b(\d{1,3})\s+(U\.\s?S\.|S\.\s?Ct\.|L\.\s?Ed\.(?:\s?2d)?|F\.(?:\s?(?:2d|3d|4th))?|F\.\s?Supp\.(?:\s?[23]d)?|F\.\s?App'?x|B\.R\.|So\.(?:\s?[23]d)?|P\.(?:\s?[23]d)?|A\.(?:\s?[23]d)?|N\.[EW]\.(?:\s?[23]d)?|S\.[EW]\.(?:\s?[23]d)?|N\.Y\.S\.(?:\s?[23]d)?|Cal\.\s?(?:App\.\s?)?[2-5]th)\s+(?:\([^)]{1,20}\)\s+)?(\d{1,5})\b/g
+const citeKeys = (s) => [...String(s || '').matchAll(CITE_TRIPLE)].map((m) => `${m[1]} ${m[2].toLowerCase().replace(/[^a-z0-9]/g, '')} ${m[3]}`)
+const readKeys = new Set()
+for (const f of readFindings.filter((f) => f.opened)) {
+  readKeys.add(norm(f.citation))
+  for (const k of citeKeys(f.citation)) readKeys.add(k)
+}
+const wasReadThisRun = (citation) => readKeys.has(norm(citation)) || citeKeys(citation).some((k) => readKeys.has(k))
 const toVerify = [
   ...cited,
   ...gapFindings.map((f) => ({
     citation: f.citation, url: f.url, proposition: f.proposition,
     quote: f.quote, pincite: f.pincite, kind: f.kind, gapFill: true,
   })),
-].map((c, i) => ({ ...c, gi: i, wasRead: !!c.gapFill || readKeys.has(norm(c.citation)) }))
+].map((c, i) => ({ ...c, gi: i, wasRead: !!c.gapFill || wasReadThisRun(c.citation) }))
 
 // Per-run, per-chunk, per-authority scratch path for source dumps (CLAUDE-07). `idx` is the
 // authority's global index, or the literal "<index>" placeholder the agent substitutes.
@@ -1060,6 +1248,9 @@ wall, stop and report the strongest basis you actually reached (secondary-corrob
 citation-only are honest answers); do not grind on access.
 Return one verdict per authority: "verified", "needs-correction" (give correctedCitation), or
 "unverified" (could not confirm). Echo each authority's index EXACTLY as given in [brackets].
+"unverified" is a FINDING: you looked and could not confirm it, or found evidence against it. If
+you ran no check of your own on an authority (no lookup, no citator call, nothing opened), set
+examined=false and say so in notes; do not let a check you skipped read as a check that failed.
 For each verdict also report basis — the STRONGEST check you actually performed, honestly:
 "direct-full-text" (read the passage in the full source), "authoritative-reproduction" (read it in
 a reliable reproduction such as CourtListener/LII/Justia), "secondary-corroboration" (confirmed
@@ -1433,6 +1624,20 @@ const vFor = (c) => {
     noVerdict.push({ gi: c.gi, citation: c.citation })
     v = { verdict: 'unverified', notes: 'NOT CHECKED — no verdict returned (cite-check agent failed after one retry, or skipped this index)' }
   }
+  // A source the run read, which the checker says it did not examine at all: "unverified" would
+  // record a failed check that never happened. On the first live run (2026-11-16) a gap-fill agent
+  // read a concurrence in the official slip opinion, the checker skipped it and returned
+  // "unverified", and the memo called the opinion unread. It is treated like every other source
+  // the run read and the checker did not re-open: verified on the strength of the run's own read,
+  // and the note says the checker ran nothing.
+  if (c.wasRead && v.verdict === 'unverified' && v.examined === false) {
+    v = {
+      ...v,
+      verdict: 'verified',
+      basis: undefined,
+      notes: [v.notes, 'the cite-checker reported running no check of its own on this authority'].filter(Boolean).join(' — '),
+    }
+  }
   // A source a research agent opened and quoted this run was read, so the cite-checker (told to
   // skip existence re-checks for it) may have reported a weaker basis than the run achieved.
   // It used to be stamped "direct-full-text" outright. But readers are told to prefer
@@ -1462,7 +1667,7 @@ const checkKind = (c, v) => {
     if (v.verdict === 'unverified') return `refuted (${panel})`
     return `${v.verdict === 'needs-correction' ? 'corrected' : 'verified'} (${panel}${obj ? `, ${obj} objection${obj === 1 ? '' : 's'} unresolved` : ''})`
   }
-  if (v.verdict === 'unverified') return 'checked — could not be confirmed'
+  if (v.verdict === 'unverified') return c.wasRead ? 'checked — could not be confirmed (a research agent read the source this run)' : 'checked — could not be confirmed'
   // The citing-opinion probe resolves judicial opinions only; a statute or an article got the
   // existence and citation check and nothing else.
   const t = authorityType(c)
@@ -1492,6 +1697,26 @@ log(`Authorities checked: ${okCount} verified, ${fixCount} need correction, ${ba
 
 // ---- Phase 6: finalize -----------------------------------------------------
 phase('Finalize')
+// How a post-draft addition is woven in; shared by the call-in and the Finalize pass. Written
+// after the first live run (2026-11-16): told only to make the lightest change, the call-in added
+// two gap-fill opinions beside tables, counts and a title that still described the original set,
+// and cited them inline in a footnoted memo.
+const GAP_WEAVE = `Weave each one into the memo where the draft noted the gap, with its cite, subject to its
+  cite-check verdict, and remove the corresponding gap note. A research agent opened and read each
+  one this run, so it is part of what the memo read: never describe one as unread, as a candidate,
+  or as something the memo only heard about. Carry it all the way through, so that the memo reads
+  as if the authority had been in it from the start:
+  * TABLES: where the memo has a table listing or classifying the authorities it read, add a row.
+  * COUNTS: where the memo counts or tallies its sources (the title, a scope note, the Brief
+    Answer or short answers, a table, the Assessment, the Conclusion), update every count, so
+    that each number means one thing throughout. Never leave an old count standing beside a note
+    that the addition is outside it.
+  * CITATION STYLE: cite it the way the memo cites its other authorities. In a memo that uses
+    footnotes, give it a footnote: a new marker with the next unused number, and its definition
+    added directly after the memo's last existing footnote definition. No inline citation there.
+  * NOT CONFIRMED: an addition whose cite-check verdict is "unverified" is still woven in as a
+    source this run read, with a plain statement of what the cite-check did and did not confirm
+    in place of the generic "reportedly" caveat. No conclusion may rest on it alone.`
 const verifyReport = tagged
   .map(
     (t) =>
@@ -1505,7 +1730,7 @@ const gapReport = tagged
   .filter((t) => t.gapFill)
   .map(
     (t) =>
-      `- ${t.citation} [cite-check: ${t.v.verdict}]\n  Proposition: ${t.proposition || ''}\n  Quote: ${t.quote || '(none)'} ${t.pincite ? '@ ' + t.pincite : ''}\n  URL: ${t.url || ''}`
+      `- ${t.citation} [read this run by a research agent | cite-check: ${t.v.verdict}]\n  Proposition: ${t.proposition || ''}\n  Quote: ${t.quote || '(none)'} ${t.pincite ? '@ ' + t.pincite : ''}\n  URL: ${t.url || ''}`
   )
   .join('\n')
 
@@ -1513,12 +1738,121 @@ const researchGapReport = [
   ...deadSurveys.map((j) => `- ${j.what} did not run (the search agent failed twice)`),
   ...deadReads.map((c) => `- ${c.citation || c.url} — selected for a full read, never read (the reading agent failed twice); it appears in the findings only as an unread lead`),
 ].join('\n')
-const final = await must('Finalize', () => agent(
-  `You are finalizing a legal research memo. Apply the cite-check results to the draft with the
-LIGHTEST touch needed — preserve the draft's prose verbatim except where an edit below requires a
-change. Do not rewrite, restyle, or compress.
 
-Apply these edits:
+// The memo from here on is the draft plus applied edits; no agent retypes it (see applyEdits).
+let memo = draft.memoDraft || ''
+let editsApplied = 0
+const unapplied = calibrationUnapplied.map((f) => ({ ...f, pass: 'calibration' }))
+
+// Which cite-check results change what the memo can CLAIM, as opposed to how it cites? Decided
+// here from the verdicts, not by a model: a load-bearing authority that failed verification (or
+// that no checker examined), negative treatment of a load-bearing authority, an authority the
+// panel verified over a minority objection, and every gap-fill authority to be woven in. That
+// includes a gap-fill authority the cite-check could not confirm: left to the clerical pass, the
+// first live run's memo described one as an unread candidate although the run had read it.
+const substantiveByGi = new Map()
+const addSubstantive = (t, reason) => {
+  const e = substantiveByGi.get(t.gi) || { t, reasons: [] }
+  if (!e.reasons.includes(reason)) e.reasons.push(reason)
+  substantiveByGi.set(t.gi, e)
+}
+for (const t of tagged) {
+  if (t.gapFill) {
+    addSubstantive(t, t.v.verdict === 'unverified' ? 'POST-DRAFT ADDITION that the cite-check did NOT confirm' : 'POST-DRAFT ADDITION to weave in')
+    continue
+  }
+  if (!t.loadBearing) continue
+  if (t.v.verdict === 'unverified') addSubstantive(t, /NOT CHECKED/.test(t.v.notes || '') ? 'load-bearing authority that NO CHECKER EXAMINED' : 'load-bearing authority that FAILED VERIFICATION')
+  else if (hasNegativeTreatment(t.v.currentTreatment)) addSubstantive(t, 'NEGATIVE TREATMENT of a load-bearing authority')
+}
+for (const p of panelObjections) {
+  const t = tagged.find((x) => x.gi === p.gi)
+  if (t) addSubstantive(t, 'VERIFIED OVER A MINORITY OBJECTION')
+}
+const substantive = [...substantiveByGi.values()]
+
+// The call-in: with Finalize on a cheaper model, those items go to ONE call on the session model
+// first (no model override), which returns edits like every other pass. If it is switched off,
+// squeezed out by the budget, or dies twice, the Finalize pass applies the items itself, as it
+// always did, and the result says so.
+let callIn = !FINALIZE_MODEL ? 'not applicable (Finalize ran on the session model)'
+  : !substantive.length ? 'not needed'
+    : !ESCALATE ? 'off (args.escalate:false)'
+      : tight(RESERVE_FINALIZE) ? 'skipped (budget)' : 'wanted'
+let handled = []
+if (callIn === 'wanted') {
+  log(`Cite-check results change what the memo can claim for ${substantive.length} authorit${substantive.length === 1 ? 'y' : 'ies'} — calling in the session model for those before the ${FINALIZE_MODEL} Finalize pass.`)
+  const itemBlock = ({ t, reasons }) =>
+    `- ${t.citation}\n  Why it is here: ${reasons.join('; ')}\n  Cite-check: [${t.v.verdict}${t.v.basis ? ` | ${t.v.basis}` : ''} | tier: ${t.check}]${t.v.correctedCitation ? ` -> ${t.v.correctedCitation}` : ''}${t.v.currentTreatment ? ` (${t.v.currentTreatment})` : ''}${t.v.notes ? ` — ${t.v.notes}` : ''}${
+      t.gapFill ? `\n  Read this run: a research agent opened this source and reported what follows.\n  Proposition: ${t.proposition || ''}\n  Quote: ${t.quote || '(none)'} ${t.pincite ? '@ ' + t.pincite : ''}\n  URL: ${t.url || ''}` : ''}`
+  const revise = await retryOnce('finalize:revise', () => agent(
+    `You are revising a legal research memo after its citations were checked. A separate clerical pass
+runs after you: it corrects citation forms, tags unchecked authorities, runs the quantifier and
+consistency scans, and writes the Table of Authorities and the Limits section. Leave all of that
+to it. Your job is ONLY the authorities listed under ITEMS, because each one changes what the memo
+can claim. Make the LIGHTEST change that leaves the memo saying no more than its checked
+authorities support. Do not rewrite, restyle, or compress anything else. The one exception is a
+POST-DRAFT ADDITION, which is carried all the way through the memo as described under it.
+
+What each kind of item calls for:
+- A load-bearing authority that FAILED VERIFICATION, or that NO CHECKER EXAMINED: the analysis
+  rests on it. Remove the memo's reliance on it, or downgrade it to an explicit caveat
+  ("reportedly / could not be independently confirmed"; for one nobody examined, say that it was
+  not independently checked), and narrow any conclusion that depended on it to what the remaining
+  authorities support. Never present it as settled law.
+- NEGATIVE TREATMENT of a load-bearing authority: reflect it in the text where the memo relies on
+  the authority (e.g. "overruled by…") and narrow the reliance to what survives. A treatment that
+  begins "VOTERS REPORT DIFFERENT TREATMENT" lists what each checker found: if ANY of them reports
+  negative treatment, reflect that one and say that the checkers differed. One checker's "no
+  negative treatment found" does not cancel another's overruling.
+- VERIFIED OVER A MINORITY OBJECTION (quoted in the item as "MINORITY OBJECTION"): a majority does
+  not resolve an objection. Where it names a narrower holding, an omitted limiting fact, a
+  mischaracterized posture (dictum, dissent, arguendo) or a narrower claim than the proposition,
+  qualify the memo's use of that authority in the sentence that cites it. Never present such an
+  authority as settled support.
+- POST-DRAFT ADDITION (one to weave in, or one the cite-check did NOT confirm): an authority
+  retrieved after drafting to fill a gap the draft itself flagged.
+  ${GAP_WEAVE}
+- FOLLOW-THROUGH: if a change above leaves the title, the Brief Answer, the Introduction or the
+  Conclusion saying more or less than the Discussion now supports, edit those lines too.
+
+${EDIT_RULES}
+${substantive.some((s) => s.t.gapFill) ? BLUEBOOK : ''}
+
+QUESTION: ${QUESTION}
+
+=== ITEMS ===
+${substantive.map(itemBlock).join('\n')}
+
+=== MEMO ===
+${memo || '(empty draft)'}`,
+    { schema: EDITS_SCHEMA, label: 'finalize:revise', phase: 'Finalize', effort: 'medium' }
+  ))
+  if (revise && Array.isArray(revise.edits)) {
+    const r = await applyWithRepair(memo, revise.edits, 'revision call-in', 'Finalize')
+    if (r.rejected) {
+      callIn = 'failed (its edits were discarded)'
+    } else {
+      memo = r.text
+      editsApplied += r.applied
+      unapplied.push(...r.failed.map((f) => ({ ...f, pass: 'revision call-in' })))
+      handled = substantive
+      callIn = 'ran'
+      log(`Revision call-in: ${r.applied} edit${r.applied === 1 ? '' : 's'} applied${r.failed.length ? `, ${r.failed.length} could not be located` : ''}.`)
+    }
+  } else {
+    callIn = 'failed (the agent died twice)'
+  }
+  if (callIn !== 'ran') log(`Revision call-in ${callIn} — the ${FINALIZE_MODEL} Finalize pass applies those items itself.`)
+}
+const gapHandled = handled.some((h) => h.t.gapFill)
+
+const finalizePrompt = `You are finalizing a legal research memo. Apply the cite-check results to the draft with the
+LIGHTEST touch needed. Do not rewrite, restyle, or compress.
+
+${EDIT_RULES}
+
+Make these changes:
 - Replace any "needs-correction" citation with its corrected form.
 - Where a currentTreatment notes negative treatment, reflect it in the text (e.g. "overruled by…").
   A treatment that begins "VOTERS REPORT DIFFERENT TREATMENT" lists what each checker found: if
@@ -1569,10 +1903,17 @@ ${researchGapReport ? `- RESEARCH COVERAGE GAPS: the parts of the research below
   a search vector did not run, do not let the memo make an absence claim ("no court has", "the
   literature does not address") that depends on what that vector would have searched.
 ${researchGapReport}` : ''}
-${gapReport ? `- POST-DRAFT ADDITIONS: the authorities below were retrieved after drafting to fill
-  gaps the draft itself flagged. Weave each into the memo where the draft noted the gap, with its
-  cite — subject to its cite-check verdict above. Remove the corresponding gap notes.` : ''}
-- Append two sections:
+${gapReport && !gapHandled ? `- POST-DRAFT ADDITIONS: the authorities below were retrieved after drafting to fill
+  gaps the draft itself flagged.
+  ${GAP_WEAVE}` : ''}
+${handled.length ? `- ALREADY REVISED: an earlier pass has changed the memo's text for the authorities below (a
+  failed verification, negative treatment, a minority objection, or a post-draft addition woven
+  in). For these authorities this overrides the text instructions above: do NOT edit the memo's
+  reliance on them again. Correct a citation's form if the results call for it, and report them
+  in the Table of Authorities and the Limits section exactly as their verdicts require.
+${handled.map((h) => `  - ${h.t.citation} (${h.reasons.join('; ')})`).join('\n')}` : ''}
+- Append two sections. Return each one complete, heading included, in its own field
+  (tableOfAuthorities, limits), NOT as edits: the script places them after the memo's last line.
   * **Table of Authorities** (only verified/corrected authorities, grouped by type), with a
     **Validation** column copied from each authority's "tier:" label in the cite-check results:
     "verified (3-voter refutation panel)" / "verified (short refutation panel)" / "corrected
@@ -1598,11 +1939,29 @@ ${BLUEBOOK}
 ${verifyReport || '(none)'}
 ${gapReport ? `\n=== POST-DRAFT ADDITIONS ===\n${gapReport}\n` : ''}
 === DRAFT MEMO ===
-${draft.memoDraft || '(empty draft)'}
+${memo || '(empty draft)'}
 
-Return the final memo in Markdown via the memo field.`,
-  { schema: FINAL_SCHEMA, phase: 'Finalize', effort: 'medium' }
-))
+Return the edits, the Table of Authorities section and the Limits section.`
+// A result with no Limits section is treated as a dead agent: the section is not optional.
+const final = await must('Finalize', async () => {
+  const r = await agent(finalizePrompt, withFinalizeModel({ schema: FINAL_SCHEMA, phase: 'Finalize', effort: 'medium' }))
+  return r && String(r.limits || '').trim() ? r : null
+})
+const finalPass = await applyWithRepair(memo, final.edits, 'finalize', 'Finalize')
+memo = finalPass.text
+editsApplied += finalPass.applied
+unapplied.push(...finalPass.failed.map((f) => ({ ...f, pass: 'finalize' })))
+log(`Finalize: ${finalPass.applied} edit${finalPass.applied === 1 ? '' : 's'} applied${finalPass.failed.length ? `, ${finalPass.failed.length} could not be located` : ''}.`)
+if (finalPass.rejected) coverageGaps.push('the Finalize edits were discarded (they would have cut the memo by more than 40%) — the cite-check results were NOT applied to the memo text; rely on the Table of Authorities and the Limits section, and apply the corrections by hand')
+// An edit nobody could place is disclosed in the memo and returned for the skill to apply by
+// hand. It is never dropped: it may be the caveat on an authority that failed verification.
+const oneLine = (s, n) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? t.slice(0, n) + '…' : t }
+const unappliedNotice = unapplied.length
+  ? `**Changes not made automatically.** ${unapplied.length} change${unapplied.length === 1 ? '' : 's'} that the checking passes called for could not be placed in the memo text and ${unapplied.length === 1 ? 'was' : 'were'} NOT made:\n${unapplied.map((u) => `- ${oneLine(u.why, 200) || 'change to the passage beginning: ' + oneLine(u.find, 80)}`).join('\n')}`
+  : ''
+if (unapplied.length) coverageGaps.push(`${unapplied.length} edit${unapplied.length === 1 ? '' : 's'} could not be placed in the memo text — listed at the end of its Limits section and returned in finalize.unappliedEdits to be applied by hand`)
+memo = [memo.replace(/\s+$/, ''), String(final.tableOfAuthorities || '').trim(), String(final.limits || '').trim(), unappliedNotice]
+  .filter(Boolean).join('\n\n') + '\n'
 
 // Exit state (ported from the Codex deep-research-cli contract): make degradation machine-visible
 // so the orchestrator's deliver step can react deterministically instead of parsing logs.
@@ -1649,6 +2008,17 @@ return {
     panelTreatmentSplits: panelTreatmentSplits.length,
     surveyLanesFailed: deadSurveys.length,
     readsFailed: deadReads.length,
+    editsApplied,
+    editsUnapplied: unapplied.length,
   },
-  memo: final.memo,
+  // How the memo was finalized: which model ran the Finalize pass, whether the session model was
+  // called in for the changes that alter the memo's claims (and for which authorities), and any
+  // edit that could not be placed — the skill applies those by hand before delivering.
+  finalize: {
+    model: FINALIZE_MODEL || 'session model',
+    callIn,
+    callInAuthorities: substantive.map((s) => ({ citation: s.t.citation, reasons: s.reasons })),
+    unappliedEdits: unapplied,
+  },
+  memo,
 }

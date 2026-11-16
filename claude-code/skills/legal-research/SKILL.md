@@ -36,6 +36,22 @@ For caselaw, **jurisdiction** and **procedural posture** matter most; for schola
 **specific thesis or sub-question** and any **time window**. Don't over-ask — pick sensible
 defaults and note them.
 
+**Enumeration questions are a different job (2026-11-16).** A question that asks for *every*
+member of a set ("every opinion Justice X has written on Y", "all the cases citing Z", "each
+circuit's rule") cannot be answered by this pipeline as asked: it triages to a fixed number of
+full reads (8 lean, 16 deep) however many candidates the search finds, so the memo comes back
+describing a sample. On the first live run of this kind the search found 42 candidates, 8 were
+read, and the findings about frequency and trend were artifacts of the 8. Before launching, tell
+the user so in a sentence or two and settle which of these they want:
+- **List first, then read each (the real answer).** Build the list from a source that can
+  enumerate (a CourtListener author or citation filter, a database or lead list the user
+  already has), show the count, and read every item with one agent per item outside this
+  workflow, giving a cost estimate before launching. Then tabulate.
+- **A narrower doctrinal question** this pipeline can answer from leading cases ("how does he use
+  the common-law canon"), with the memo titled and scoped as leading cases, not a survey.
+If the user wants the pipeline run anyway, pass the lead list in `notes` and say in the delivery
+message, first, how many of how many were read.
+
 ### 3. Pre-flight: ensure web tools are allowed (do this BEFORE launching)
 The research subagents call **WebSearch** and **WebFetch** heavily. If those tools are not
 pre-allowed, each call raises an interactive permission prompt — and an interrupted prompt can
@@ -74,6 +90,7 @@ Workflow({
     asOfDate: "<YYYY-MM-DD or 'today'>",
     notes: "<facts, posture, scope, anything the user emphasized>",
     deep: false,  // true only when the user asks for a deep/thorough/high-stakes pass
+    finalizeModel: "opus",  // ONLY when this session's model ranks above Opus (Fable, Mythos); otherwise OMIT the line
     projectDir: "<the current working directory — enables the local-corpus survey vector;
                   omit only if the cwd is clearly unrelated to the question>"
   }
@@ -116,7 +133,8 @@ deduplicated to distinct cases, with a liveness date; a cite that will not resol
 `cl_case_tools.py find` (caption search + opinions citing the string) before it is called
 unconfirmed; load-bearing lower-court cases also get `cl_case_tools.py history`, the RECAP docket
 and later same-litigation opinions; sources a reader already opened this run skip existence
-re-checks) → light finalize, whose Table of Authorities carries a **Validation** column per
+re-checks) → light finalize (returned as edits the script applies; see the Finalize model note
+below), whose Table of Authorities carries a **Validation** column per
 authority (3-voter refutation panel / checked by existence + treatment probe / not validated) and
 one sentence naming which authorities got the panel, because a screened case and a verified case
 look identical in prose. Unselected candidates
@@ -129,8 +147,28 @@ only load-bearing cites — so a runaway run degrades instead of spiraling. Read
 verify agents all carry an **access-discipline block** (added same date): hard attempt caps,
 WebSearch/WebFetch only, and an explicit ban on browser automation, library proxies, and SSO/login
 flows — a paywalled source is an honest `opened=false`, not a reason to grind. Models: **Haiku** only for the search-snippet
-survey; **Sonnet** for triage, full reads, and verification; **Scope, Draft, and Finalize inherit
-the session model** (Fable when Fable is on). `deep:true` (or a `+800k`-style token budget) widens
+survey; **Sonnet** for triage, full reads, and verification; **Scope and Draft inherit the session model**
+(Fable when Fable is on), and so does Finalize unless you pass `finalizeModel`.
+**Finalize model (2026-11-16).** Nothing is hard-coded in the script: with no `finalizeModel` a
+session on Sonnet or Opus runs every session-model stage on that model. Pass `finalizeModel: "opus"`
+only when your own model ranks above Opus (Fable or Mythos, whose use is capped); never pass a
+model that ranks above the one you are running on. This is safe because no stage after Draft
+retypes the memo any more: the deep calibration pass, Finalize, and the call-in below each return
+find-and-replace **edits** that the script applies, so text no edit names stays the Draft's own
+words, and the Table of Authorities and Limits sections come back as separate fields. With
+`finalizeModel` set, the changes that alter what the memo can claim are not left to the cheaper
+model: a load-bearing authority that failed verification (or that no checker examined), negative
+treatment of one, an authority verified over a minority objection, and every gap-fill authority
+(woven in as a full member of the memo: a table row, updated counts and title, a footnote; one the
+cite-check did not confirm is woven in with that stated, never described as unread) go to **one
+call on the session model first** (the call-in, `finalize:revise`). It
+runs only when the cite-check results contain such an item; `escalate: false` turns it off, and
+if it fails or is squeezed out by the budget the Finalize pass applies those items itself. The
+result's `finalize` block says which model ran Finalize, whether the call-in ran and for which
+authorities, and lists any edit that could not be placed (`unappliedEdits`). Effort is pinned per
+call in the script (low for search, reads and cite-checks; medium for Scope, the refutation
+voters, the call-in and Finalize; high for Draft and calibration), so nothing inherits the
+session's effort setting. `deep:true` (or a `+800k`-style token budget) widens
 to up to 7 vectors, raises the read cap to 16, and gives each load-bearing citation (capped at 8)
 a **3-vote adversarial refutation pass** (re-opens sources to confirm quotes verbatim; the three
 voters lead with different routes — the record, the passage in context, the strongest adverse
@@ -140,7 +178,7 @@ objection rather than erased). The
 workflow runs in the background and notifies you on completion.
 
 ### 5. Deliver
-The workflow returns `{ memo, exitState, degradation, counts, ... }`.
+The workflow returns `{ memo, exitState, degradation, counts, finalize, ... }`.
 - **Check `exitState` BEFORE presenting.** `complete` → deliver. `complete_with_limits` → deliver,
   surfacing the documented gaps (listed in `degradation` and the memo's Limits section). Since
   2026-11-15 those gaps include agent failures that used to leave no trace: a search vector that
@@ -163,7 +201,56 @@ The workflow returns `{ memo, exitState, degradation, counts, ... }`.
   library proxies / SSO flows, and the instruction that "paywalled — here is the strongest basis I
   reached" is a fully acceptable answer. If a rescue agent grinds anyway, SendMessage it to wrap
   up and report rather than waiting it out.
-- Present the **memo** to the user as the primary deliverable.
+- **Save the memo with the script; never retype it (2026-11-16).** The memo is the primary
+  deliverable, and it is delivered as a file. The completion notification names an
+  `<output-file>` holding the workflow's result; copy the memo out of it:
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/save_memo.py "<output-file>" "<working dir>/<Title>.md" --header "<Topic/Date/By block>" --footer "<Production details block>"`.
+  The script writes the memo byte for byte, puts the header under the title and the footer at the
+  very end after a `---` rule (see the header/footer rule below), refuses to overwrite an existing
+  file, and prints a summary without the memo's text. If the draft wrote its own `By:` (or
+  `Topic:` / `Date:`) line under the title, the header's line replaces it and the summary lists it
+  under `replacedHeaderLines`; nothing else in the memo is touched. Do NOT paste the memo into chat and do NOT
+  write it out with the Write tool: on a metered session model, retyping a finished memo is the
+  largest avoidable cost of delivering it, and a retyped memo can drift from the one that was
+  cite-checked. In chat, give the path, the bottom line in a few sentences, the verification
+  counts and the limits. If the script exits 1 (no memo found in the output file), fall back to
+  writing the memo from the notification's inline result. Later changes to the saved memo are
+  made with Edit, never by rewriting the file.
+- **Check the memo's quotations by script (2026-11-16).** In lean mode the cite-check confirms
+  that each authority exists and is cited correctly; it does not re-open an opinion to confirm
+  the words quoted from it or their page. After saving, run
+  `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/check_memo_quotes.py "<saved memo>" --sources "<project dir>" --fetch --append`.
+  No model reads anything: the script takes each quotation and the citation it hangs on out of
+  the memo, finds a copy of the source (a local PDF or text file whose name carries the reporter
+  cite, else a public copy: a URL in the memo's footnote, the Caselaw Access Project page for a
+  U.S. Reports cite, CourtListener's API text), runs the cite-check skill's deterministic
+  verifier, and writes an addendum table into the memo ahead of the Production details. Omit
+  `--sources` when the project has no local copies and `--fetch` to stay offline. Then act on its
+  JSON summary, with Edit, never by retyping the memo:
+  - `pinDiffers`: the quotation is in the source on a different page from the memo's pin. Correct
+    the pin and say in the footnote where the page comes from. A page 'counted' from a local PDF
+    is right only if the PDF starts on the report's first page; CourtListener text of a recent
+    opinion usually has no reporter pages at all, and then no page is reported.
+  - `notFound`: a prompt to look, not proof of a misquotation. Read the `hint` (the closest
+    passage in the source). OCR debris in the copy and a footnote falling inside the quoted
+    sentence both defeat the match; a changed word is a real finding. Fix the quotation, or tag
+    it as unconfirmed, and add a line under the addendum saying which it was.
+  - `foundElsewhere`: the words are in a different source the memo cites. For a table cell with no
+    footnote that is the expected result; for a footnoted quotation it means a quotation inside a
+    quotation or a wrong footnote, and the sentence needs a look.
+  - `noSource`: say in the delivery message which cases could not be checked.
+  Paraphrases and their pins are not checked by this. Give the counts in the delivery message.
+- **Apply any unapplied edits before delivering.** If the summary's `unappliedEdits` is not
+  empty (`counts.editsUnapplied` > 0), the checking passes called for changes whose target text
+  could not be located. Each entry has `find`, `replace`, `why` and the `reason` it failed. Open
+  the saved file, make each change by hand with Edit, then remove the 'Changes not made
+  automatically' note from the end of the Limits section. One of them may be the caveat on an
+  authority that failed verification, so do not deliver with any outstanding.
+- **Say how Finalize ran** in `Production details`: the Finalize model, and whether the
+  session-model call-in ran, was not needed, or failed (`finalize.callIn`). If it reads `failed`
+  or `skipped (budget)` while `finalize.callInAuthorities` is not empty, the cheaper model made
+  the changes for those authorities: re-read the memo's treatment of each one yourself before
+  delivering, and say so.
 - **Hyperlinks (required, per the author, 2026-08-29):** every news story, blog post, or other web
   source in the memo must carry its working URL as a clickable link — never an outlet-name-only
   attribution like "(Politico)" or "(Roll Call, July 14, 2026)". The workflow's citation block
@@ -179,7 +266,10 @@ The workflow returns `{ memo, exitState, degradation, counts, ... }`.
   `Production details` names the skill, the workflow-agent model(s) actually used (read
   from the run's per-agent progress entries — don't assume), the wall-clock duration, and
   the token count from the completion notification's `<usage>` block (labeled subagent
-  output tokens; orchestrator overhead not included). If rescue/fill passes ran after the
+  output tokens; orchestrator overhead not included). If you add a billed total from the agent
+  transcripts, count each response ONCE: a response is logged on one line per content block and
+  every line repeats its usage, so group by `message.id` before summing (a per-line sum doubled
+  the figures in the first memo that reported one, 2026-11-16). If rescue/fill passes ran after the
   workflow, add their agent counts and note the duration covers the workflow run only.
 - Surface the **verification counts** ("N authorities verified, M unverified") so they know how
   much to trust it, and point to the memo's **"Limits of this research"** appendix (which now
@@ -189,7 +279,8 @@ The workflow returns `{ memo, exitState, degradation, counts, ... }`.
   written from (each load-bearing claim tagged to its finding, holes marked GAP). Don't present it
   by default; offer it if the user wants to audit the reasoning, and use it yourself when editing
   the memo by hand (a claim with no skeleton line needs an authority or a hedge before it grows).
-- Offer to save it: Markdown in the working dir; **Word** via the bundled converter —
+- The Markdown file is always saved (step above). Offer the other formats: **Word** via the
+  bundled converter —
   `python3 ${CLAUDE_PLUGIN_ROOT}/skills/legal-research/md2docx.py memo.md memo.docx "<Title>"`; or Google
   Drive via the connector. If the user asked for .docx up front, just produce it.
 - Offer a follow-up pass on any weak/unverified point, or an output-style switch.

@@ -74,11 +74,11 @@ async function run({kind = 'case', citation, scenario = 'agree', historical = fa
     calls.push({label, prompt, phase: opts.phase});
     if (opts.phase === 'Scope') return {jurisdiction: 'x', issues: ['a'], searchVectors: [], methodClass: 'doctrinal', historical};
     if (opts.phase === 'Survey') return {candidates: []};
-    if (label === 'calibrate:thesis') return {memoDraft: memo};
+    if (label === 'calibrate:thesis') return {edits: []};
     if (opts.phase === 'Draft') return {memoDraft: memo, citedAuthorities: cited, missingAuthorities: [], skeleton: 's'};
     if (label.startsWith('refute:')) return vote(Number(label.match(/#(\d+)$/)[1]));
     if (label.startsWith('verify:')) return {verdicts: cited.map((c, index) => ({index, citation: c.citation, verdict: 'verified', basis: 'authoritative-reproduction'}))};
-    if (opts.phase === 'Finalize') return {memo};
+    if (opts.phase === 'Finalize') return {edits: [], tableOfAuthorities: '## Table of Authorities', limits: '## Limits of this research'};
     throw new Error('unexpected agent ' + JSON.stringify(opts));
   };
   const result = await fn({question, notes, mode: 'caselaw', deep: true, asOfDate: asOf, runTag: 't'},
