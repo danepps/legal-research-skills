@@ -14,11 +14,35 @@ PLUGIN_SKILLS = {
     "legal-research", "cite-check", "find-cite", "proofread", "build-library", "case-prep",
 }
 
+# This plugin's own skills directory (<plugin root>/skills), found from this file's
+# location (<plugin root>/hooks/scripts/quote_common.py).
+PLUGIN_SKILLS_DIR = os.path.realpath(
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "skills"))
+
+# Workflow scripts (relative to PLUGIN_SKILLS_DIR) whose returned result counts as a
+# source for the quotation check. Only proofread: its report quotes nothing but the
+# draft's own words and its proposed rewordings. legal-research and cite-check are left
+# out on purpose: their memos and reports quote cases and articles, and this hook is the
+# independent check that those quotations match fetched sources, so trusting their
+# result would let a memo vouch for itself. Add a workflow here only if its report
+# never quotes an external source.
+TRUSTED_WORKFLOWS = {os.path.join("proofread", "proofread.workflow.js")}
+
+
+def trusted_workflow_script(path):
+    """True if path is one of TRUSTED_WORKFLOWS in this plugin's skills directory."""
+    if not path:
+        return False
+    real = os.path.realpath(str(path))
+    return any(real == os.path.join(PLUGIN_SKILLS_DIR, rel) for rel in TRUSTED_WORKFLOWS)
+
 # Tool results that never count as a source: model-written summaries (a WebFetch
 # digest, or the report an Agent/Task/Workflow run or a SendMessage reply hands
 # back, which is another model's prose, not the text it fetched), and the
 # acknowledgements of Claude's own writes (an Edit result echoes the edited text).
-# What a subagent actually fetched is read from its own transcript instead.
+# What a subagent actually fetched is read from its own transcript instead. The one
+# exception is the returned result of the proofread workflow (TRUSTED_WORKFLOWS below;
+# quote_check.py, plugin_workflow), which the skill tells the session to save as the report.
 EXCLUDED_RESULT_TOOLS = {
     "WebFetch", "WebSearch", "Write", "Edit", "MultiEdit", "NotebookEdit",
     "Agent", "Task", "Workflow", "SendMessage", "ReadNotifications", "SubagentHandback",
