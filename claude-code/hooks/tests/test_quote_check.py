@@ -22,6 +22,11 @@ NOTE = os.path.join(SCRIPTS, "summary_note.py")
 CLEAN_ENV = {k: v for k, v in os.environ.items()
              if k not in {"CLAUDE_CODE_PLUGIN_DIRS", "LEGAL_RESEARCH_QUOTE_CHECK"}}
 
+# Files written in the final turn are now read from disk when they exist (2026-11-22).
+# Transcript-only tests name files under a directory that does not exist, so the hook
+# falls back to the text in the Write/Edit call.
+NF = "/nonexistent-legal-research-quote-check-test"
+
 SKILL_ON = [{"type": "assistant", "message": {"content": [
     {"type": "tool_use", "id": "sk1", "name": "Skill", "input": {"skill": "cite-check"}}]}}]
 
@@ -34,13 +39,21 @@ def write_jsonl(path, entries):
 
 
 def run(entries, last, retry=False, session="t", skill=True, subagents=None, env=None,
-        script=STOP, extra_input=None):
-    """subagents: {relative path under <session>/subagents/: entries}"""
+        script=STOP, extra_input=None, files=None):
+    """subagents: {relative path under <session>/subagents/: entries}
+    files: {path relative to the temp dir: text}, written before the hook runs.
+    "@TMP@" in entries and file texts stands for the temp dir."""
     tmp = tempfile.mkdtemp()
     main = os.path.join(tmp, "sess.jsonl")
-    write_jsonl(main, (SKILL_ON if skill else []) + entries)
+    fix = lambda e: json.loads(json.dumps(e).replace("@TMP@", tmp))
+    write_jsonl(main, [fix(e) for e in (SKILL_ON if skill else []) + entries])
     for rel, sub in (subagents or {}).items():
         write_jsonl(os.path.join(tmp, "sess", "subagents", rel), sub)
+    for rel, text in (files or {}).items():
+        p = os.path.join(tmp, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text.replace("@TMP@", tmp))
     inp = {"transcript_path": main, "session_id": session,
            "stop_hook_active": retry, "last_assistant_message": last}
     inp.update(extra_input or {})
@@ -173,7 +186,7 @@ out, _ = run(note + tool_pair("Bash", INVENTED), REPLY)
 check("human-free session with raw Bash output still passes", out == {})
 
 memo_i = f'# Memo\n\n"{INVENTED}"\n'
-out, _ = run(prompt("write it") + write_call("/tmp/memo.md", memo_i) + note, "Memo written.")
+out, _ = run(prompt("write it") + write_call(NF + "/memo.md", memo_i) + note, "Memo written.")
 check("a <task-notification> does not start a new turn (memo before it still checked)",
       out.get("decision") == "block" and "[memo.md]" in out.get("reason", ""))
 
@@ -216,30 +229,30 @@ check("WebFetch inside a subagent still does not count", out.get("decision") == 
 
 # ---- files written in the final turn --------------------------------------------------
 memo = f'# Memo\n\nThe Court explained that "{STATUTE}."\n'
-out, _ = run(prompt("write the memo") + tool_pair("Bash", STATUTE) + write_call("/tmp/memo.md", memo),
+out, _ = run(prompt("write the memo") + tool_pair("Bash", STATUTE) + write_call(NF + "/memo.md", memo),
              "Memo written.")
 check("written memo with verified quote allowed", out == {})
 
-out, _ = run(prompt("write the memo") + write_call("/tmp/memo.md", memo), "Memo written.")
+out, _ = run(prompt("write the memo") + write_call(NF + "/memo.md", memo), "Memo written.")
 check("written memo with unverified quote blocked, file named",
       out.get("decision") == "block" and "[memo.md]" in out.get("reason", ""))
 
-out, _ = run(prompt("write the memo") + write_call("/tmp/memo.py", 'x = "' + STATUTE + '"'), "Done.")
+out, _ = run(prompt("write the memo") + write_call(NF + "/memo.py", 'x = "' + STATUTE + '"'), "Done.")
 check("non-text file types are not checked", out == {})
 
-earlier = prompt("first task") + write_call("/tmp/old.md", memo, tid="w0")
+earlier = prompt("first task") + write_call(NF + "/old.md", memo, tid="w0")
 out, _ = run(earlier + prompt("second task") + tool_pair("Bash", "ok"), "Second task done.")
 check("file written in an earlier turn is not re-checked", out == {})
 
 # ---- Claude's own writes are not sources ----------------------------------------------
-out, _ = run(prompt("go") + write_call("/tmp/memo.md", memo)
-             + tool_pair("Read", "     1\t" + memo, tid="r1", inp={"file_path": "/tmp/memo.md"}),
+out, _ = run(prompt("go") + write_call(NF + "/memo.md", memo)
+             + tool_pair("Read", "     1\t" + memo, tid="r1", inp={"file_path": NF + "/memo.md"}),
              f'As the memo says, "{STATUTE}".')
 check("Read of a file Claude wrote does not vouch for it", out.get("decision") == "block")
 
 edit = [{"type": "assistant", "message": {"content": [
     {"type": "tool_use", "id": "e1", "name": "Edit",
-     "input": {"file_path": "/tmp/notes.md", "old_string": "a", "new_string": STATUTE}}]}},
+     "input": {"file_path": NF + "/notes.md", "old_string": "a", "new_string": STATUTE}}]}},
     {"type": "user", "message": {"content": [
         {"type": "tool_result", "tool_use_id": "e1",
          "content": "The file has been updated. Here's the result:\n     1→" + STATUTE}]}}]
@@ -357,6 +370,293 @@ for name, source, quote in (
 ):
     out, _ = run(tool_pair("Bash", source), reply(quote))
     check("whole tokens allowed: " + name, out == {})
+
+# ---- this plugin's own workflow result counts (2026-11-22, defect A) -------------------
+# Observed in a headless /proofread run: the workflow's report reached the session as a
+# <task-notification>, the session saved it with Write, and the hook blocked the saved
+# report twice for quoting the workflow's own result.
+PLUGIN_WF = os.path.realpath(os.path.join(HERE, "..", "..", "skills", "proofread",
+                                          "proofread.workflow.js"))
+OTHER_WF = "/cache/legal-research/skills/proofread/proofread.workflow.js"
+# The research workflows return memos that quote cases and articles; their results must
+# never vouch for those quotations, even though the scripts are this plugin's own.
+LR_WF = os.path.realpath(os.path.join(HERE, "..", "..", "skills", "legal-research",
+                                      "legal-research.workflow.js"))
+CC_WF = os.path.realpath(os.path.join(HERE, "..", "..", "skills", "cite-check",
+                                      "cite-check.workflow.js"))
+
+
+def xml_escape(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def wf_launch(script, tid="wf1", run_id="wf_t1", task_id="wtask1", inp=None):
+    """A background Workflow call and its launch notice, as the transcript records them."""
+    return [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": tid, "name": "Workflow",
+         "input": inp or {"scriptPath": script, "args": {"outDir": "/x"}}}]}},
+        {"type": "user", "toolUseResult": {"status": "async_launched", "taskId": task_id,
+                                           "runId": run_id, "scriptPath": script},
+         "message": {"content": [{"type": "tool_result", "tool_use_id": tid, "content":
+                                  "Workflow launched in background. Task ID: %s\nScript file: %s\n"
+                                  "Run ID: %s\n\nYou will be notified when it completes."
+                                  % (task_id, script, run_id)}]}}]
+
+
+def wf_notice(result_body, tid="wf1", task_id="wtask1", out_file="@TMP@/tasks/wtask1.output",
+              summary="Dynamic workflow \"Proofread\" completed"):
+    """The completion notice; result_body is the text between <result> tags, unescaped."""
+    content = ("<task-notification>\n<task-id>%s</task-id>\n<tool-use-id>%s</tool-use-id>\n"
+               "<output-file>%s</output-file>\n<status>completed</status>\n<summary>%s</summary>\n"
+               "<result>%s</result>\n<usage><agent_count>6</agent_count></usage>\n"
+               "</task-notification>" % (task_id, tid, out_file, xml_escape(summary),
+                                         xml_escape(result_body)))
+    return [{"type": "user", "promptSource": "system",
+             "origin": {"kind": "task-notification", "producer": "session-task"},
+             "message": {"content": content}}]
+
+
+def truncated(result_json, keep, path="@TMP@/tasks/wtask1.output"):
+    return result_json[:keep] + "\n... (truncated %d chars, full result in %s)" % (
+        len(result_json) - keep, path)
+
+
+# A trimmed copy of the report the proofread workflow returned in that run (invented prose).
+REPORT = """# Proofread — fixture
+
+> Snapshot 2026-11-22 15:01:01 CST, SHA-256 302d3cc86966b156e6e21e9b04206e95cf424cca482b7b43667ce4233a8d1186; plain-text pass.
+
+_TL;DR: 6 errors, 4 judgment calls, 1 typeface item, 0 citation-mechanics items, 0 author queries. The most important catch is the broken cross-reference "supra note 9" in Part III, which points to a note that does not exist (the draft has 3 footnotes)._
+
+## Errors (fix these)
+
+- **I. Records and Reasons, ≈18% in** — `The rule requires the clerk each refusal in the register.` — A verb is missing, so the sentence does not parse. Fix: "The rule requires the clerk to record each refusal in the register."
+- **I. Records and Reasons, ≈27% in** — `The resulting comparision remains provisional` — Misspelling. Fix: "The resulting comparison remains provisional".
+- **II. Comparing Entries, ≈45% in** — `three written explanations was placed` — Subject-verb agreement: the subject "explanations" is plural but the verb is singular. Fix: "three written explanations were placed".
+- **note 3** — `The distinction between evidence and judgment remain central` — Subject-verb agreement: the subject "distinction" is singular but the verb is plural. Fix: "The distinction between evidence and judgment remains central".
+
+## Judgment calls (probably fix)
+
+- **I. Records and Reasons, ≈9% in** — `…sily as a careful one. The argument concerns the the relationship between recording and accountab…` — Repeated word: "the the". Fix: delete one "the".
+- **II. Comparing Entries, ≈55% in** — `Yet the decisionmaking process might remain unchanged` — Inconsistent spelling; the draft writes "decision-making" elsewhere. Fix: "Yet the decision-making process might remain unchanged".
+- **II. Comparing Entries, ≈64% in** — `…ter summaries should preserve those features as as well. Without that discipline, a summary can…` — Repeated word: "as as". Fix: delete one "as".
+- **III. Limits and Implications, ≈82% in** — `set out in supra note 9.` — Bad cross-reference. The draft has no note 9, and the "limited premise" is stated in note 1. Fix: "set out in supra note 1."
+
+## Document-wide conventions
+
+| Issue | Draft's dominant form | Deviations | Recommendation |
+|---|---|---|---|
+| decision-making vs. decisionmaking | decision-making (2 instances) | decisionmaking (1 instance), e.g. `Yet the decisionmaking process might remain unchanged` | Use hyphenated "decision-making" throughout. |
+"""
+RESULT = json.dumps({"report": REPORT, "counts": {"candidates": 11, "confirmed": 11},
+                     "exitState": "complete", "degradation": [], "rejectedFindings": []},
+                    ensure_ascii=False)
+# What the session saved: the report with its own header lines and production details.
+SAVED = REPORT.replace("# Proofread — fixture\n\n", "# Proofread — fixture\n\nTopic: Proofread of "
+                       "fixture\nDate: 2026-11-22 15:01 CST\nBy: Claude\n\n", 1) + \
+    "\n---\nProduction details: Claude Code /proofread (Standard, style off)\n"
+SAVED_PATH = "@TMP@/work/fixture — Proofread.md"
+PROOF_ON = [{"type": "assistant", "message": {"content": [
+    {"type": "tool_use", "id": "sk2", "name": "Skill", "input": {"skill": "legal-research:proofread"}}]}}]
+
+
+def proof_run(launch, notice, saved=SAVED, extra_files=None):
+    files = {"work/fixture — Proofread.md": saved}
+    files.update(extra_files or {})
+    return run(prompt("proofread fixture.docx") + PROOF_ON + tool_pair("Bash", "snapshot taken")
+               + launch + notice + write_call(SAVED_PATH, saved), "The report is saved.",
+               files=files)
+
+
+out, _ = proof_run(wf_launch(PLUGIN_WF), wf_notice(RESULT))
+check("regression: saved proofread report that repeats the plugin workflow's result is allowed",
+      out == {})
+
+out, _ = proof_run(wf_launch(OTHER_WF), wf_notice(RESULT))
+reason = out.get("reason", "")
+check("regression: same report from a workflow outside this plugin is blocked",
+      out.get("decision") == "block" and "Snapshot 2026-11-22" in reason
+      and "The rule requires the clerk to record each refusal" in reason)
+check("regression: no flagged span runs from one list item into the next (defect B)",
+      "**II." not in reason and "Comparing Entries" not in reason and "\n- " not in reason)
+
+for name, wf in (("legal-research", LR_WF), ("cite-check", CC_WF)):
+    check(name + " workflow script exists where the test expects it", os.path.isfile(wf))
+    memo_lr = f'# Memo\n\nThe court held that "{INVENTED}".\n'
+    res_lr = json.dumps({"memo": memo_lr, "report": memo_lr})
+    out, _ = run(prompt("research it") + [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "skx", "name": "Skill", "input": {"skill": name}}]}}]
+                 + wf_launch(wf) + wf_notice(res_lr) + write_call("@TMP@/work/m.md", memo_lr),
+                 "Memo saved.", files={"work/m.md": memo_lr})
+    check("saved memo quoting only the %s workflow's result is blocked" % name,
+          out.get("decision") == "block" and "purple tribunal" in out.get("reason", ""))
+
+extra = SAVED + '\nNote: the clerk said "an invented rewording that the workflow never proposed".\n'
+out, _ = proof_run(wf_launch(PLUGIN_WF), wf_notice(RESULT), saved=extra)
+check("text the session added to the saved report is still checked",
+      out.get("decision") == "block" and "an invented rewording" in out.get("reason", "")
+      and "Snapshot" not in out.get("reason", ""))
+
+out, _ = proof_run(wf_launch(PLUGIN_WF), wf_notice(RESULT, tid="someone-else"))
+check("notice for a different tool call does not count", out.get("decision") == "block")
+
+out, _ = proof_run(wf_launch(PLUGIN_WF, inp={"scriptPath": PLUGIN_WF, "script": "export default 1"}),
+                   wf_notice(RESULT))
+check("plugin scriptPath with an inline script does not count", out.get("decision") == "block")
+
+out, _ = proof_run(write_call(PLUGIN_WF, "// rewritten", tid="w9") + wf_launch(PLUGIN_WF),
+                   wf_notice(RESULT))
+check("plugin workflow script Claude rewrote this session does not count",
+      out.get("decision") == "block")
+
+out, _ = proof_run(wf_launch(PLUGIN_WF), wf_notice(json.dumps({"report": "short"}), summary=REPORT))
+check("text only in the notice's summary, not its result, does not count",
+      out.get("decision") == "block")
+
+ONLY_IN_FULL = json.dumps({"report": "x" * 300 + " " + INVENTED + "."})
+OUT_FILE = json.dumps({"summary": "s", "logs": [], "result": json.loads(ONLY_IN_FULL)})
+memo_inv = f'# Report\n\nThe draft says "{INVENTED}".\n'
+
+
+def inv_run(launch, notice, files):
+    files = dict(files)
+    files["work/r.md"] = memo_inv
+    return run(prompt("go") + PROOF_ON + launch + notice + write_call("@TMP@/work/r.md", memo_inv),
+               "Saved.", files=files)
+
+
+out, _ = inv_run(wf_launch(PLUGIN_WF), wf_notice(truncated(ONLY_IN_FULL, 100)),
+                 {"tasks/wtask1.output": OUT_FILE})
+check("cut-off notice: full result read from the output file it names", out == {})
+
+out, _ = inv_run(wf_launch(PLUGIN_WF), wf_notice(truncated(ONLY_IN_FULL, 100)),
+                 {"sess/workflows/wf_t1.json": json.dumps(
+                     {"runId": "wf_t1", "taskId": "wtask1", "scriptPath": PLUGIN_WF,
+                      "result": json.loads(ONLY_IN_FULL)})})
+check("cut-off notice, no output file: result read from the run record", out == {})
+
+out, _ = inv_run(wf_launch(PLUGIN_WF), wf_notice(truncated(ONLY_IN_FULL, 100)),
+                 {"sess/workflows/wf_t1.json": json.dumps(
+                     {"runId": "wf_t1", "taskId": "wtask1", "scriptPath": OTHER_WF,
+                      "result": json.loads(ONLY_IN_FULL)})})
+check("run record naming another script does not count", out.get("decision") == "block")
+
+out, _ = inv_run(wf_launch(PLUGIN_WF), wf_notice(truncated(ONLY_IN_FULL, 100)),
+                 {"sess/workflows/wf_t1.json": json.dumps(
+                     {"runId": "wf_t1", "taskId": "wtask1", "scriptPath": LR_WF,
+                      "result": json.loads(ONLY_IN_FULL)})})
+check("run record naming the legal-research workflow does not count", out.get("decision") == "block")
+
+out, _ = inv_run(wf_launch(LR_WF), wf_notice(truncated(ONLY_IN_FULL, 100)),
+                 {"tasks/wtask1.output": OUT_FILE})
+check("cut-off legal-research notice: its output file does not count", out.get("decision") == "block")
+
+out, _ = inv_run(wf_launch(PLUGIN_WF),
+                 wf_notice(truncated(ONLY_IN_FULL, 100), out_file="@TMP@/tasks/other.output"),
+                 {"tasks/other.output": OUT_FILE})
+check("output file not named for the task does not count", out.get("decision") == "block")
+
+out, _ = inv_run(wf_launch(PLUGIN_WF), wf_notice(truncated(ONLY_IN_FULL, 100)), {})
+check("cut-off notice with nothing else: text past the cut does not count",
+      out.get("decision") == "block")
+
+BEFORE_CUT = json.dumps({"report": INVENTED + ".", "rest": "y" * 300})
+out, _ = inv_run(wf_launch(PLUGIN_WF), wf_notice(truncated(BEFORE_CUT, 200)), {})
+check("cut-off notice with nothing else: text before the cut counts", out == {})
+
+# ---- quotation marks pair within one paragraph, item or cell (2026-11-22, defect B) ------
+for name, text in (
+    ("closing mark of a short quotation opening a span into the next list item",
+     '- Repeated word: "the the". Fix: delete one "the".\n'
+     '- Inconsistent spelling; the draft writes "decision-making" elsewhere.\n'),
+    ("closing mark of a short quotation opening a span on the same line",
+     'Fix: delete one "the". Then the court wrote more words here and "as" too.'),
+    ("unclosed mark in one list item pairing with the next item",
+     '- He said "this was unfinished and\n- The next item has "short" words'),
+    ("unclosed mark in a heading pairing with the paragraph below",
+     '## The "Part\nThe rule is stated in four words" here.'),
+    ("mark in one table cell pairing with the next cell",
+     '| uses "alpha | and then five more words here" |'),
+    ("mark in a numbered item pairing with the next item",
+     '1. He said "this was unfinished and\n2. The next item has "short" words'),
+    ("mark before a blockquote pairing with a mark inside it",
+     'He said "this was unfinished and more\n> has "x"'),
+):
+    out, _ = run(tool_pair("Bash", "nothing relevant"), text)
+    check("no cross-unit pairing: " + name, out == {})
+
+out, _ = run(tool_pair("Bash", "x"), 'The court said "this quotation is wrapped\nacross two lines of one paragraph" today.')
+check("quotation wrapped over two lines of one paragraph is still checked", out.get("decision") == "block")
+
+out, _ = run(tool_pair("Bash", STATUTE), 'The statute says "pursuant to a delegation of\nauthority from the Commissioner of Internal Revenue."')
+check("wrapped quotation found in the source passes", out == {})
+
+out, _ = run(tool_pair("Bash", "x"), '- The court said "this quotation is wrapped\n  across the item continuation line" today.')
+check("quotation over a list item's continuation line is still checked", out.get("decision") == "block")
+
+out, _ = run(tool_pair("Bash", STATUTE), "> In the case of any Taxpayer Advocate Directive issued\n"
+             "> by the National Taxpayer Advocate pursuant to a delegation")
+check("two-line blockquote found in the source passes", out == {})
+
+out, _ = run(tool_pair("Bash", "x"), "> In the case of any Taxpayer Advocate Directive issued\n"
+             "> by the National Taxpayer Advocate pursuant to a delegation")
+check("two-line blockquote not in the source is blocked", out.get("decision") == "block")
+
+out, _ = run(tool_pair("Bash", "x"), '> He said "this invented sentence runs\n> over two quoted lines here" yes.')
+check("quotation marks over two blockquote lines are still paired",
+      "“this invented sentence runs" in out.get("reason", ""))
+
+out, _ = run(tool_pair("Bash", "x"), '| Fix | Use "an invented phrase of six words" here |')
+check("quotation inside one table cell is still checked", out.get("decision") == "block")
+
+out, _ = run(tool_pair("Bash", "x"), 'A 12" ruler and "this invented sentence is not in any source" here.')
+check("stray inch mark does not hide a later quotation in the paragraph",
+      "this invented sentence is not in any source" in out.get("reason", ""))
+
+# ---- a file written this turn is checked as it is now (2026-11-22, defect C) -------------
+# Observed: after a block the model removed every quotation mark from the file with sed,
+# and the hook flagged the same passages again from the text of the original Write call.
+bad_memo = '# Memo\n\nHe said "this quotation is not in the corpus anywhere at all".\n'
+fixed_memo = "# Memo\n\nHe said this quotation is not in the corpus anywhere at all.\n"
+other_bad = '# Memo\n\nShe said "another sentence that no source contains at all".\n'
+MEMO = "@TMP@/memo.md"
+
+
+def edit_call(path, new, tid="e7"):
+    return [{"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": tid, "name": "Edit",
+         "input": {"file_path": path, "old_string": "a", "new_string": new}}]}},
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": tid, "content": "The file has been updated."}]}}]
+
+
+out, _ = run(prompt("go") + write_call(MEMO, bad_memo), "Done.", files={"memo.md": fixed_memo})
+check("written file fixed on disk since the Write is allowed", out == {})
+
+out, _ = run(prompt("go") + write_call(MEMO, bad_memo), "Done.", retry=True, session="c-retry",
+             files={"memo.md": fixed_memo})
+check("retry after a shell fix checks the file on disk", out == {})
+
+out, _ = run(prompt("go") + write_call(MEMO, bad_memo), "Done.", files={"memo.md": bad_memo})
+check("written file still holding the quotation is blocked", out.get("decision") == "block")
+
+out, _ = run(prompt("go") + write_call(MEMO, fixed_memo), "Done.", files={"memo.md": other_bad})
+check("written file changed on disk to a new unverified quotation is blocked",
+      out.get("decision") == "block" and "another sentence" in out.get("reason", ""))
+
+out, _ = run(prompt("go") + write_call(MEMO, bad_memo), "Done.")
+check("written file gone from disk: the Write's text is checked", out.get("decision") == "block")
+
+q_edit = 'He said "this quotation is not in the corpus anywhere at all".'
+out, _ = run(prompt("go") + edit_call(MEMO, q_edit), "Done.", files={"memo.md": fixed_memo})
+check("edited file whose added quotation was removed since is allowed", out == {})
+
+out, _ = run(prompt("go") + edit_call(MEMO, q_edit), "Done.", files={"memo.md": bad_memo})
+check("edited file still holding the added quotation is blocked", out.get("decision") == "block")
+
+out, _ = run(prompt("go") + edit_call(MEMO, "a plain added sentence"), "Done.",
+             files={"memo.md": bad_memo})
+check("edited file: a quotation this turn did not add is not checked", out == {})
 
 # ---- the PostToolUse note -------------------------------------------------------------
 out, _ = run(tool_pair("WebFetch", "summary"), "", script=NOTE, extra_input={"tool_name": "WebFetch"})

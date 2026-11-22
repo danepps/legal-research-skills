@@ -14,8 +14,27 @@ and a Read of a file Claude itself wrote or edited this session (otherwise a
 memo could vouch for itself). Text a subagent fetched counts because its raw
 tool results are read from the subagent's own transcript.
 
+One exception (added 2026-11-22): the returned result of this plugin's proofread
+workflow (a Workflow call whose scriptPath is skills/proofread/proofread.workflow.js
+in this plugin, with no inline script, and whose script file Claude did not write or
+edit this session). The skill tells the session to save that result as the report,
+so a saved report must not be blocked for repeating it. Its report quotes only the
+draft's own words and proposed rewordings. The legal-research and cite-check
+workflows are NOT trusted: their memos quote cases and articles, which is exactly
+what this hook must check (see quote_common.TRUSTED_WORKFLOWS). The result is read from the
+<task-notification> that carries the call's tool-use id; the notification cuts a
+long result at about 8,000 characters, so the full result is then read from the
+output file the notification names, or from the run record beside the transcript.
+
+Files written this turn are checked as they are on disk when the hook runs (a
+Write's text is used only if the file is gone), so a file fixed after a block is
+re-checked as fixed. For a file only edited this turn, a quotation on disk is
+checked if one of this turn's edits introduced it.
+
 A quotation is text in straight or curly double quotes, or a Markdown
-blockquote, of QUOTE_MIN_WORDS or more words. Fenced code is ignored. Ellipses
+blockquote, of QUOTE_MIN_WORDS or more words. Quotation marks pair in order
+within one paragraph, list item, heading or table cell, never across them.
+Fenced code is ignored. Ellipses
 and bracketed alterations split a quotation into segments; each segment of
 SEGMENT_MIN_WORDS or more words must match. A quotation whose line carries
 "[unverified]" is skipped, so the model can flag an honest recollection without
@@ -44,7 +63,7 @@ import unicodedata
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from quote_common import (  # noqa: E402
     EXCLUDED_RESULT_TOOLS, block_text, disabled_reason, harness_record, iter_records,
-    read_stdin, skill_active, strip_agent_blocks, subagent_transcripts,
+    read_stdin, skill_active, strip_agent_blocks, subagent_transcripts, trusted_workflow_script,
 )
 
 QUOTE_MIN_WORDS = 5
@@ -52,6 +71,93 @@ SEGMENT_MIN_WORDS = 3
 MAX_BLOCKS = 2
 CHECKED_EXT = {".md", ".markdown", ".txt", ".html", ".htm"}
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit"}
+MAX_FILE_BYTES = 20 * 1024 * 1024
+
+
+# ---- The proofread workflow's result (added 2026-11-22) -------------------------------
+# Only scripts in quote_common.TRUSTED_WORKFLOWS (proofread alone) are trusted; see there.
+# A background Workflow's result reaches the session as a <task-notification> record:
+#   <tool-use-id>ID</tool-use-id> <output-file>PATH</output-file> ... <result>JSON</result>
+# The JSON is XML-escaped (&gt; &lt; &amp;) and, past about 8,000 characters, cut off with
+# "... (truncated N chars, full result in PATH)". The output file is the runtime's JSON
+# {"result": ...}; the run record <session>/workflows/<runId>.json also holds the result
+# and the scriptPath.
+_NOTICE_RE = re.compile(r"<task-notification>(.*?)</task-notification>", re.S | re.I)
+_JSON_STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+
+
+def _tag(body, name):
+    m = re.search(r"<%s>(.*?)</%s>" % (name, name), body, re.S)
+    return m.group(1).strip() if m else ""
+
+
+def _leaves(obj, out):
+    """Every string value inside a JSON value."""
+    if isinstance(obj, str):
+        out.append(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            _leaves(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _leaves(v, out)
+    return out
+
+
+def _read_json(path):
+    try:
+        if os.path.getsize(path) > MAX_FILE_BYTES:
+            return None
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return None
+
+
+def plugin_workflow(inp, written) -> bool:
+    """A Workflow call that runs a trusted script of this plugin (the proofread workflow),
+    unchanged by Claude."""
+    if not isinstance(inp, dict) or inp.get("script"):
+        return False
+    sp = str(inp.get("scriptPath") or "")
+    if not sp:
+        return False
+    if not trusted_workflow_script(sp):
+        return False
+    real = os.path.realpath(sp)
+    return os.path.normpath(sp) not in written and real not in {os.path.realpath(p) for p in written}
+
+
+def workflow_result_texts(body, run_dir, run_id):
+    """Strings in the result a <task-notification> body reports, or []."""
+    raw = _tag(body, "result")
+    try:
+        return [html.unescape(s) for s in _leaves(json.loads(raw), [])]
+    except ValueError:
+        pass
+    task_id = _tag(body, "task-id")
+    out_file = _tag(body, "output-file")
+    if out_file and task_id and os.path.basename(out_file) == task_id + ".output":
+        d = _read_json(out_file)
+        if isinstance(d, dict) and "result" in d:
+            return _leaves(d["result"], [])
+    if run_id and run_dir:
+        d = _read_json(os.path.join(run_dir, "workflows", os.path.basename(run_id) + ".json"))
+        if isinstance(d, dict) and "result" in d and (not task_id or d.get("taskId") == task_id) \
+                and trusted_workflow_script(d.get("scriptPath")):
+            return _leaves(d["result"], [])
+    if not raw:
+        return []
+    # Last resort: the string literals in the part of the result the notice kept. The
+    # last one is cut off, so it is dropped.
+    raw = re.sub(r"\n\.\.\. \(truncated \d+ chars.*$", "", raw, flags=re.S)
+    out = []
+    for m in _JSON_STR_RE.finditer(raw):
+        try:
+            out.append(html.unescape(json.loads(m.group(0))))
+        except ValueError:
+            pass
+    return out
 
 
 # ---- Token boundaries (added 2026-11-14) --------------------------------------
@@ -180,10 +286,12 @@ class Session:
     def __init__(self, transcript_path):
         self.main = list(iter_records(transcript_path)) if transcript_path else []
         self.subs = [list(iter_records(p)) for p in subagent_transcripts(transcript_path)]
+        self.run_dir = transcript_path[: -len(".jsonl")] \
+            if transcript_path and transcript_path.endswith(".jsonl") else ""
         self.written = set()           # paths Claude wrote or edited, any transcript
         self.corpus = []
         self.last_assistant = ""
-        self.turn_files = []           # (path, text) written in the final turn
+        self.turn_files = []           # (path, text, only) checked for the final turn
         self._scan_writes()
         for recs in [self.main] + self.subs:
             self._collect(recs)
@@ -203,14 +311,27 @@ class Session:
                         if p:
                             self.written.add(os.path.normpath(str(p)))
 
+    def _plugin_results(self, text, own_workflows):
+        """Add the result of a trusted (proofread) workflow reported in a notice."""
+        for m in _NOTICE_RE.finditer(text or ""):
+            body = m.group(1)
+            tid = _tag(body, "tool-use-id")
+            if tid and tid in own_workflows:
+                self.corpus.extend(workflow_result_texts(body, self.run_dir, own_workflows[tid]))
+
     def _collect(self, recs):
         tool_names, read_paths, saved = {}, {}, []
+        own_workflows = {}             # tool-use id -> run id, for trusted (proofread) workflows
         for o in recs:
             msg = o.get("message")
             if not isinstance(msg, dict):
                 continue
             content = msg.get("content")
             typ = o.get("type")
+            if typ == "user":
+                self._plugin_results(content if isinstance(content, str) else block_text(
+                    [b for b in content if isinstance(b, dict) and b.get("type") == "text"]
+                    if isinstance(content, list) else None), own_workflows)
             if typ == "assistant":
                 texts = []
                 if isinstance(content, list):
@@ -222,6 +343,8 @@ class Session:
                             inp = b.get("input") or {}
                             if b.get("name") == "Read" and isinstance(inp, dict) and inp.get("file_path"):
                                 read_paths[b.get("id")] = os.path.normpath(str(inp["file_path"]))
+                            if b.get("name") == "Workflow" and plugin_workflow(inp, self.written):
+                                own_workflows[b.get("id")] = ""
                         elif b.get("type") == "text":
                             texts.append(b.get("text", ""))
                 elif isinstance(content, str):
@@ -247,6 +370,14 @@ class Session:
                         elif b.get("type") == "tool_result":
                             tid = b.get("tool_use_id")
                             name = tool_names.get(tid, "")
+                            if tid in own_workflows:
+                                # the launch notice; remember the run id for the run record
+                                tur = o.get("toolUseResult")
+                                rid = tur.get("runId") if isinstance(tur, dict) else None
+                                if not rid:
+                                    m = re.search(r"Run ID:\s*(\S+)", block_text(b.get("content")))
+                                    rid = m.group(1) if m else ""
+                                own_workflows[tid] = str(rid or "")
                             if name in EXCLUDED_RESULT_TOOLS:
                                 continue
                             if name == "Read" and read_paths.get(tid) in self.written:
@@ -267,6 +398,8 @@ class Session:
         for i, o in enumerate(self.main):
             if is_prompt(o):
                 start = i
+        # path -> {"write": text of the last Write or None, "edits": [new_string, ...]}
+        files = {}
         for o in self.main[start:]:
             msg = o.get("message")
             if o.get("type") != "assistant" or not isinstance(msg, dict):
@@ -281,19 +414,116 @@ class Session:
                 if os.path.splitext(p)[1].lower() not in CHECKED_EXT:
                     continue
                 name = b.get("name")
+                f = files.setdefault(p, {"write": None, "edits": []})
                 if name == "Write":
-                    self.turn_files.append((p, str(inp.get("content") or "")))
+                    f["write"], f["edits"] = str(inp.get("content") or ""), []
                 elif name == "Edit":
-                    self.turn_files.append((p, str(inp.get("new_string") or "")))
+                    f["edits"].append(str(inp.get("new_string") or ""))
                 elif name == "MultiEdit":
                     for e in inp.get("edits") or []:
                         if isinstance(e, dict):
-                            self.turn_files.append((p, str(e.get("new_string") or "")))
+                            f["edits"].append(str(e.get("new_string") or ""))
+        # Check each file as it is now (added 2026-11-22). The model may have fixed it
+        # after a block, with Edit or with a shell command; re-checking the text of the
+        # original Write call flagged quotations that were no longer in the file.
+        for p, f in files.items():
+            disk = read_text(p)
+            if disk is None:                         # gone or unreadable: what the calls wrote
+                if f["write"] is not None:
+                    self.turn_files.append((p, f["write"], None))
+                for e in f["edits"]:
+                    self.turn_files.append((p, e, None))
+            elif f["write"] is not None:             # written this turn: the whole file
+                self.turn_files.append((p, disk, None))
+            else:                                    # only edited: what this turn's edits added
+                only = {norm(q) for e in f["edits"] for q, _ in extract_quotes(e)}
+                if only:
+                    self.turn_files.append((p, disk, only))
+
+
+def read_text(path):
+    """A file's current text, or None if it is missing, too large or unreadable."""
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) > MAX_FILE_BYTES:
+            return None
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read()
+    except OSError:
+        return None
 
 
 def strip_code(text: str) -> str:
     text = re.sub(r"```.*?```", " ", text, flags=re.S)
     return re.sub(r"`[^`\n]*`", " ", text)
+
+
+# ---- Where a quotation can run (added 2026-11-22) ----------------------------------------
+# Quotation marks used to be paired by one pattern over the whole text that skipped pairs
+# under ten characters, so after a short quotation ("the the") its closing mark opened a
+# new "quotation" that ran to the next mark, across the end of a list item. Marks now pair
+# in order (see _pairs), and only within one unit: a paragraph (lines up to a blank line), a list item
+# with its continuation lines, a heading, a table cell, or a run of blockquote lines. A
+# quotation wrapped over several lines of one paragraph is still one quotation.
+_UNIT_START = re.compile(r"(?:[-*+]|\d{1,3}[.)])\s|#{1,6}\s")
+_RULE = re.compile(r"([-*_])(?:\s*\1){2,}\s*$")
+
+
+def _pairs(text: str, start: int, end: int):
+    """(open, close) offsets of quotation-mark pairs in text[start:end], paired in order.
+    A straight mark opens or closes by its neighbours, so a stray mark (an inch mark, the
+    outer close of a nested quotation) does not open a phantom quotation. Same rule as
+    the owner's quote-guard mod (2026-10-31 and 2026-11-10)."""
+    open_at = None
+    for m in re.finditer(r"[\"“”]", text[start:end]):
+        i = start + m.start()
+        ch = text[i]
+        prev = text[i - 1] if i > start else ""
+        nxt = text[i + 1] if i + 1 < end else ""
+        can_open = ch == "“" or (ch == '"' and nxt and not nxt.isspace()
+                                 and (not prev or prev.isspace() or prev in "([{—–-/*_'‘“>:|"))
+        can_close = ch == "”" or (ch == '"' and prev and not prev.isspace()
+                                  and not nxt.isalnum())
+        if open_at is None:
+            if can_open:
+                open_at = i + 1
+            continue
+        if ch == "“" or not can_close:
+            if can_open:                            # a new opener before any close
+                open_at = i + 1
+            continue
+        yield open_at, i
+        open_at = None
+
+
+def _units(text: str):
+    """(start, end) offsets of the units quotation marks may not cross."""
+    out, cur, prev_bq, pos = [], None, None, 0
+    for line in text.split("\n"):
+        ls, le = pos, pos + len(line)
+        pos = le + 1
+        stripped = line.lstrip()
+        bq = stripped.startswith(">")
+        body = stripped
+        while body.startswith(">"):
+            body = body[1:].lstrip()
+        if not body.strip() or _RULE.match(body):
+            cur, prev_bq = None, None
+            continue
+        if body.startswith("|"):                    # table row: each cell on its own
+            cur, prev_bq = None, None
+            at = ls + (len(line) - len(body))
+            for cell in re.finditer(r"(?:\\\||[^|])+", body):
+                out.append([at + cell.start(), at + cell.end()])
+            continue
+        if cur is None or bq != prev_bq or _UNIT_START.match(body):
+            cur = [ls, le]
+            out.append(cur)
+        else:
+            cur[1] = le
+        prev_bq = bq
+        if re.match(r"#{1,6}\s", body):             # a heading is one line
+            cur = None
+    return out
 
 
 def extract_quotes(text: str):
@@ -311,14 +541,15 @@ def extract_quotes(text: str):
                 block, block_line = [], ""
     if block:
         found.append((" ".join(block), block_line))
-    for m in re.finditer(r"[\"“]([^\"“”]{10,}?)[\"”]", text):
-        q = m.group(1)
-        if "\n\n" in q:
-            continue
-        line_start = text.rfind("\n", 0, m.start()) + 1
-        line_end = text.find("\n", m.end())
-        line = text[line_start: line_end if line_end != -1 else len(text)]
-        found.append((q, line))
+    for start, end in _units(text):
+        for q_start, q_end in _pairs(text, start, end):
+            q = text[q_start:q_end]
+            if len(q) < 10:
+                continue
+            line_start = text.rfind("\n", 0, q_start) + 1
+            line_end = text.find("\n", q_end)
+            line = text[line_start: line_end if line_end != -1 else len(text)]
+            found.append((q, line))
     return found
 
 
@@ -339,13 +570,14 @@ def segments(q: str):
     return out
 
 
-def unmatched_quotes(text, corpus, seen):
-    """corpus = norm_source(...) of everything that counts as a source."""
+def unmatched_quotes(text, corpus, seen, only=None):
+    """corpus = norm_source(...) of everything that counts as a source. only = if given,
+    the normalized quotations to check (those this turn's edits introduced)."""
     corpus_n, joins = corpus
     out = []
     for q, line in extract_quotes(text):
         qn = norm(q)
-        if words(qn) < QUOTE_MIN_WORDS or qn in seen:
+        if words(qn) < QUOTE_MIN_WORDS or qn in seen or (only is not None and qn not in only):
             continue
         seen.add(qn)
         if "[unverified]" in line.lower():
@@ -381,8 +613,9 @@ def main():
     seen = set()
     problems = []                                   # (where, quote)
     problems += [("reply", q) for q in unmatched_quotes(last, corpus_n, seen)]
-    for path, text in sess.turn_files:
-        problems += [(os.path.basename(path), q) for q in unmatched_quotes(text, corpus_n, seen)]
+    for path, text, only in sess.turn_files:
+        problems += [(os.path.basename(path), q)
+                     for q in unmatched_quotes(text, corpus_n, seen, only)]
 
     sp = state_path(session_id)
     if not problems:
