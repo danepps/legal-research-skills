@@ -199,6 +199,14 @@ Workflow({
 })
 ```
 
+Pass `args` as a JSON object, exactly as shown, never as a JSON-encoded string, and copy
+the step-3 values into it without rewording or trimming them. The workflow checks its
+arguments before it starts any agent: if they arrive as a string that does not parse, or
+`outDir` or `chunkFiles` is missing, or a list or object has the wrong shape, it fails at
+once with a message naming the problem and nothing has been spent. When that happens, fix
+the call and launch the workflow once more; do not stop the task and do not proofread
+without the workflow.
+
 **Pipeline:** the whole-document consistency agents launch first and run alongside the
 per-chunk proof fan-out — usage, structure, and (on `.docx`) typeface, the one stage that
 reads `fulltext_fmt.txt` and is allowed to reason about italics; every candidate finding

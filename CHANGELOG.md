@@ -2,6 +2,15 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.10 (2026-11-23)
+
+`proofread`: the workflow checks its arguments before it starts any agent. Observed in a live run through a host program (Sonnet lead, invented 807-word draft): the session passed the workflow's arguments as a JSON string instead of an object, and the string did not parse because a fragment of the `formatting` block was repeated. The script caught the parse error and carried on with no arguments, so `outDir` was empty, the consistency agents were sent to `/fulltext.txt` and `/proof.json`, both reads were refused, and the session stopped the workflow. The run failed after 17 seconds and about USD 0.17. Checked offline with the new test below, by `run_tests.py`, and in one live run through the same host program on the same draft, which completed normally. **Not tested live:** a session actually relaunching the workflow after the new error; the error path is covered offline only. Codex plugin unchanged.
+
+- `proofread.workflow.js`: arguments that arrive as a string that is not valid JSON now stop the script with an error that says so. So do missing arguments, a missing `outDir`, a `chunkFiles` that is absent, empty or not a list of paths, and a `lintFindings`, `headings`, `counts`, `noteParas` or `formatting` of the wrong shape. Every problem found is named in one message, and no agent is started. A string that does parse is still accepted. A run with usable arguments is unchanged.
+- This is a check, not a cure. The session still retypes the extractor's output into the call, because a workflow script cannot read `proof.json` itself. A garbled value that still parses and still has the right shape is not caught here; the verify stage re-reads every finding against the snapshot, which is what catches an altered find string.
+- `SKILL.md` step 4 now says to pass `args` as an object, never as a JSON-encoded string, and to launch the workflow once more if it reports unusable arguments.
+- Tests: new `scripts/test_workflow_args.py` (19 checks, stubbed agents), including the shape of the string seen in the live run.
+
 ## 1.6.9 (2026-11-23)
 
 `proofread` redline: a correction inside a Zotero citation now goes into the citation's stored data, not only onto the page. Run on a copy of a real article draft (224 Zotero citations): 97 synthetic pincite and parenthetical changes were applied in their fields; an independent comparison of every field before and after found exactly three values changed in each of those 97 (the pincite or parenthetical and the two stored copies of the displayed text) and the other 127 fields byte-for-byte identical. **Not tested:** opening the result in Word, and whether a Zotero refresh accepts the edited fields without flagging them. Those need Word and Zotero and have not been done.
