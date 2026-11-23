@@ -52,16 +52,19 @@ const HEADINGS = A.headings || []      // [{para, label, text}] from proof.json
 const NOTE_PARAS = A.noteParas || {}   // {noteNumber: referencing paragraph id}
 const SHA256 = A.sha256 || null
 const SNAPTIME = A.snapshotTime || null
-const DEEP = !!A.deep
-const STYLE = !!A.style
+// A switch is on only for true (or the string 'true'). A session that passes the string
+// 'false' used to turn the switch ON, since any non-empty string is truthy (1.6.11).
+const flag = (v) => v === true || v === 'true'
+const DEEP = flag(A.deep)
+const STYLE = flag(A.style)
 // Off unless a host asks for it (a program building a redline from the returned findings).
 // With it off, every prompt and schema is what it was before 1.6.8: no agent is asked for a
 // replacement and none is returned.
-const REPL = !!A.replacements
+const REPL = flag(A.replacements)
 // Proofers run on Opus by default; `fable:true` escalates them to Fable for a
 // near-final read. Consistency, verify, and report always inherit the session
 // model — verify is the false-positive gate and report is the deliverable.
-const PROOF_MODEL = A.fable ? 'fable' : 'opus'
+const PROOF_MODEL = flag(A.fable) ? 'fable' : 'opus'
 // READ-ONLY GATE: every agent runs as the 'Explore' type, which has no
 // Edit/Write/NotebookEdit tools. That is a strong guard, not an absolute one: Explore
 // agents keep the Bash tool (the revised-find check below uses it to grep), so the gate

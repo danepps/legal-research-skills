@@ -15,15 +15,33 @@ export const meta = {
 // args = { skillsDir: '<plugin root>/skills', question, mode: 'caselaw'|'scholarship'|'both', outputStyle: 'academic'|'practitioner',
 //          jurisdiction, asOfDate, notes, deep:boolean, projectDir:string,
 //          finalizeModel:string (optional; unset = the session model), escalate:boolean (default true) }
-let A = args || {}
-if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
-const QUESTION = A.question || 'No question provided.'
+// The arguments are checked before any agent starts (1.6.11, 2026-11-23). Arguments that
+// arrived as a string that does not parse used to be replaced with none, and the whole pipeline
+// then ran on the placeholder question below. The proofread workflow failed live that way on
+// the same day. Now the script stops here and says what is wrong.
+let A = args
+if (typeof A === 'string') {
+  try { A = JSON.parse(A) } catch (e) {
+    throw new Error(`legal-research workflow: the arguments arrived as a string that is not valid JSON (${e.message}). No agent was started. Launch the workflow again with args as a JSON object, not a string.`)
+  }
+}
+const argProblems = []
+if (!A || typeof A !== 'object' || Array.isArray(A)) argProblems.push('args is missing or is not an object')
+else {
+  if (typeof A.question !== 'string' || !A.question.trim()) argProblems.push('question (the legal question to research) is missing')
+  if (A.mode != null && !['caselaw', 'scholarship', 'both'].includes(String(A.mode).toLowerCase())) argProblems.push('mode must be caselaw, scholarship or both')
+  if (A.outputStyle != null && !['academic', 'practitioner'].includes(String(A.outputStyle).toLowerCase())) argProblems.push('outputStyle must be academic or practitioner')
+  for (const k of ['jurisdiction', 'asOfDate', 'notes', 'projectDir', 'skillsDir', 'finalizeModel']) if (A[k] != null && typeof A[k] !== 'string') argProblems.push(`${k} must be a string`)
+}
+if (argProblems.length) throw new Error(`legal-research workflow: unusable arguments (${argProblems.join('; ')}). No agent was started. Launch the workflow again with args as a JSON object, as in SKILL.md step 4.`)
+const QUESTION = A.question
 const MODE = (A.mode || 'both').toLowerCase()
 const OUTPUT = (A.outputStyle || (MODE === 'caselaw' ? 'practitioner' : 'academic')).toLowerCase()
 const JURISDICTION = A.jurisdiction || 'not specified — infer the most relevant U.S. jurisdiction(s)'
 const AS_OF = A.asOfDate || 'today'
 const NOTES = A.notes || ''
-const DEEP = !!A.deep // opt-in heavier mode: more vectors, more reads, adversarial verify
+// On only for true (or the string 'true'): the string 'false' is truthy and used to turn deep mode on (1.6.11).
+const DEEP = A.deep === true || A.deep === 'true' // opt-in heavier mode: more vectors, more reads, adversarial verify
 const PROJECT_DIR = A.projectDir || '' // the user's working directory — enables the local-corpus sweep
 // Run tag for scratch filenames (CLAUDE-07): cite-check chunks and refutation voters run
 // concurrently and share /tmp, so every source dump needs a path unique to this run AND to the
