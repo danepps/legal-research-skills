@@ -18,8 +18,27 @@ export const meta = {
 //   deep:boolean, style:boolean, fable:boolean,
 //   replacements:boolean (optional; ask agents for exact replacement text, for a redline)
 // }
-let A = args || {}
-if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
+// The arguments are checked before any agent starts (1.6.10). The session retypes them from
+// the extractor's output, and this script cannot read proof.json itself (a workflow script has
+// no file access). A call whose arguments arrived as a string that does not parse used to run
+// with none: outDir was empty, every agent was sent to /fulltext.txt, and the run failed after
+// spending tokens. Now it stops here and says what is wrong.
+let A = args
+if (typeof A === 'string') {
+  try { A = JSON.parse(A) } catch (e) {
+    throw new Error(`proofread workflow: the arguments arrived as a string that is not valid JSON (${e.message}). No agent was started. Launch the workflow again with args as a JSON object, not a string, copied from the step-3 output.`)
+  }
+}
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+const argProblems = []
+if (!isObj(A)) argProblems.push('args is missing or is not an object')
+else {
+  if (typeof A.outDir !== 'string' || !A.outDir.trim()) argProblems.push('outDir (the extractor\'s output folder) is missing')
+  if (!Array.isArray(A.chunkFiles) || !A.chunkFiles.length || A.chunkFiles.some((c) => typeof c !== 'string' || !c.trim())) argProblems.push('chunkFiles must be a non-empty list of chunk file paths')
+  for (const k of ['lintFindings', 'headings']) if (A[k] != null && !Array.isArray(A[k])) argProblems.push(`${k} must be a list`)
+  for (const k of ['counts', 'noteParas', 'formatting']) if (A[k] != null && !isObj(A[k])) argProblems.push(`${k} must be an object`)
+}
+if (argProblems.length) throw new Error(`proofread workflow: unusable arguments (${argProblems.join('; ')}). No agent was started. Launch the workflow again with args as a JSON object built from the step-3 output.`)
 // Where the sibling skills' reference files live. SKILL.md passes
 // skillsDir = "${CLAUDE_PLUGIN_ROOT}/skills" (expanded by Claude Code before the call);
 // the fallback is the plain ~/.claude/skills layout.
