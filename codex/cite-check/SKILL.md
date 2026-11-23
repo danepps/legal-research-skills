@@ -20,6 +20,7 @@ Verify a draft against retrieved sources without modifying it. Use deterministic
 - Report absence as `not_found_in_sources_checked`, not “fabricated.” Search every source named in the footnote before using that category.
 - Independently recheck every critical/high adverse finding and every exact-one-page pincite correction.
 - Treat CourtListener lookup as identity screening only. A miss is unresolved, not proof of an error.
+- Preserve the script's caption/year comparisons for each case unit. Resolve every mismatch with opened evidence in the verdict and report; `found: true` never clears it.
 - Treat bot walls, paywalls, OCR failures, missing attachments, and unavailable pagination as limits, not negative evidence.
 - Never open PDFs in a GUI or install software without approval.
 
@@ -117,11 +118,26 @@ fresh worker context (`fork_turns="none"` when supported), complete relevant dra
 context and cache paths. Reuse library lookups and source files across quote,
 support and audit work. Keep full source text on disk and read targeted excerpts.
 
-Optionally screen case identities with:
+For case identity screening, supply the draft's printed caption and decision year
+on each case unit as `draft_case_name` and `draft_year` (null when absent), plus
+one `lookup_citation`. Follow the [case screen fields](references/ledger-fields.md#case-identity-screens)
+for draft grounding and unavailable access. Run:
 
 ```bash
-python3 <skill-dir>/scripts/check_cite.py --input-file <citation-text-file>
+python3 <skill-dir>/scripts/check_cite.py --units-file RUN_DIR/citation-units.jsonl \
+  --output RUN_DIR/case-identity-checks.jsonl
 ```
+
+The script compares captions and years deterministically without changing lookup
+found/not-found status. It preserves per-unit inputs and results, including
+nameless citations. Resolve every mismatch through `identity_resolutions` with
+opened evidence, either as an `identity_error`/`metadata_error` finding or an
+explained `not_error` disposition. Never substitute the resolved caption for
+draft text. Pass the screen ledger with source bundles. New runs require one
+screen or explicit `not_screened` access record per case unit at readiness.
+The helper creates a new output file and refuses to overwrite one; preserve
+earlier outputs on retries and reconcile the active ledger without discarding
+unresolved mismatches. A raw text batch alone does not supply draft metadata.
 
 Retrieve the opinion itself for quotes, holdings, propositions, and pins. Before calling a lookup miss unconfirmed, run both caption and quoted citation-string fallbacks with `check_cite.py 'CITATION' --name 'A v. B'`; inspect candidate identities and citing passages, and record all routes tried or unavailable. A citing passage is corroboration, not conclusive identity proof. Use `too_recent_for_free_index` only with a basis for that explanation, never merely because a citation is unfamiliar. Recommend a direct official-record or database spot-check when unresolved.
 
@@ -211,6 +227,12 @@ Insert that exact block. Keys use source/content/verdict, never footnote numbers
 Include the current `cache-recovery.md` coverage lines in the report, and explain remaining cached matches and stale cross-references. Never recommend obtaining a source without reconciling the cache and library records. New runs require the recovery artifact at readiness; legacy runs retain their previous contract.
 
 Every adverse item must contain the footnote number, verbatim draft find string, draft and source text where applicable, category, severity, verification basis, evidence location, suggested action, and required audit result.
+
+Include the ledger reference's case-identity disclosure line for every screen
+mismatch, even a cleared one (put clearances in the full ledger, outside findings).
+For a caption finding, state what the draft printed and what lookup returned,
+and that either the name or reporter citation may be wrong. Confirm the intended
+authority before recommending which to change.
 
 After the readiness gate in step 7 passes, publish `<Draft name> — Cite Check.md` by default. Never copy a provisional report to the visible destination. Create a matching `.docx` only when the user or controlling project instruction expressly requests it. Put directly below the title:
 

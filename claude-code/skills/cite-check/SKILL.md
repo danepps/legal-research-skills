@@ -428,6 +428,19 @@ Workflow({
 })
 ```
 
+Pass `args` as a JSON object, exactly as shown, never as a JSON-encoded string, and copy the
+step-3 values into it without rewording or trimming them. The workflow checks its arguments
+before it starts any agent (2026-11-23): `extractPath`, `footnoteCount`, `unitCount`,
+`caseCites`, `ledger` and `secondaryCites` are required for every run (pass `[]` or `0` when the
+draft has none, never leave the key out, because each missing one would silently turn a pass
+off), and `supportUnits` is required when `support` is true. If the arguments arrive as a
+string that does not parse, a required one is missing, or a list or object has the wrong shape,
+the workflow fails at once with a message beginning `cite-check workflow:` that names every
+problem, and nothing has been spent. When that happens, fix the call and launch the workflow
+once more; do not stop the task and do not cite-check without the workflow. Switches are on
+only for `true` (`deep`, `support`) and off only for `false` (`history`, `zotero`); the strings
+`"true"` and `"false"` are read the same way.
+
 **Pipeline** (all model stages Sonnet except the report, which inherits the session model):
 1. **Segment/resolve** — chunked; each quote is paired with the SPECIFIC source it hangs on, walking
    `Id.` chains to their real antecedent (which may be a case two notes up) and following
@@ -445,7 +458,18 @@ Workflow({
    CourtListener's citation metadata is uneven and a case can be present with no reporter cite
    attached, so the agent runs `cl_case_tools.py find` (caption search, plus a search for later
    opinions whose text cites the citation string, which proves the cite real even when the
-   opinion itself is not indexed) BEFORE any web escalation; reporter typos proposed. In the same
+   opinion itself is not indexed) BEFORE any web escalation; reporter typos proposed. **Case name
+   and year against the lookup** (2026-11-23): the workflow then compares, with no model, every
+   full case citation in the ledger with the caption and date its reporter cite resolved to in
+   CourtListener's citation lookup. A name is flagged only when no distinctive party word of the
+   draft's name is in the caption (Bluebook abbreviations, first names, acronyms, In re / ex
+   rel. / et al., and generic parties such as United States, a State or People are allowed for;
+   a popular name such as The Prize Cases is not compared);
+   a year when the draft's year and the lookup's year both exist and differ. Each flag is a
+   finding in its own report section, stating what the draft says and what the lookup returned
+   and that either the name/year or the reporter cite may be the wrong part (the workflow does not
+   say which). No comparison when the cite was confirmed only on the web, by a name search, or
+   through a proposed reporter-typo correction. In the same
    fan-out, **secondary-source existence**: every unique unquoted article/book/statute/URL from
    the ledger that the Zotero pre-lookup did not match is located on the web and its
    bibliographic metadata compared to the draft's cite — 5 per agent, low effort, no substance
@@ -486,7 +510,9 @@ Workflow({
    sentence, the wrong antecedent or page, undisclosed posture).
 4a. **Ledger join** — every quote verdict and existence result is joined back onto the citation
    instances (same rules as `citation_ledger.assign_dispositions`, the tested reference). Each
-   instance ends with a disposition; `unchecked` is a first-class outcome, not an absence.
+   instance ends with a disposition; `unchecked` is a first-class outcome, not an absence. A full
+   case citation whose name or year differs from the lookup is a `finding`, with the reason in
+   its `why`.
 4b. **Form** — Bluebook typeface + short forms, decided from the draft alone. The deterministic
    findings arrive precomputed from the extractor, so this phase spends **at most one agent**, and
    only when there is a formatting layer AND case-name candidates to adjudicate (that agent's job is
@@ -595,6 +621,11 @@ support, findings, spend, … }`.
   say so and offer a targeted re-run. If `rejected` is non-zero, an agent returned a verdict
   without the evidence the schema requires (passage, locator, full-text basis, search); those
   units are unverifiable this run and listed in section I with the reason.
+- If `counts.caseCiteMismatches` is non-zero, say in one sentence how many full case citations
+  have a case name (`caseNameMismatch`) or year (`caseYearMismatch`) that differs from what the
+  reporter cite resolves to, and point to the report's "Case name or year does not match the
+  reporter cite" section. Never describe the case cites as confirmed without issues while it is
+  non-zero, and do not say which part of the cite is wrong.
 - Present the TL;DR counts and point to the "Needs your attention" section. Mention section G in
   one sentence when `counts.history.missingHistory` or `counts.history.treatmentFlags` is non-zero
   (advisory: confirm on supremecourt.gov / Westlaw before changing a cite); if
@@ -602,7 +633,9 @@ support, findings, spend, … }`.
 - If `artifactsCaught` is non-empty, mention it — those are findings the second check disproved, and
   it's a sign the guardrail is working (not something to hide).
 - Surface `exitState`: `complete` → deliver; `complete_with_limits` → deliver, noting the
-  unverifiable items and any degradation; if the budget guard degraded coverage, say which sources
+  unverifiable items and any degradation (since 2026-11-23 `degradation` holds one plain sentence
+  for every limit, with its count and cause, e.g. a history lookup that got a CourtListener tool
+  error; `complete_with_limits` always comes with at least one); if the budget guard degraded coverage, say which sources
   were batched/skipped and offer a targeted re-run. A degradation line saying the budget "ran out
   mid-phase" means the wave gate stopped launching agents: the sources it never fetched are named
   in section I as NOT CHECKED (budget), and the offer is a re-run with a `+Nk` budget and

@@ -97,6 +97,13 @@ Workflow({
 })
 ```
 
+Pass `args` as a JSON object, exactly as shown, never as a JSON-encoded string. The workflow
+checks its arguments before it starts any agent: if they arrive as a string that does not parse,
+or `question` is missing, or `mode` or `outputStyle` is not one of the values above, it fails at
+once with a message naming the problem and nothing has been spent. When that happens, fix the
+call and launch the workflow once more; do not stop the task and do not research without the
+workflow.
+
 Lean by default: ~4 search-only survey vectors (plus a Zotero-library sweep in scholarship modes
 and a local-corpus sweep of `projectDir` — prior memos and downloaded sources are maps and leads,
 never citable authority). Scope also classifies the question (doctrinal vs. scholarly; historical

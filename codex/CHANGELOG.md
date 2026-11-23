@@ -1,5 +1,31 @@
 # Codex plugin changes
 
+## 1.7.5 — 2026-11-23
+
+- `cite-check`: deterministically compare a draft's printed case caption and year
+  with the reporter lookup's resolved caption/date. Add explicit per-unit JSONL
+  input and comparison output; retain existing found/not-found, fallback-search
+  and rate-limit behavior. Shared state, D.C., Puerto Rico or Guam names and
+  their Bluebook abbreviations cannot clear a mismatch between other parties.
+  Compare complete sovereign names when no other distinctive words remain;
+  other generic-only captions stay indeterminate. Absent captions/years do not
+  become errors.
+- Accept prefix agreement when the shorter word has at least four letters and
+  single-letter insertion/deletion/substitution when both words have at least
+  five. Retain the compared words and rule in the screen; misspelled party names
+  alone are not wrong-identity findings.
+- Preserve screens in source bundles and a per-unit ledger. New runs require
+  screen coverage or disclosed unavailable screening. Readiness rejects an
+  unresolved mismatch, edited comparison, missing finding, or unsupported
+  clearance; findings and dismissals require opened evidence and report
+  disclosure. Existing metadata-record and independent-audit gates still apply.
+- Update the skill and protocols; retain compatibility for older runs, while
+  checking any screen ledger they contain. Bump only the Codex plugin.
+- Tested offline on `/usr/bin/python3` 3.9.6: all 19 cite-check test programs
+  passed (182 unittest tests plus four standalone assertion programs), including
+  26 new tests. No live cite-check, network calls, credential use, Claude-side
+  test run, or private-skill installation was performed.
+
 ## 1.7.4 — 2026-11-23
 
 - `internal-proofread`: optional exact corrections, for a host program or a

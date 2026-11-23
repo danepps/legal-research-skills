@@ -32,9 +32,12 @@ const src = fs.readFileSync(process.env.PR_WORKFLOW, 'utf8').replace(/^export co
 const AF = Object.getPrototypeOf(async function () {}).constructor;
 const run = new AF('args', 'budget', 'agent', 'parallel', 'phase', 'log', src);
 let agents = 0;
+const proofModels = [];
+let styleAsked = false;
 async function agent(prompt, opts) {
   agents++;
   const L = opts.label || '';
+  if (L.startsWith('proof:chunk-')) { proofModels.push(opts.model); if (/severity[^\n]*style|style suggestions/i.test(prompt) && /STYLE PASS IS ON|style:\s*true/i.test(prompt)) styleAsked = true; }
   if (L.startsWith('consistency')) return { findings: [], conventions: [] };
   if (L.startsWith('proof:chunk-')) return { findings: [] };
   if (L.startsWith('verify:batch-')) return { verdicts: [] };
@@ -46,7 +49,7 @@ const parallel = async (fns) => Promise.all(fns.map((f) => f().catch(() => null)
 const spec = JSON.parse(process.env.PR_ARGS);
 const args = spec.kind === 'undefined' ? undefined : spec.value;
 run(args, budget, agent, parallel, () => {}, () => {}).then(
-  (out) => console.log(JSON.stringify({ ok: true, agents, exitState: out.exitState, chunks: out.counts.chunks })),
+  (out) => console.log(JSON.stringify({ ok: true, agents, exitState: out.exitState, chunks: out.counts.chunks, proofModels, findingsKey: Array.isArray(out.findings) })),
   (err) => console.log(JSON.stringify({ ok: false, agents, message: String(err && err.message) })));
 """
 
@@ -90,6 +93,14 @@ r = run(json.dumps(GOOD))
 check(r["ok"] and r["agents"] > 0 and r["chunks"] == 1, "a string that parses is accepted and runs")
 r = run({"outDir": "/x", "chunkFiles": ["/x/c0.json"]})
 check(r["ok"], "only outDir and chunkFiles are required")
+
+print("a switch passed as the string 'false' stays off")
+r = run(dict(GOOD, fable="false", deep="false", style="false", replacements="false"))
+check(r["ok"] and r["proofModels"] == ["opus"], "fable:'false' leaves the proofers on Opus (%s)" % r.get("proofModels"))
+r = run(dict(GOOD, fable="true"))
+check(r["ok"] and r["proofModels"] == ["fable"], "fable:'true' and fable:true still select it")
+r = run(dict(GOOD, fable=True))
+check(r["ok"] and r["proofModels"] == ["fable"], "fable:true selects it")
 
 print("a string that is not valid JSON stops the script")
 # The shape seen live: the tail of the formatting block repeated after its closing brace.

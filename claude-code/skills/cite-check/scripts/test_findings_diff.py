@@ -73,5 +73,19 @@ md2 = fd.render({"date": "a"}, {"date": "b"}, d_off)
 check("render lists the not-rechecked section", "### Not rechecked" in md2 and "NOT rechecked" in md2)
 check("quote item absent with pass off is still resolved", all(i["kind"] != "quote" for i in d_off["not_rechecked"]))
 
+print("case name / year against the lookup (2026-11-23)")
+cmn = {"kind": "case-metadata", "field": "name", "verdict": "name-mismatch", "footnote": 4, "cite": "356 U.S. 396", "draft": "Sherman v. United States", "resolved": "Thomas v. Arizona", "label": "l"}
+cmy = {"kind": "case-metadata", "field": "year", "verdict": "year-mismatch", "footnote": 3, "cite": "287 U.S. 435", "draft": "1934", "resolved": "Sorrells v. United States", "label": "m"}
+check("case-metadata key ignores footnote number and label", fd.key_of(cmn) == fd.key_of(dict(cmn, footnote=9, label="other")))
+check("name and year items on one cite have different keys", fd.key_of(cmn) != fd.key_of(dict(cmn, field="year", draft="1958")))
+check("a corrected reporter cite changes the key (the item resolves)", fd.key_of(cmn) != fd.key_of(dict(cmn, cite="356 U.S. 369")))
+check("a corrected year changes the key (the item resolves)", fd.key_of(cmy) != fd.key_of(dict(cmy, draft="1932")))
+check("a new lookup caption alone does not reset the item", fd.key_of(cmn) == fd.key_of(dict(cmn, resolved="Thomas v. State of Arizona")))
+P2 = {fd.key_of(i): dict(i, key=fd.key_of(i)) for i in (cmn, cmy)}
+C2 = {fd.key_of(cmy): dict(cmy, key=fd.key_of(cmy), footnote=5)}
+d_cm = fd.diff(P2, C2)
+check("fixing the name resolves the name item and keeps the year item open", [i["field"] for i in d_cm["resolved"]] == ["name"] and [i["field"] for i in d_cm["still_open"]] == ["year"])
+check("render labels the kind and verdict", "[case-metadata: year-mismatch]" in fd.render({}, {}, d_cm))
+
 print("\n%d failure(s)" % fails)
 sys.exit(1 if fails else 0)

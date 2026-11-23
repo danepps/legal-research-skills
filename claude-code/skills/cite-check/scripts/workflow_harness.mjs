@@ -75,7 +75,12 @@ async function agent(prompt, opts) {
     return { resolutions: units.map((id) => ({ id, footnote: 1, quote: 'q', source: 'McCulloch v. Maryland, 17 U.S. (4 Wheat.) 316, 431 (1819)', kind: 'case', pincite: '431' })) }
   }
   if (L.startsWith('exist-secondary')) return { sources: [...prompt.matchAll(/- key (.+?) \| /g)].map((m) => ({ key: m[1], exists: true, basis: 'web' })) }
-  if (L.startsWith('exist')) return { results: [...prompt.matchAll(/"(\d+ [A-Za-z. ]+ \d+)"/g)].map((m) => ({ citation: m[1], exists: true, caseName: 'X v. Y', dateFiled: '1819-03-06', basis: 'courtlistener-api' })) }
+  // The fixture's real captions and dates (2026-11-23): the workflow now compares the draft's case
+  // name and year with what the lookup returns, so a placeholder "X v. Y" would be a finding.
+  if (L.startsWith('exist')) {
+    const known = { '17 U.S. 316': ['McCulloch v. Maryland', '1819-03-06'], '5 U.S. 137': ['Marbury v. Madison', '1803-02-24'] }
+    return { results: [...prompt.matchAll(/"(\d+ [A-Za-z. ]+ \d+)"/g)].map((m) => ({ citation: m[1], exists: true, caseName: (known[m[1]] || ['X v. Y'])[0], dateFiled: (known[m[1]] || [, '1819-03-06'])[1], basis: 'courtlistener-api' })) }
+  }
   if (L.startsWith('history')) return { cases: [...prompt.matchAll(/- cite: ([^|]+?) \|/g)].map((m) => ({ cite: m[1].trim(), status: 'checked', historyBasis: 'none-found', confidence: 'moderate' })) }
   if (L.startsWith('verify-tail')) return { sources: [] }
   if (L.startsWith('zotero-sweep')) {

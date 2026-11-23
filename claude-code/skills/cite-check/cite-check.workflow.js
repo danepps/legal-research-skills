@@ -25,12 +25,50 @@ export const meta = {
 //   support:boolean (default FALSE — opt-in), supportUnits:[...] (prepare_support_units.py
 //   --compact), supportScope:'pincited'|'all' — the proposition-support pass (2026-10-24)
 // }
-let A = args || {}
-if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
+// The arguments are checked before any agent starts (2026-11-23). The lead session retypes them
+// from the extraction scripts' output, and this script cannot read those files itself (a workflow
+// script has no file access). A string that did not parse used to be replaced by {} and the run
+// went on with no extract, no ledger and no case cites; proofread failed live that way (1.6.10).
+// Now the script stops here, names every problem at once, and nothing has been spent.
+// Required for any run (SKILL.md step 4): extractPath, footnoteCount, unitCount, caseCites,
+// ledger, secondaryCites — each is printed by step 3 for every draft (an empty list or 0 is fine;
+// a MISSING key is not, because each one silently turns a pass off: no unitCount checks no quote,
+// no caseCites checks no case, no ledger empties section J). supportUnits is required when
+// support is on. Everything else is optional but must have the right shape when given.
+let A = args
+if (typeof A === 'string') {
+  try { A = JSON.parse(A) } catch (e) {
+    throw new Error(`cite-check workflow: the arguments arrived as a string that is not valid JSON (${e.message}). No agent was started. Launch the workflow again with args as a JSON object, not a string, copied from the step-3 output.`)
+  }
+}
+const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
+const isCount = (v) => (typeof v === 'number' || (typeof v === 'string' && /^\d+$/.test(v.trim()))) && Number.isInteger(Number(v)) && Number(v) >= 0
+// A switch is on only for true (or the string 'true'); history and zotero default ON and are off
+// only for false (or 'false'). A retyped 'false' used to switch deep and support ON (any
+// non-empty string is truthy), and support is the costliest pass (2026-11-23, as proofread 1.6.11).
+const flagOn = (v) => v === true || v === 'true'
+const flagOff = (v) => v === false || v === 'false'
+const argProblems = []
+if (!isObj(A)) argProblems.push('args is missing or is not an object')
+else {
+  if (typeof A.extractPath !== 'string' || !A.extractPath.trim()) argProblems.push('extractPath (the path of extract.json from step 3) is missing')
+  for (const k of ['footnoteCount', 'unitCount']) if (!isCount(A[k])) argProblems.push(`${k} must be a whole number (0 or more)`)
+  if (!Array.isArray(A.caseCites) || A.caseCites.some((c) => typeof c !== 'string')) argProblems.push('caseCites must be a list of citation strings (extract.unique_case_cites; [] if none)')
+  if (!Array.isArray(A.ledger) || A.ledger.some((x) => !isObj(x))) argProblems.push('ledger must be a list of ledger instances (ledger_args.instances; [] if none)')
+  if (!Array.isArray(A.secondaryCites) || A.secondaryCites.some((x) => !isObj(x))) argProblems.push('secondaryCites must be a list of sources (ledger_args.secondary; [] if none)')
+  if (flagOn(A.support) && (!Array.isArray(A.supportUnits) || A.supportUnits.some((x) => !isObj(x)))) argProblems.push('supportUnits must be a list of support units when support is true (support_args.units)')
+  else if (A.supportUnits != null && !Array.isArray(A.supportUnits)) argProblems.push('supportUnits must be a list')
+  if (A.supraProblems != null && (!Array.isArray(A.supraProblems) || A.supraProblems.some((x) => !isObj(x)))) argProblems.push('supraProblems must be a list of objects')
+  if (A.unitIds != null && (!Array.isArray(A.unitIds) || A.unitIds.some((i) => !isCount(i)))) argProblems.push('unitIds must be null or a list of unit ids')
+  if (A.unitNotes != null && !Array.isArray(A.unitNotes) && !isObj(A.unitNotes)) argProblems.push('unitNotes must be a list of [id, footnote] pairs or an object')
+  else if (Array.isArray(A.unitNotes) && A.unitNotes.some((p) => !Array.isArray(p) || p.length !== 2)) argProblems.push('unitNotes must be a list of [id, footnote] pairs')
+  for (const k of ['formChecks', 'zoteroHits', 'costModel']) if (A[k] != null && !isObj(A[k])) argProblems.push(`${k} must be an object`)
+}
+if (argProblems.length) throw new Error(`cite-check workflow: unusable arguments (${argProblems.join('; ')}). No agent was started. Launch the workflow again with args as a JSON object built from the step-3 output.`)
 const EXTRACT_PATH = A.extractPath || ''
 const DRAFT_NAME = A.draftName || 'draft'
-const UNIT_COUNT = A.unitCount || 0
-const FOOTNOTE_COUNT = A.footnoteCount || 0
+const UNIT_COUNT = Number(A.unitCount) || 0
+const FOOTNOTE_COUNT = Number(A.footnoteCount) || 0
 const CASE_CITES = A.caseCites || []
 const SUPRA_PROBLEMS = A.supraProblems || []
 // Citation-instance LEDGER (citation_ledger.py --compact, added 2026-09-06): EVERY citation
@@ -39,16 +77,16 @@ const SUPRA_PROBLEMS = A.supraProblems || []
 // per instance what was verified, what merely exists, and what was NOT checked at all.
 const LEDGER = Array.isArray(A.ledger) ? A.ledger : []
 const SECONDARY_CITES = Array.isArray(A.secondaryCites) ? A.secondaryCites : []
-const DEEP = !!A.deep
-const HISTORY_ON = A.history !== false // subsequent-history + treatment pass (2026-10-19)
+const DEEP = flagOn(A.deep)
+const HISTORY_ON = !flagOff(A.history) // subsequent-history + treatment pass (2026-10-19)
 // Proposition-support pass (2026-10-24) — OPT-IN. Reads every unquoted citation instance in
 // scope at its pincite and judges, through its Bluebook signal, whether the source supports
 // the sentence it hangs on. Off by default because it changes the cost profile from "sources
 // with quotes" to "every source"; "overstated" is a CONFIRM item by the author's decision.
-const SUPPORT_ON = !!A.support
+const SUPPORT_ON = flagOn(A.support)
 const SUPPORT_SCOPE = A.supportScope === 'all' ? 'all' : 'pincited' // whole-work cites only on 'all'
 const SUPPORT_UNITS = SUPPORT_ON && Array.isArray(A.supportUnits) ? A.supportUnits : []
-const ZOTERO_OK = A.zotero !== false // assume available unless SKILL.md says otherwise
+const ZOTERO_OK = !flagOff(A.zotero) // assume available unless SKILL.md says otherwise
 const ZOTERO_SERVER = A.zoteroServer || 'zotero' // per-project; SKILL.md pre-flight resolves it (setup registers "zotero" for a personal library, "zotero-<name>" for a group)
 // Deterministic Zotero pre-lookup (2026-10-27): SKILL.md runs scripts/zotero_lookup.py before
 // launching and passes its `--compact` map as zoteroHits ({ledger key: {lib, item, title, au,
@@ -940,7 +978,9 @@ ToolSearch "select:Bash" if needed):
 It returns, per citation: found (bool), case_name, date_filed.
 
 STEP 2 — for each citation:
-- found + a sensible case name -> exists=true, basis "courtlistener-api", echo caseName/dateFiled.
+- found + a sensible case name -> exists=true, basis "courtlistener-api", echo caseName/dateFiled
+  EXACTLY as the lookup printed them (case_name, date_filed), even if you expected another case or
+  year: the workflow compares them with the draft's own case name and year, so never replace them.
 - NOT found -> a citation that will not resolve is a SEARCH problem, never evidence of a bad cite:
   CourtListener's citation metadata is uneven (a case can be present and full-text searchable with
   no reporter citation attached), and recent U.S. Reports volumes lag. BEFORE any web search, run
@@ -1034,6 +1074,9 @@ const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + existBatches.length
 const casePassRan = !CASE_CITES.length || existGate
 const secondaryPassRan = !secWeb.length || existGate
 if (!secondaryPassRan) degradation.push(`secondary-source existence pass skipped for ${secWeb.length} sources not in Zotero (budget) — they are UNCHECKED in the ledger`)
+// The case side of the same gate had no line of its own (2026-11-23): its cites ended unchecked
+// with the exit state set and nothing saying why.
+if (!casePassRan) degradation.push(`case-existence pass skipped for ${CASE_CITES.length} case cite(s) (budget) — they are UNCHECKED in the ledger`)
 // A dead existence batch used to leave up to EXIST_BATCH case cites with no result and no line in
 // `degradation` (2026-11-15 review): every other fan-out retried, this one did not. Retry once;
 // what is still missing is counted below.
@@ -1094,6 +1137,193 @@ const secAnswered = new Set(secondaryExistence.map((x) => x.key))
 const secMissing = secondaryPassRan ? secWeb.filter((x) => !secAnswered.has(x.key)) : []
 if (secMissing.length) degradation.push(`${secMissing.length} secondary source(s) got no existence result (agent failure or skipped keys) — UNCHECKED in the ledger`)
 log(`Case existence: ${existence.length} checked, ${existBad.length} unconfirmed, ${existFixed.length} reporter typos.`)
+
+// ---- case name and year against the lookup (deterministic, 2026-11-23) ----------------------
+// A live run cited "Sherman v. United States, 356 U.S. 396 (1958)" (356 U.S. 396 is Thomas v.
+// Arizona) and "Sorrells v. United States, 287 U.S. 435 (1934)" (decided 1932). The existence
+// pass got the bare reporter strings, echoed Thomas v. Arizona and 1932-12-19, and nothing
+// compared them with the draft: the report said every case cite was confirmed. Now every full
+// case citation in the ledger is compared here, with no model, against the caption and date its
+// reporter cite resolved to. Compared only when CourtListener's citation lookup itself resolved
+// the cite (basis courtlistener-api, not a name search or a citing opinion, which the existence
+// prompt allows as fallbacks, and not a proposed reporter-typo correction); a web-only
+// confirmation carries no caption to compare, so it is skipped and says nothing.
+// NAME: high precision. Both names are reduced to party tokens: Bluebook abbreviations expanded
+// (Bd., Educ., Dep't, Ass'n, Comm'n, Nat'l, Int'l ...), punctuation and case dropped, procedural
+// words (In re, Ex parte, ex rel., et al.) and GENERIC tokens dropped (United States, State,
+// People, Commonwealth, City, County, Board, Department, Co., Inc. ...). A state's name is
+// generic too, as a sovereign party, so "Arizona v. Gant" against "Arizona v. Fulminante" is
+// caught. The name is flagged only when NO distinctive token of the draft's name is in the
+// caption; a token matches on equality, as a prefix of 4+ letters (an unlisted abbreviation),
+// within one letter for 5+ letters (a spelling slip is not this finding), or as an acronym
+// against the other side's initials (FCC / Federal Communications Commission). A draft name
+// with no distinctive token is compared by its state names; with none of those either
+// ("United States v. United States"), it is not compared. First names, long party lists and
+// subtitles in a caption only add tokens, so they never cause a flag.
+// YEAR: the year at the end of the parenthetical right after the reporter cite (and any pincite
+// or parallel cite), against the year of the lookup's date. Flagged only when both exist and differ.
+const CM_GENERIC = new Set(('united states us usa america american state states people commonwealth city county town township village borough parish ' +
+  'municipality government federal national international the of and for in on at to a an by v vs re ex parte rel et al matter estate ' +
+  'company co corporation corp incorporated inc limited ltd llc llp lp plc na association associates board bd department dept commission ' +
+  'commissioner committee council district school sch college university univ institute authority agency office bureau service services division ' +
+  'administration administrator center hospital union local trustees trustee regents members petitioner petitioners respondent respondents ' +
+  'appellant appellants appellee appellees plaintiff plaintiffs defendant defendants director secretary general attorney warden sheriff ' +
+  'superintendent officer officers chief police court judge mayor governor president others another doe unknown').split(' '))
+// Bluebook T6 abbreviations whose short form is not a 4+-letter prefix of the word (those match
+// by the prefix rule). Keys are the abbreviation with dots and apostrophes removed, lowercased.
+const CM_ABBR = {
+  assn: 'association', assns: 'association', bd: 'board', bros: 'brothers', bhd: 'brotherhood', cmty: 'community', cnty: 'county',
+  co: 'company', commn: 'commission', commr: 'commissioner', comm: 'committee', corp: 'corporation', ctr: 'center', dept: 'department',
+  dist: 'district', educ: 'education', emps: 'employees', envtl: 'environmental', fedn: 'federation', fed: 'federal', govt: 'government',
+  intl: 'international', mfg: 'manufacturing', mgmt: 'management', mut: 'mutual', natl: 'national', prods: 'products', pub: 'public',
+  ry: 'railway', rr: 'railroad', sch: 'school', servs: 'services', socy: 'society', soc: 'society', sys: 'systems', tel: 'telephone',
+  transp: 'transportation', univ: 'university', admr: 'administrator', exr: 'executor', hosp: 'hospital', indus: 'industries', ins: 'insurance',
+  invs: 'investments', pship: 'partnership', sav: 'savings', twp: 'township', vill: 'village', comn: 'commission', mkt: 'market',
+}
+const CM_STATES = ['alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 'connecticut', 'delaware', 'florida', 'georgia', 'hawaii',
+  'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine', 'maryland', 'massachusetts', 'michigan', 'minnesota',
+  'mississippi', 'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey', 'new mexico', 'new york', 'north carolina',
+  'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania', 'rhode island', 'south carolina', 'south dakota', 'tennessee', 'texas', 'utah',
+  'vermont', 'virginia', 'washington', 'west virginia', 'wisconsin', 'wyoming', 'district of columbia', 'puerto rico', 'guam']
+const CM_STATE_ABBR = { ala: 'alabama', ariz: 'arizona', ark: 'arkansas', cal: 'california', calif: 'california', colo: 'colorado', conn: 'connecticut',
+  del: 'delaware', fla: 'florida', ga: 'georgia', haw: 'hawaii', ill: 'illinois', ind: 'indiana', kan: 'kansas', ky: 'kentucky', la: 'louisiana',
+  md: 'maryland', mass: 'massachusetts', mich: 'michigan', minn: 'minnesota', miss: 'mississippi', mo: 'missouri', mont: 'montana', neb: 'nebraska',
+  nev: 'nevada', nh: 'new hampshire', nj: 'new jersey', nm: 'new mexico', ny: 'new york', nc: 'north carolina', nd: 'north dakota', okla: 'oklahoma',
+  pa: 'pennsylvania', ri: 'rhode island', sc: 'south carolina', sd: 'south dakota', tenn: 'tennessee', tex: 'texas', vt: 'vermont', va: 'virginia',
+  wva: 'west virginia', wash: 'washington', wis: 'wisconsin', wyo: 'wyoming', dc: 'district of columbia' }
+// lowercase words that may sit inside a party name (everything else lowercase ends the name when
+// walking back from " v." — "the Court so held in Sherman v. ..." keeps only "Sherman")
+const CM_CONNECT = new Set(['of', 'the', 'and', 'for', 'ex', 'parte', 're', 'rel', 'rel.', 'de', 'la', 'du', 'del', 'der', 'van', 'von', 'et', 'al', 'al.', '&', 'on', 'behalf', 'a', 'an', 'to', 'v.', 'v'])
+const CM_INITIALS_SKIP = new Set(['of', 'the', 'and', 'for', 'a', 'an', 'on', 'to', 'in', 'v', 'vs', '&'])
+// Join dotted initials ("N.Y." -> NY, "W. Va." -> WVa, "U.S." -> US) and "AT&T" -> ATT before tokenizing.
+const cmJoin = (s) => (s || '').replace(/[’‘]/g, "'").replace(/\bW\.\s?Va\./g, 'WVa').replace(/\b([A-Z])\.\s?(?=[A-Z]\.)/g, '$1').replace(/\b([A-Z])\.(?=\s|,|$)/g, '$1')
+  .replace(/([A-Z])&([A-Z])/g, '$1$2')
+const cmWords = (s) => cmJoin(s).replace(/'/g, '').split(/[^A-Za-z0-9&]+/).filter(Boolean)
+const cmStem = (t) => (t.length > 4 && t.endsWith('s') ? t.slice(0, -1) : t)
+// A name -> { distinctive: [tokens], states: Set, acronyms: [..], initials: 'abc' } (caption the same way)
+function cmParty(name) {
+  const words = cmWords(name)
+  const allCaps = words.length && words.every((w) => !/[a-z]/.test(w))
+  let low = words.map((w) => w.toLowerCase())
+  const states = new Set()
+  // state names as phrases (two words first), then state abbreviations
+  const used = new Array(low.length).fill(false)
+  for (let i = 0; i < low.length; i++) {
+    for (const st of CM_STATES) {
+      const p = st.split(' ')
+      if (p.every((w, j) => low[i + j] === w) && p.every((_, j) => !used[i + j])) { states.add(st); p.forEach((_, j) => { used[i + j] = true }) }
+    }
+    if (!used[i] && CM_STATE_ABBR[low[i]] && /^[A-Z]/.test(words[i])) { states.add(CM_STATE_ABBR[low[i]]); used[i] = true }
+  }
+  const expanded = low.map((w) => CM_ABBR[w] || w)
+  const distinctive = []
+  for (let i = 0; i < expanded.length; i++) {
+    const w = expanded[i]
+    if (used[i] || w.length < 2 || /^\d+$/.test(w) || CM_GENERIC.has(w)) continue
+    distinctive.push(cmStem(w))
+  }
+  const acronyms = allCaps ? [] : words.filter((w) => /^[A-Z]{3,}$/.test(w) && !CM_GENERIC.has(w.toLowerCase())).map((w) => w.toLowerCase())
+  const initials = expanded.filter((w, i) => !CM_INITIALS_SKIP.has(w) && !/^\d+$/.test(w) && !(acronyms.includes(low[i]))).map((w) => w[0]).join('')
+  return { distinctive: [...new Set(distinctive)], states, acronyms, initials, all: expanded.map(cmStem) }
+}
+const cmClose = (a, b) => {
+  if (a === b) return true
+  if (a.length >= 4 && b.startsWith(a)) return true
+  if (b.length >= 4 && a.startsWith(b)) return true
+  if (a.length < 5 || b.length < 5 || Math.abs(a.length - b.length) > 1) return false
+  // edit distance <= 1
+  let i = 0, j = 0, edits = 0
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue }
+    if (++edits > 1) return false
+    if (a.length > b.length) i++
+    else if (b.length > a.length) j++
+    else { i++; j++ }
+  }
+  return edits + (a.length - i) + (b.length - j) <= 1
+}
+// Does the draft's name share a distinctive party with the caption? null = nothing to compare.
+function cmNameMatches(draftName, caption) {
+  const d = cmParty(draftName)
+  const c = cmParty(caption)
+  if (!c.all.length) return null
+  const acronymHit = d.acronyms.some((a) => c.initials.includes(a)) || c.acronyms.some((a) => d.initials.includes(a))
+  if (d.distinctive.length || d.acronyms.length) {
+    return acronymHit || d.distinctive.some((t) => c.all.some((u) => cmClose(t, u)))
+  }
+  if (d.states.size) return [...d.states].some((s) => c.states.has(s))
+  return null
+}
+// The draft's case name and year for one full case-citation instance, anchored on its reporter cite.
+const cmEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+function cmDraftParts(text, cite) {
+  const m = /^(\d+)\s+(.+?)\s+(\d+)$/.exec((cite || '').trim())
+  if (!m) return null
+  const rep = m[2].split('').map((ch) => (ch === '.' ? '\\.?' : ch === ' ' ? '\\s*' : cmEsc(ch))).join('')
+  const re = new RegExp(`\\b${m[1]}\\s+${rep}\\s+(?:\\([^)]*\\)\\s*)?${m[3]}\\b`, 'i')
+  const hit = re.exec(text || '')
+  if (!hit) return null
+  // NAME: the text before the cite, back to the start of its clause, minus a leading signal
+  let before = text.slice(0, hit.index).replace(/[\s,]+$/, '')
+  // a cite introduced by history words ("aff'd, 600 U.S. 1") is not attached to the name before it
+  const historyLed = /\b(aff'd|rev'd|vacated|cert\.|modified|overruled|abrogated|aff’d|rev’d)[^,;]*$/i.test(before) || /\b(aff'd|rev'd|vacated|aff’d|rev’d)\s*$/i.test(before)
+  before = before.split(/;\s*/).pop().replace(SIGNAL_LEAD, '').trim()
+  let name = ''
+  if (!historyLed && /[A-Za-z]/.test(before)) {
+    const words = before.split(/\s+/)
+    const vAt = words.findIndex((w) => /^v\.?$|^vs\.?$/i.test(w))
+    // walk back from the end of the first party (or of the whole name) while words are capitalized or connectors
+    const end = vAt >= 0 ? vAt : words.length
+    let start = end
+    while (start > 0) {
+      const w = words[start - 1]
+      if (/^[A-Z0-9&('"“]/.test(w) || CM_CONNECT.has(w.toLowerCase().replace(/[,]$/, '')) && /^[a-z&]/.test(w)) start--
+      else break
+    }
+    while (start < end && /^[a-z]/.test(words[start])) start++ // a party never starts with a connector
+    name = words.slice(start).join(' ').replace(/,$/, '')
+    if (!/[A-Z]/.test(name)) name = ''
+  }
+  // YEAR: the parenthetical right after the cite, past any pincite and parallel cites
+  let after = text.slice(hit.index + hit[0].length)
+  for (let k = 0; k < 6; k++) {
+    // a parallel cite first (", 93 S. Ct. 705"), else its volume would be read as a pincite
+    const par = /^,\s*\d+\s+(?:[A-Z][A-Za-z.']*\s*(?:\d[a-z]{1,2}\.?\s*)?)+\s*\d+/.exec(after)
+    if (par) { after = after.slice(par[0].length); continue }
+    const pin = /^,\s*(?:at\s+)?[\d–—-]+(?:\s*n\.\s*\d+)?(?=[,\s(])/.exec(after)
+    if (pin) { after = after.slice(pin[0].length); continue }
+    break
+  }
+  const pm = /^\s*\(([^()]*)\)/.exec(after)
+  const ym = pm ? /\b(1[5-9]\d\d|20\d\d)\s*$/.exec(pm[1].trim()) : null
+  return { name, year: ym && !historyLed ? ym[1] : '', find: (text || '').trim() }
+}
+const cmYearOf = (date) => { const m = /\b(1[5-9]\d\d|20\d\d)\b/.exec(date || ''); return m ? m[1] : '' }
+const CM_ROUTE = /name[- ]search|citing|citer|cites the|candidate/i
+const cmExist = new Map(existence.map((e) => [norm(e.citation), e]))
+const citeMeta = [] // one record per flagged full-citation instance
+for (const x of LEDGER) {
+  if (x.k !== 'case' || !x.case) continue
+  const e = cmExist.get(norm(x.case))
+  if (!e || e.exists !== true || e.basis !== 'courtlistener-api' || e.corrected || CM_ROUTE.test(e.note || '')) continue
+  const parts = cmDraftParts(x.c, x.case)
+  if (!parts) continue
+  const caption = (e.caseName || '').trim()
+  const year = cmYearOf(e.dateFiled)
+  // A popular name ("The Prize Cases", "Legal Tender Cases") is the Bluebook form for a group of
+  // decisions whose caption names one of them (The Brig Amy Warwick; Knox v. Lee): not compared.
+  const popular = /\bCases?\s*$/i.test(parts.name) && !/\sv\.?\s/.test(parts.name)
+  const nameOff = !!(parts.name && caption && !popular && cmNameMatches(parts.name, caption) === false)
+  const yearOff = !!(parts.year && year && parts.year !== year)
+  if (!nameOff && !yearOff) continue
+  citeMeta.push({ i: x.i, n: x.n, cite: x.case, find: parts.find, draftName: parts.name, draftYear: parts.year, caseName: caption, dateFiled: e.dateFiled || '', nameOff, yearOff })
+}
+const citeMetaByI = new Map(citeMeta.map((m) => [m.i, m]))
+const CM_SOURCE = "CourtListener's citation lookup"
+const citeMetaLine = (m) => `- n.${m.n} — draft: \`${m.find.slice(0, 200)}\`` +
+  (m.nameOff ? `\n    NAME: the draft names ${m.draftName}; ${CM_SOURCE} resolves ${m.cite} to ${m.caseName}${m.dateFiled ? ` (decided ${m.dateFiled})` : ''}. Either the case name or the reporter cite is wrong; check which against the reporter.` : '') +
+  (m.yearOff ? `\n    YEAR: the draft gives ${m.draftYear}; ${CM_SOURCE} gives a decision date of ${m.dateFiled} for ${m.cite}${m.caseName ? ` (${m.caseName})` : ''}. Either the year or the reporter cite is wrong; check which against the reporter.` : '')
+if (citeMeta.length) log(`Case name/year vs lookup: ${citeMeta.filter((m) => m.nameOff).length} name and ${citeMeta.filter((m) => m.yearOff).length} year difference(s) in ${citeMeta.length} full citation(s).`)
 
 // ===========================================================================
 // Collapse resolved quotes onto UNIQUE sources (lesson 1: fetch once)
@@ -1855,7 +2085,10 @@ for (const x of LEDGER) {
   const ran = x.k === 'case' ? casePassRan : secondaryPassRan
   let exists = null
   if (ex) exists = ex.exists === true ? true : (ex.exists === false && ex.basis !== 'unconfirmed' ? false : null)
-  if (vs.some((v) => FINDING_V.has(v)) || exists === false) x.d = 'finding'
+  // a full case cite whose name or year differs from what its reporter cite resolved to is a
+  // finding, not "existence-only" (2026-11-23): the cite exists, but maybe not as the draft says
+  const cm = citeMetaByI.get(x.i)
+  if (vs.some((v) => FINDING_V.has(v)) || exists === false || cm) x.d = 'finding'
   else if (sd === 'support-finding' || sd === 'support-confirm') x.d = sd
   else if (vs.some((v) => VERIFIED_V.has(v))) x.d = 'verified'
   else if (sd === 'supported') x.d = 'supported'
@@ -1865,6 +2098,7 @@ for (const x of LEDGER) {
   else if (ex) x.d = 'unverifiable'
   else x.d = 'unchecked'
   if (x.d === 'unchecked') x.why = ran ? 'not reached by any pass' : 'existence pass skipped (budget)'
+  if (cm) x.why = [cm.nameOff ? `case name differs from the lookup: ${cm.cite} resolves to ${cm.caseName}` : '', cm.yearOff ? `year differs from the lookup: ${cm.draftYear} in the draft, decided ${cm.dateFiled}` : ''].filter(Boolean).join('; ')
 }
 const ledgerCounts = {}
 for (const x of LEDGER) ledgerCounts[x.d] = (ledgerCounts[x.d] || 0) + 1
@@ -1996,6 +2230,7 @@ const historyTargets = HISTORY_ON ? historyCases.filter((c) => c.exists) : []
 for (let i = 0; i < historyTargets.length; i += HISTORY_BATCH) historyBatches.push(historyTargets.slice(i, i + HISTORY_BATCH))
 let historyResults = []
 let historyRan = false
+const historySynth = new Set() // cites the workflow marked not checked itself (already in `degradation`)
 // Advisory, so it runs last and launches only the batches that fit what is left after the report
 // reserve (gatedFanout); the batches it could not launch are disclosed case by case.
 if (historyBatches.length && !tight(RESERVE_REPORT + COST.history)) {
@@ -2010,6 +2245,7 @@ if (historyBatches.length && !tight(RESERVE_REPORT + COST.history)) {
   for (const o of outs.filter(Boolean)) historyResults.push(...(o.cases || []))
   const got = new Set(historyResults.map((h) => norm(h.cite)))
   const missed = historyTargets.filter((c) => !got.has(norm(c.cite)))
+  for (const c of missed) historySynth.add(norm(c.cite))
   for (const c of missed) historyResults.push({ cite: c.cite, status: 'skipped', coverage: droppedCites.has(norm(c.cite)) ? 'not launched (budget: history runs last, after the quote and support passes)' : 'no result returned (agent failure)', confidence: 'low' })
   if (droppedCites.size) degradation.push(`subsequent-history / treatment pass: ${droppedCites.size} case cite(s) not launched (budget; history runs last) — listed as not checked`)
   if (missed.length > droppedCites.size) degradation.push(`${missed.length - droppedCites.size} case cite(s) got no subsequent-history result (agent failure) — listed as not checked`)
@@ -2151,6 +2387,11 @@ const counts = {
   casesChecked: existence.length,
   casesUnconfirmed: existBad.length,
   reporterTypos: existFixed.length,
+  // full case citations whose name or year differs from what the reporter cite resolved to
+  // (2026-11-23); counted per citation instance, and kept apart from pincite/metadata issues
+  caseCiteMismatches: citeMeta.length,
+  caseNameMismatch: citeMeta.filter((m) => m.nameOff).length,
+  caseYearMismatch: citeMeta.filter((m) => m.yearOff).length,
   supraBreaks: SUPRA_PROBLEMS.length,
   formShortForm: formAll.filter((f) => f.kind === 'short-form').length,
   formTypeface: formAll.filter((f) => f.kind === 'typeface').length,
@@ -2189,6 +2430,50 @@ const counts = {
     treatmentFlags: treatmentFlags.length,
     notChecked: historyUnchecked.length,
   },
+}
+
+// ---- every limit says what it was (2026-11-23) ---------------------------------------------
+// The exit state used to turn complete_with_limits on counts alone (unverifiable quotes,
+// unconfirmed cases, unchecked instances, history not checked ...) without adding anything to
+// `degradation`. A live run ended complete_with_limits with an empty list; the cause was one
+// history lookup that got HTTP 429 twice. Each count now adds a plain sentence with the count and,
+// where the run knows it, the cause, unless a line already pushed above covers the same items.
+// Invariant (tested): exitState is complete_with_limits exactly when `degradation` is non-empty.
+const listCites = (xs, n = 5) => xs.slice(0, n).join('; ') + (xs.length > n ? `; and ${xs.length - n} more` : '')
+if (counts.unverifiable) degradation.push(`${counts.unverifiable} quotation(s) could not be verified against a fetched source (unverifiable) — listed in section I with what would unlock each`)
+if (existBad.length) degradation.push(`${existBad.length} case cite(s) could not be confirmed to exist from CourtListener or the open web (${listCites(existBad.map((e) => e.citation))}) — listed as unconfirmed`)
+if (secUnconfirmed.length) degradation.push(`${secUnconfirmed.length} secondary source(s) could not be located in the free sources checked — listed as unconfirmed in section I`)
+{
+  // unchecked ledger instances not already explained by a skipped pass or a missing result above
+  const existMissingSet = new Set(existMissing.map(norm))
+  const secMissingSet = new Set(secMissing.map((s) => s.key))
+  const explained = (x) => (x.k === 'case'
+    ? !casePassRan || (x.case && existMissingSet.has(norm(x.case)))
+    : !secondaryPassRan || secMissingSet.has(x.key))
+  const rest = LEDGER.filter((x) => x.d === 'unchecked' && !explained(x))
+  if (rest.length) degradation.push(`${rest.length} citation instance(s) were not reached by any pass (no case cite or source key the existence pass could check) — listed as UNCHECKED in section J`)
+}
+{
+  // history entries the agents themselves marked not checked; the workflow's own "skipped"
+  // entries (budget, dead agent) are already in `degradation`
+  const own = historyUnchecked.filter((h) => !historySynth.has(norm(h.cite)))
+  const why = (h) => `${h.cite}${(h.note || h.coverage) ? ': ' + String(h.note || h.coverage).slice(0, 120) : ''}`
+  const errs = own.filter((h) => h.status === 'tool-error')
+  const unres = own.filter((h) => h.status === 'not-resolved')
+  const other = own.filter((h) => h.status !== 'tool-error' && h.status !== 'not-resolved')
+  if (errs.length) degradation.push(`subsequent-history / treatment: ${errs.length} case cite(s) not checked because the CourtListener tool returned an error (${listCites(errs.map(why), 3)}) — re-run later or check on Westlaw / KeyCite`)
+  if (unres.length) degradation.push(`subsequent-history / treatment: ${unres.length} case cite(s) not checked because the history tools could not resolve the cite (${listCites(unres.map((h) => h.cite))})`)
+  if (other.length) degradation.push(`subsequent-history / treatment: ${other.length} case cite(s) not checked (${listCites(other.map(why), 3)})`)
+}
+{
+  // support units an agent judged unverifiable on its own (rejected results are already counted above)
+  const ownUnverifiable = supportFindings.filter((f) => f.verdict === 'unverifiable' && !f.rejected).length
+  if (ownUnverifiable) degradation.push(`support: ${ownUnverifiable} unit(s) could not be read at the pincite (unverifiable) — listed in section I`)
+  if (!supportRan && supportNoVerdict.length) degradation.push(`support: ${supportNoVerdict.length} unit(s) in scope were not read (no support agent ran for them) — listed as NOT CHECKED`)
+}
+// Safety net: a count that sets the limit with no sentence above would break the invariant.
+if (!degradation.length && (counts.unverifiable || existBad.length || ledgerCounts.unchecked || secUnconfirmed.length || historyUnchecked.length || counts.support.unverifiable || counts.support.notChecked)) {
+  degradation.push('some items could not be checked this run (see sections I and J)')
 }
 
 // Three-state Zotero wording for section I (2026-11-12: the report told the author to attach PDFs
@@ -2260,7 +2545,10 @@ substantive; this reader is sophisticated. Do NOT invent anything — use only t
 
 REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sections):
 - Title + TL;DR: ${UNIT_IDS ? `"partial pass — footnotes ${partialRange(partialNotes)} of ${FOOTNOTE_COUNT}"` : `"${FOOTNOTE_COUNT} footnotes swept"`} and the counts (verbatim / marked-alteration /
-  mismatch / unverifiable; case cites checked; broken supras; pincite/metadata issues; missing
+  mismatch / unverifiable; case cites checked; case cites whose name or year does not match the
+  reporter cite (counts.caseCiteMismatches — its own figure: never fold it into "pincite/metadata
+  issues", and never write that case cites were confirmed with no issues while it is non-zero);
+  broken supras; pincite/metadata issues; missing
   subsequent history and treatment flags). The TL;DR MUST also carry one plain sentence with the
   ledger figure for citations that were confirmed to exist but NOT read for whether they support
   the proposition ("N of M citation instances are existence-only"), so the reader sees the
@@ -2274,6 +2562,12 @@ REPORT STRUCTURE (adapt section letters as the findings warrant; omit empty sect
   that would embarrass in print.
 - **B. Verbatim slips (smaller)** — real but minor (a dropped word, a spelling, an unmarked comma).
 - **C. Broken supra references** — from the deterministic supra check below (a renumbering artifact).
+- **Case name or year does not match the reporter cite** — its own section, under exactly that
+  heading, right after C (keep the letters of the other sections). From the CASE NAME / YEAR
+  block below: one item per line given there, keeping the draft's citation text as the find-string
+  and stating what the draft says, what CourtListener's citation lookup returned (case name, date)
+  and that either the name/year or the reporter cite may be the wrong part. Do NOT say which part
+  is wrong and do NOT supply the "right" cite from memory.
 - **D. Wrong pincites & citation typos** — reporter typos, impossible pincites, off-by-some pincites.
 - **E. Article/book metadata discrepancies** — wrong volume/year/journal/author/title. Two
   sub-lists: "Errors (fix)" holds ONLY discrepancies an agent (existence or verify) evidenced
@@ -2369,8 +2663,11 @@ ${metaFindingsSoft.map((m) => `- ${m}`).join('\n') || '(none)'}
 ${supraReport || '(none)'}
 
 === CASE EXISTENCE ===
-- ${counts.casesChecked} case cites checked; ${counts.casesUnconfirmed} unconfirmed; reporter typos: ${existFixed.map((e) => `${e.citation} -> ${e.corrected}`).join('; ') || 'none'}.
+- ${counts.casesChecked} case cites checked; ${counts.casesUnconfirmed} unconfirmed; reporter typos: ${existFixed.map((e) => `${e.citation} -> ${e.corrected}`).join('; ') || 'none'}; ${counts.caseCiteMismatches} full citation(s) whose case name or year does not match what the reporter cite resolves to (next block).
 ${existBad.map((e) => `- UNCONFIRMED: ${e.citation} — ${e.note || ''}`).join('\n')}
+
+=== CASE NAME / YEAR DOES NOT MATCH THE REPORTER CITE (own section, after C) — deterministic comparison with ${CM_SOURCE} ===
+${citeMeta.map(citeMetaLine).join('\n') || '(none)'}
 
 === URL FINDINGS (section F) ===
 ${urlFindings.map((u) => `- ${u}`).join('\n') || '(none)'}
@@ -2451,13 +2748,15 @@ ${JSON.stringify(formAll, null, 1)}
 === CITATION-FORM CONVENTIONS (document-wide; a short table in the same section) ===
 ${JSON.stringify(formConventions, null, 1)}
 
+=== RUN LIMITS (for the method note's coverage limits: one plain line each, in this run's words; these are limits of the check, not findings) ===
+${degradation.map((d) => `- ${d}`).join('\n') || '(none)'}
+
 Return ONLY the finished report in Markdown via the report field.`,
   { schema: REPORT_SCHEMA, phase: 'Report', effort: 'high' }
 ))
 
-const exitState = degradation.length
-  ? 'complete_with_limits'
-  : (counts.unverifiable || existBad.length || ledgerCounts.unchecked || secUnconfirmed.length || historyUnchecked.length || counts.support.unverifiable || counts.support.notChecked ? 'complete_with_limits' : 'complete')
+// Every limit has its sentence in `degradation` (see "every limit says what it was" above).
+const exitState = degradation.length ? 'complete_with_limits' : 'complete'
 
 // Structured findings for `scripts/findings_diff.py` (2026-10-19): a re-run after edits leads
 // with what is new / still open / resolved. Identity is by content, never by footnote number.
@@ -2470,6 +2769,13 @@ const findingItems = [
   ...secMeta.map((m) => ({ kind: 'metadata', label: m.slice(0, 200) })),
   ...SUPRA_PROBLEMS.map((s) => ({ kind: 'supra', footnote: s.footnote, claims: s.claims, supraNote: s.supra_note, label: `"${s.claims}, supra note ${s.supra_note}" — target does not name ${s.claims}` })),
   ...existBad.map((e) => ({ kind: 'existence', cite: e.citation, label: `unconfirmed: ${e.citation}` })),
+  // one item per differing field, so fixing the year alone resolves the year item (findings_diff keys on field + cite + draft value)
+  ...citeMeta.flatMap((m) => [
+    ...(m.nameOff ? [{ kind: 'case-metadata', field: 'name', verdict: 'name-mismatch', footnote: m.n, cite: m.cite, find: m.find, draft: m.draftName, resolved: m.caseName, resolvedDate: m.dateFiled, source: CM_SOURCE,
+      label: `case name: the draft names ${m.draftName} at ${m.cite}; ${CM_SOURCE} gives ${m.caseName}${m.dateFiled ? ' (' + m.dateFiled + ')' : ''} — the name or the reporter cite is wrong`.slice(0, 200) }] : []),
+    ...(m.yearOff ? [{ kind: 'case-metadata', field: 'year', verdict: 'year-mismatch', footnote: m.n, cite: m.cite, find: m.find, draft: m.draftYear, resolved: m.caseName, resolvedDate: m.dateFiled, source: CM_SOURCE,
+      label: `year: the draft gives ${m.draftYear} for ${m.cite}; ${CM_SOURCE} gives ${m.dateFiled}${m.caseName ? ' (' + m.caseName + ')' : ''} — the year or the reporter cite is wrong`.slice(0, 200) }] : []),
+  ]),
   ...secBad.map((s) => ({ kind: 'secondary', source: s.key, label: `not found: ${s.key} ${s.note || ''}`.slice(0, 200) })),
   ...formAll.map((f) => ({ kind: 'form', location: f.location, find: f.find, problem: f.problem, label: `${f.problem} — "${(f.find || '').slice(0, 80)}"` })),
   ...historyFindings.map((h) => ({ kind: 'history', cite: h.cite, label: h.historyFinding.slice(0, 200) })),

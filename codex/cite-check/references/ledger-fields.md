@@ -91,6 +91,113 @@ misquotations do not qualify.
 For `metadata_error` corrections, follow the protocol's `metadata_record` rules.
 Supply the record's direct location, not a search-results page.
 
+## Case identity screens
+
+New runs set manifest `case_identity_version: 1` and require
+`case-identity-checks.jsonl` at readiness, with exactly one row per external case
+unit (an empty file when there are no cases). Older runs without the flag remain
+readable; any screen ledger present is still checked. Do not remove a flag or
+ledger to bypass a mismatch. The initializer leaves the file for the screening
+helper to create; `--output` refuses an existing path.
+
+Before screening, add these fields to each case citation unit:
+
+```json
+{"unit_id": "U1", "source_id": "S1", "source_type": "case",
+ "lookup_citation": "356 U.S. 396",
+ "draft_case_name": "Sherman v. United States", "draft_year": "1958"}
+```
+
+This is a synthetic input example from the handoff, not a verified source record.
+Keep all ordinary unit fields too. `lookup_citation` identifies one reporter cite;
+for a resolved short form it may be the antecedent's reporter citation, but the
+caption/year must be what this unit's draft context actually supplies. Do not
+inherit an antecedent's year as a printed year. `draft_case_name` must occur in
+`full_footnote` when `caption_in_draft: footnote`, or in `body_context` and the
+extraction when `body`; use null with `caption_in_draft: none`. `draft_year` is a
+four-digit string/integer occurring in `draft_citation_text`, or null when absent.
+The lead checks that it is the decision year, not another parenthetical's date.
+
+Run `check_cite.py --units-file RUN_DIR/citation-units.jsonl --output
+RUN_DIR/case-identity-checks.jsonl`. Each request contains one unit's reporter
+cite; input association never depends on API offsets or batch result order.
+Non-case units are ignored. For an individual lookup use `--name` and `--year`;
+plain `--input-file` text batches do not infer either field. Link individual rows
+to their `unit_id`, `source_id`, and `lookup_citation` before ledger use.
+
+Each output row retains existing lookup fields and adds `identity_comparison`:
+
+- `caption`: `draft`, `resolved`, `result`, and `shared_words` (exact normalized
+  overlap) when comparable. Nonexact agreement adds `word_agreements`, a list of
+  `{draft, resolved, rule}` objects with `rule: prefix` or `one_edit`. Prefix
+  agreement requires at least four letters in the shorter word; one-edit
+  agreement requires both words to have at least five letters and permits one
+  insertion, deletion or substitution, not transposition.
+- `year`: `draft`, `resolved` (the four-digit lookup year), `date_filed`, `result`.
+
+Results are `match`, `mismatch`, `not_supplied`, `resolved_unavailable`, or
+caption-only `indeterminate`. Only an unambiguous match is compared. Caption
+agreement means agreeing distinctive words, not identity proof; `shared_words`
+may be empty when `word_agreements` explains a nonexact match. Sovereign names
+and their Bluebook abbreviations are excluded when other distinctive words
+remain in that caption; otherwise `shared_words` uses canonical whole sovereign
+names (for example `new york`, never separate `new` and `york` tokens).
+The gate recomputes
+comparisons against the unit inputs and rejects stale/edited results. It cannot
+prove that a supplied API response or declared source inspection is authentic.
+
+Each mismatch needs a separate verdict entry in `identity_resolutions.caption`
+or `.year`, using this shape (proposed field example):
+
+```json
+{"identity_resolutions": {"caption": {
+  "disposition": "finding", "category": "identity_error",
+  "evidence_opened": true, "evidence_location": "cached record, first page",
+  "evidence": "Describe the actual inspected identity evidence.",
+  "reason": "Explain the discrepancy and the action supported by that evidence."
+}}}
+```
+
+Use `finding` with `identity_error` for a caption and `metadata_error` for a year;
+the final verdict must be adverse (`mismatch`, `partial`, or `unverified`) in one
+of those categories. Both resolutions may share one verdict, preserving both
+categories in the resolution objects and findings snapshot. A caption finding
+requires `identity_confirmed: false`. A year finding with status `mismatch`
+requires the existing `metadata_record` even when the main category is
+`identity_error`. Other evidence, draft-find, unlock-path and audit gates apply.
+
+Alternatively use `disposition: not_error` with the same opened-evidence fields
+and a specific reason; this can accompany a verified verdict. No bare waiver,
+lookup hit, or inferred abbreviation explanation clears a mismatch. Keep the
+screen unchanged and place the clearance and its reason in the full ledger,
+outside the report's findings sections. For each mismatch include this exact
+line with actual values and `finding` or `not_error`:
+
+```text
+Case identity U1 caption: draft=<printed caption>; lookup=<resolved caption>; resolution=finding. Either the name or the reporter citation may be wrong.
+Case identity U1 year: draft=<printed year>; lookup=<resolved year>; resolution=finding.
+```
+
+The final caption sentence is required only for `finding`; for `not_error` omit
+it and also include the resolution's exact reason. `identity_validation.disclosure`
+generates these lines. Add ordinary evidence locations and corrective actions.
+
+If screening cannot be performed (for example no token, or an unresolved short
+form), record `unit_id`, `source_id`, `lookup_state: not_screened`, `reason`, and
+`unlock_path`; never substitute this for an existing mismatch. Include:
+
+```text
+Case identity U1: not_screened; <reason>; <unlock_path>
+```
+
+A verified unscreened unit also needs `identity_evidence` with
+`evidence_opened: true`, `evidence_location`, `evidence`, and `reason`, explaining
+direct inspection of caption, reporter and year. Otherwise keep the verdict
+partial/unverified under the ordinary limits rules. API failure does not bar
+verification from an opened primary record. Preserve original screen outputs
+on retries; reconcile active ledger rows by editing and resolve all prior
+mismatches explicitly. Source bundles include their case screen rows.
+
 ## Quotations, pins, and audits
 
 Generate `quote-checks.jsonl` with `verify_quotes.py`. Its required link fields
