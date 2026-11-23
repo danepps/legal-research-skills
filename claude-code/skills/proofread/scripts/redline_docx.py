@@ -6,6 +6,7 @@ and ZIP member payloads retain their original bytes. Staging hard links are
 retained deliberately: this tool never unlinks or permanently deletes a file.
 """
 import argparse
+import copy
 import dataclasses
 import datetime
 import errno
@@ -261,8 +262,243 @@ def append_children(data, children):
     return patches(data, [(root.closing, root.closing, children)])
 
 
+ZOTERO_NOTICE = ("Also changed in the Zotero citation's stored data. Rejecting this change in Word "
+                 "does not undo it: a Zotero refresh will show the new text.")
+LIBRARY_REASON = ('This text comes from the Zotero library item or the citation style '
+                  'and must be changed in Zotero.')
+
+
+def trimmed_change(old, new):
+    a = 0
+    while a < min(len(old), len(new)) and old[a] == new[a]:
+        a += 1
+    tail = 0
+    while tail < min(len(old), len(new)) - a and old[-1-tail] == new[-1-tail]:
+        tail += 1
+    return a, len(old) - tail, new[a:len(new)-tail if tail else len(new)]
+
+
+def json_source(code):
+    """Parse one field object and locate string values without serializing it."""
+    def pairs(entries):
+        result = {}
+        for key, value in entries:
+            if key in result:
+                raise ValueError('Duplicate JSON key')
+            result[key] = value
+        return result
+
+    def invalid_constant(value):
+        raise ValueError('Nonstandard JSON constant: ' + value)
+
+    decoder = json.JSONDecoder(object_pairs_hook=pairs, parse_constant=invalid_constant)
+    header = re.match(r'\s*ADDIN\s+ZOTERO_(ITEM\s+CSL_CITATION|BIBL)\s+', code)
+    if not header:
+        raise ValueError('Unrecognized Zotero field instruction')
+    start = header.end()
+    value, end = decoder.raw_decode(code, start)
+    trailer = code[end:].strip()
+    if not isinstance(value, dict) or trailer not in ('', 'CSL_BIBLIOGRAPHY') or ('ITEM' in header[1] and trailer):
+        raise ValueError('Expected one Zotero JSON object')
+    literals = {}
+
+    def skip(at):
+        while code[at].isspace():
+            at += 1
+        return at
+
+    def walk(at, path):
+        at = skip(at)
+        if code[at] == '{':
+            at = skip(at + 1)
+            while code[at] != '}':
+                key, at = decoder.raw_decode(code, at)
+                at = walk(skip(at) + 1, path + (key,))  # colon
+                at = skip(at)
+                if code[at] != ',':
+                    break
+                at = skip(at + 1)
+            return at + 1
+        if code[at] == '[':
+            at = skip(at + 1); index = 0
+            while code[at] != ']':
+                at = skip(walk(at, path + (index,))); index += 1
+                if code[at] != ',':
+                    break
+                at = skip(at + 1)
+            return at + 1
+        item, stop = decoder.raw_decode(code, at)
+        if isinstance(item, str):
+            literals[path] = (at, stop)
+        return stop
+
+    walk(start, ())
+    return value, literals
+
+
+@dataclasses.dataclass(eq=False)
+class Field:
+    start: int
+    end: int
+    nodes: list = dataclasses.field(default_factory=list)
+    separate: object = None
+    finish: object = None
+    simple: object = None
+    nested: bool = False
+
+    @property
+    def code(self):
+        return self.simple.attrs.get(w('instr'), '') if self.simple else ''.join(n.text for n in self.nodes)
+
+    @property
+    def zotero(self):
+        return 'ZOTERO' in self.code.upper()
+
+    def raw(self, data):
+        # Compare node boundaries as well as their exact payloads.
+        return [data[self.simple.start:self.simple.opening]] if self.simple else [data[n.start:n.end] for n in self.nodes]
+
+    def atoms(self, root, numbers, new_ids=frozenset()):
+        if self.separate is None or self.finish is None:
+            return []
+        return [a for a in text_view(root, numbers, new_ids) if a.node is not None
+                and self.separate.end <= a.node.start and a.node.end <= self.finish.start]
+
+
+def field_inventory(document):
+    result = {}
+    for part, root in document.roots.items():
+        stack, fields = [], []
+        for node in root.walk():
+            if node.tag == w('fldSimple'):
+                fields.append(Field(node.start, node.end, simple=node))
+            elif node.tag == w('fldChar'):
+                kind = node.attrs.get(w('fldCharType'))
+                if kind == 'begin':
+                    for parent in stack:
+                        parent.nested = True
+                    field = Field(node.start, len(document.parts[part]), nested=bool(stack))
+                    fields.append(field); stack.append(field)
+                elif kind == 'separate' and stack:
+                    if stack[-1].separate is not None:
+                        stack[-1].nested = True  # malformed structure is never editable
+                    stack[-1].separate = node
+                elif kind == 'end' and stack:
+                    field = stack.pop(); field.end = node.end; field.finish = node
+            elif node.tag == w('instrText') and stack:
+                stack[-1].nodes.append(node)
+        result[part] = sorted(fields, key=lambda f: f.start)
+    return result
+
+
+def xml_char_spans(field, data):
+    """Map decoded instruction characters to original XML bytes, across runs."""
+    spans, text = [], []
+    entities = {'amp': '&', 'lt': '<', 'gt': '>', 'quot': '"', 'apos': "'"}
+    for node in field.nodes:
+        raw = data[node.opening:node.closing].decode('utf-8')
+        i, offset = 0, node.opening
+        while i < len(raw):
+            end = i + 1; char = raw[i]
+            if char == '<':
+                raise ValueError('The Zotero instruction contains XML markup inside its text.')
+            if char == '&':
+                end = raw.index(';', i) + 1; entity = raw[i+1:end-1]
+                char = (chr(int(entity[2:], 16)) if entity.startswith('#x') else
+                        chr(int(entity[1:])) if entity.startswith('#') else entities[entity])
+            elif char == '\r':
+                end += int(raw[i:i+2] == '\r\n'); char = '\n'
+            stop = offset + len(raw[i:end].encode('utf-8'))
+            spans.append((node, offset, stop)); text.append(char)
+            offset = stop; i = end
+    if ''.join(text) != field.code:
+        raise ValueError('The Zotero instruction cannot be mapped to its original XML bytes.')
+    return spans
+
+
+def json_char_spans(code, literal):
+    """Map a JSON string's Unicode characters to its original lexical spelling."""
+    start, stop = literal
+    spans = []; at = start + 1
+    while at < stop - 1:
+        end = at + 1
+        if code[at] == '\\':
+            end = at + (6 if code[at+1] == 'u' else 2)
+            if (code[at+1] == 'u' and 0xD800 <= int(code[at+2:end], 16) <= 0xDBFF
+                    and code[end:end+2] == '\\u' and 0xDC00 <= int(code[end+2:end+6], 16) <= 0xDFFF):
+                end += 6
+        spans.append((at, end)); at = end
+    return spans
+
+
+def value_at(value, path):
+    for key in path:
+        value = value[key]
+    return value
+
+
+def literal_patch(field, data, literals, path, a, b, replacement):
+    """Patch only changed characters inside a literal; retain all other bytes."""
+    code = field.code; literal = literals[path]
+    chars = json_char_spans(code, literal); xml = xml_char_spans(field, data)
+    lo = chars[a][0] if a < len(chars) else literal[1] - 1
+    hi = chars[b-1][1] if b > a else lo
+    # Match the literal's JSON escape style and the instruction's XML entities.
+    spelling = code[literal[0]:literal[1]]
+    encoded = json.dumps(replacement, ensure_ascii='\\u' in spelling)[1:-1]
+    if '\\/' in spelling:
+        encoded = encoded.replace('/', '\\/')
+    raw = b''.join(data[n.opening:n.closing] for n in field.nodes)
+    styles = {}
+    for entity in re.finditer(br'&(?:amp|lt|gt|quot|apos|#\d+|#x[0-9A-Fa-f]+);', raw):
+        token = entity[0].decode('ascii')
+        decoded = parse(('<t>' + token + '</t>').encode()).text
+        styles.setdefault(decoded, token)
+    escaped = ''.join(styles.get(ch, escape(ch)) for ch in encoded).encode('utf-8')
+    if lo == hi:
+        return [(xml[lo][1], xml[lo][1], escaped)]
+    groups = []
+    for node, start, end in xml[lo:hi]:
+        if groups and groups[-1][0] is node and groups[-1][2] == start:
+            groups[-1][2] = end
+        else:
+            groups.append([node, start, end])
+    return [(start, end, escaped if i == 0 else b'') for i, (_, start, end) in enumerate(groups)]
+
+
+def rtf_plain_positions(text):
+    """Literal ASCII positions only; control words, escapes and fallbacks are not text."""
+    plain = set(); at = 0; uc = 1; stack = []; fallback = 0
+    while at < len(text):
+        char = text[at]
+        if char in '{}':
+            if char == '{':
+                stack.append(uc)
+            elif stack:
+                uc = stack.pop()
+            at += 1
+        elif char == '\\':
+            match = re.match(r"\\(?:([A-Za-z]+)(-?\d+)? ?|'[0-9A-Fa-f]{2}|.)", text[at:])
+            if not match:
+                break
+            if fallback:
+                fallback -= 1
+            elif match[1] == 'uc' and match[2] is not None:
+                uc = max(0, int(match[2]))
+            elif match[1] == 'u':
+                fallback = uc
+            at += len(match[0])
+        else:
+            if fallback:
+                fallback -= 1
+            elif 32 <= ord(char) < 127:
+                plain.add(at)
+            at += 1
+    return plain
+
+
 class Writer:
-    def __init__(self, document, author, date):
+    def __init__(self, document, author, date, zotero_fields='edit'):
         self.doc = document; self.author = author; self.date = date
         self.prefix = 'dubitante'
         while any(('xmlns:' + self.prefix).encode() in data for data in document.parts.values()):
@@ -275,23 +511,9 @@ class Writer:
         self.claimed = []
         self.note_comments = {}  # footnote id -> index of the one comment that speaks for it
         self.around = {}  # run -> (XML placed before it, XML placed after it); the run itself is not split
-        self.fields = {}
-        for part, root in document.roots.items():
-            stack, intervals = [], []
-            for n in root.walk():
-                if n.tag == w('fldSimple'):
-                    intervals.append((n.start, n.end, 'ZOTERO' in n.attrs.get(w('instr'), '').upper()))
-                if n.tag == w('fldChar'):
-                    kind = n.attrs.get(w('fldCharType'))
-                    if kind == 'begin':
-                        stack.append([n.start, False])
-                    elif kind == 'end' and stack:
-                        a, zotero = stack.pop(); intervals.append((a, n.end, zotero))
-                if n.tag == w('instrText') and 'ZOTERO' in n.text.upper():
-                    for entry in stack:
-                        entry[1] = True
-            intervals.extend((a, len(document.parts[part]), z) for a, z in stack)
-            self.fields[part] = intervals
+        self.fields = field_inventory(document)
+        self.zotero_fields = zotero_fields
+        self.field_changes = {}
 
     def ident(self, revision=False):
         value = str(self.next_id); self.next_id += 1
@@ -327,12 +549,113 @@ class Writer:
             node = node.parent
         return next(part for part, root in self.doc.roots.items() if root is node)
 
+    def zotero_change(self, part, touched, selected, changed, insertion, replacement):
+        """Return a deferred, three-literal plan; never mutate on a failed check."""
+        if len(touched) != 1:
+            raise ValueError('The span must lie inside the displayed result of exactly one Zotero citation field.')
+        field = touched[0]
+        if 'ZOTERO_BIBL' in field.code.upper():
+            raise ValueError('This is a Zotero bibliography field, not an individual citation.')
+        if (field.simple is not None or field.nested or field.separate is None or field.finish is None
+                or any(c.node is None or not (field.separate.end <= c.node.start and c.node.end <= field.finish.start)
+                       for c in selected)):
+            raise ValueError('The span is not wholly inside one complete, unnested Zotero citation result.')
+        try:
+            value, literals = json_source(field.code)
+        except ValueError as error:
+            raise ValueError('The Zotero field JSON cannot be parsed safely: ' + str(error)) from error
+        props = value.get('properties')
+        if not isinstance(props, dict) or not isinstance(value.get('citationItems'), list):
+            raise ValueError('The Zotero field has no usable properties or citation items.')
+        if props.get('dontUpdate') is True:
+            raise ValueError('Zotero has marked this citation not to update (dontUpdate is true).')
+        shown = field.atoms(self.doc.roots[part], self.doc.numbers)
+        positions = {(a.node, a.offset): i for i, a in enumerate(shown)}
+        display = ''.join(a.char for a in shown)
+        if changed:
+            a = positions.get((changed[0].node, changed[0].offset))
+            last = positions.get((changed[-1].node, changed[-1].offset))
+            b = None if last is None else last + 1
+        else:
+            anchor, offset = insertion
+            a = positions.get((anchor.node, anchor.offset))
+            a = None if a is None else a + offset - anchor.offset
+            b = a
+        if a is None or b is None:
+            raise ValueError('The changed characters cannot be located inside the Zotero result.')
+        candidates = []; ambiguous = False; markup = False
+        for index, item in enumerate(value['citationItems']):
+            if not isinstance(item, dict):
+                raise ValueError('The Zotero citation items are not objects.')
+            for name in ('prefix', 'suffix', 'locator'):
+                component = item.get(name)
+                if not isinstance(component, str) or not component:
+                    continue
+                markup |= any(c in component for c in '<{\\')
+                places = list(occurrences(display, component))
+                if name == 'locator':
+                    places = [i for i in places if
+                              (i == 0 or not (display[i-1].isalnum() or display[i-1] == '_')) and
+                              (i + len(component) == len(display) or not
+                               (display[i+len(component)].isalnum() or display[i+len(component)] == '_'))]
+                covering = [i for i in places if i <= a <= b <= i + len(component)]
+                if covering and len(places) != 1:
+                    ambiguous = True
+                if covering and len(places) == 1:
+                    candidates.append((index, name, component, covering[0]))
+        if ambiguous or len(candidates) > 1:
+            raise ValueError('The changed text does not identify exactly one prefix, suffix or whole-token locator; a component occurs more than once or overlaps another.')
+        if not candidates:
+            raise ValueError(LIBRARY_REASON + ' No stored prefix, suffix or whole-token locator matches this span verbatim.' +
+                             (' Stored components contain markup that cannot be mapped safely.' if markup else ''))
+        index, name, component, start = candidates[0]
+        ca, cb = a - start, b - start
+        if any(c in component[max(0, ca-1):cb+1] for c in '<>{}\\'):
+            raise ValueError('The stored citation component has markup within or next to the changed characters.')
+        if any(ord(c) < 32 or ord(c) >= 127 or c in '<>{}\\' for c in replacement):
+            raise ValueError('The replacement cannot be written safely as plain ASCII in the formatted Zotero citation.')
+        plain, formatted = props.get('plainCitation'), props.get('formattedCitation')
+        if not isinstance(plain, str) or plain != display:
+            raise ValueError('The stored plainCitation does not exactly match the displayed citation at corresponding positions.')
+        if not isinstance(formatted, str) or not component.isascii():
+            raise ValueError('The affected component is not available as plain ASCII in formattedCitation.')
+        locations = list(occurrences(formatted, component))
+        if len(locations) != 1:
+            raise ValueError('The affected component must occur exactly once as plain ASCII in formattedCitation; formatting or RTF escapes prevent a certain match.')
+        fa = locations[0]
+        if not set(range(fa, fa + len(component))) <= rtf_plain_positions(formatted):
+            raise ValueError('The affected component overlaps an RTF control sequence or escape in formattedCitation.')
+        plan = [(('citationItems', index, name), ca, cb, replacement),
+                (('properties', 'plainCitation'), a, b, replacement),
+                (('properties', 'formattedCitation'), fa + ca, fa + cb, replacement)]
+        for path, lo, hi, text in plan:
+            if value_at(value, path)[lo:hi] != display[a:b]:
+                raise ValueError('The old changed text does not match the stored citation at corresponding positions.')
+            for previous, pa, pb, _ in self.field_changes.get(field, []):
+                overlap = (lo < pb and pa < hi) or (lo == hi and pa <= lo <= pb) or (pa == pb and lo <= pa <= hi)
+                if path == previous and overlap:
+                    raise ValueError('Another correction already touches these stored citation characters.')
+            literal_patch(field, self.doc.parts[part], literals, path, lo, hi, text)
+        if any(n.ancestor(w('r')) is c.node.ancestor(w('r')) for n in field.nodes for c in selected if c.node):
+            raise ValueError('The Zotero instruction shares a Word run with the displayed text.')
+        return field, plan
+
     def place(self, edit):
         # The deterministic lint reports an excerpt with an ellipsis at either end
         # ("…concerns the the relationship…"). The words between are verbatim, so
         # anchor a comment on them; an excerpt is never applied as a change.
-        find = edit['find'].strip().strip('\u2026').strip()
-        excerpt = find != edit['find']
+        core = edit['find'].strip()
+        find = core.strip('\u2026').strip()
+        excerpt = find != core
+        if edit['kind'] == 'change' and not excerpt and core != edit['find']:
+            # A find string padded with spaces is still exact text when the replacement
+            # carries the same padding; drop it from both. Otherwise treat it as an excerpt.
+            raw, new = edit['find'], edit['replacement']
+            lead, trail = raw[:len(raw) - len(raw.lstrip())], raw[len(raw.rstrip()):]
+            if new.startswith(lead) and new.endswith(trail) and len(new) >= len(lead) + len(trail):
+                edit = dict(edit, replacement=new[len(lead):len(new) - len(trail)])
+            else:
+                excerpt = True
         if not find:
             return dict(id=edit['id'], status='unplaced', reason='No matching span')
         candidates = [self.doc.locations[edit['location']]] if edit['location'] in self.doc.locations else self.doc.search
@@ -367,15 +690,36 @@ class Writer:
                 return dict(id=edit['id'], status='commented_instead', reason='Another finding is already anchored at this place.')
         if any(c.node and (c.node.ancestor(w('r')) is None or c.node.parent is not c.node.ancestor(w('r'))) for c in selected):
             return dict(id=edit['id'], status='unplaced', reason='Unsupported nested text structure')
-        reason = None
+        reason = None; field_plan = None
         if edit['kind'] == 'change':
+            touched = [f for f in self.fields[part] if first.node.start < f.end and f.start < last.node.end]
+            prefix, end, replacement = trimmed_change(find, edit['replacement'])
+            ca, cb = at + prefix, at + end
+            changed = atoms[spans[ca][0]:spans[cb-1][1]] if ca < cb else []
+            insertion = None
+            if ca == cb:
+                if ca == at + len(find) and any(f.zotero for f in touched):
+                    # Stay in the citation's last selected run, not the next
+                    # run (which may be outside the field). Other text retains
+                    # the original writer's insertion and formatting behavior.
+                    anchor = atoms[b-1]; offset = anchor.offset + 1
+                else:
+                    boundary = spans[ca][0] if ca < len(spans) else b
+                    anchor = atoms[boundary] if boundary < len(atoms) else atoms[-1]
+                    offset = anchor.offset if boundary < len(atoms) else anchor.offset + 1
+                insertion = (anchor, offset)
             if excerpt:
                 reason = 'The find text is an excerpt, not the exact text to replace.'
-            for start, end, zotero in self.fields[part] if reason is None else ():
-                if first.node.start < end and start < last.node.end:
-                    reason = ('The citation is generated by Zotero and must be changed there.' if zotero else 'The span touches a Word field; change the field at its source.')
-                    if zotero:
-                        break
+            if reason is None and touched:
+                if not any(f.zotero for f in touched):
+                    reason = 'The span touches a Word field; change the field at its source.'
+                elif self.zotero_fields == 'comment':
+                    reason = 'The citation is generated by Zotero and must be changed there.'
+                else:
+                    try:
+                        field_plan = self.zotero_change(part, touched, selected, changed, insertion, replacement)
+                    except ValueError as error:
+                        reason = str(error)
             if reason is None and any(c.node and c.node.tag == w('footnoteReference') for c in selected):
                 reason = 'The span touches a footnote reference mark.'
             if reason is None and any(n.tag in (w('del'), w('moveFrom')) and first.node.start < n.end and n.start < last.node.end for n in self.doc.roots[part].walk()):
@@ -387,6 +731,8 @@ class Writer:
         note = edit['note']
         if reason:
             note += '\nProposed replacement: ' + edit['replacement'] + '\nNot applied: ' + reason
+        elif field_plan:
+            note += '\n' + ZOTERO_NOTICE
         if part == 'word/footnotes.xml':
             # Word has no comments inside footnotes and drops any it finds there when it
             # opens the file. A footnote finding's comment hangs on the footnote's reference
@@ -395,7 +741,7 @@ class Writer:
             ident = note_node.attrs.get(w('id')) if note_node is not None else None
             ref = self.doc.note_refs.get(ident)
             if ref is None or ref.parent is None or ref.parent.tag != w('r'):
-                if status != 'applied':
+                if status != 'applied' or field_plan:
                     return dict(id=edit['id'], status='unplaced', reason='The footnote has no reference mark in the text to carry a comment.')
                 index = None
             else:
@@ -422,23 +768,14 @@ class Writer:
                        self.element('r', self.element('commentReference', attrs={'id': cid})))
         self.claimed.append((part, lo, hi, index))
         if status == 'applied':
+            if field_plan:
+                field, plan = field_plan
+                self.field_changes.setdefault(field, []).extend(plan)
             self.requests.setdefault(unit, []).append((at, at + len(find), edit['replacement']))
-            old, new = find, edit['replacement']
-            prefix = 0
-            while prefix < min(len(old), len(new)) and old[prefix] == new[prefix]:
-                prefix += 1
-            suffix = 0
-            while suffix < min(len(old), len(new)) - prefix and old[-1-suffix] == new[-1-suffix]:
-                suffix += 1
-            ca, cb = at + prefix, at + len(old) - suffix
-            replacement = new[prefix:len(new)-suffix if suffix else len(new)]
             if ca == cb:
-                boundary = spans[ca][0] if ca < len(spans) else b
-                anchor = atoms[boundary] if boundary < len(atoms) else atoms[-1]
-                offset = anchor.offset if boundary < len(atoms) else anchor.offset + 1
+                anchor, offset = insertion
                 self.replacements.setdefault(anchor.node, []).append((offset, offset, replacement))
             else:
-                changed = atoms[spans[ca][0]:spans[cb-1][1]]
                 groups = []
                 for atom in changed:
                     if not groups or groups[-1][0] is not atom.node:
@@ -452,6 +789,8 @@ class Writer:
                     inserted, replacement = replacement[:count], replacement[count:]
                     self.replacements.setdefault(node, []).append((s, e, inserted))
         result = dict(id=edit['id'], status=status)
+        if status == 'applied' and field_plan:
+            result['field'] = 'zotero'
         if reason:
             result['reason'] = reason
         return result
@@ -475,6 +814,12 @@ class Writer:
         result = dict(self.doc.parts)
         runs = {node.ancestor(w('r')) for node in set(self.events) | set(self.replacements)} | set(self.around)
         edits = {}
+        for part, fields in self.fields.items():
+            for field in fields:
+                if field in self.field_changes:
+                    _, literals = json_source(field.code)
+                    for path, a, b, replacement in self.field_changes[field]:
+                        edits.setdefault(part, []).extend(literal_patch(field, result[part], literals, path, a, b, replacement))
         for run in sorted(runs, key=lambda n: (self.part_for(n), n.start)):
             part = self.part_for(run); data = self.doc.parts[part]
             fragments = []
@@ -574,6 +919,52 @@ def verify(staged, original, writer):
                 expected = expected[:a] + replacement + expected[b:]
             if re.sub(r'\s+', ' ', expected).strip() != cleaned(text_view(after, document.numbers, writer.new_ids, True))[0]:
                 raise ValueError('Verification failed: requested substitution differs at %r' % (key,))
+    verify_fields(document, original, writer)
+
+
+def verify_fields(document, original, writer):
+    inventory = field_inventory(document)
+    for part in set(inventory) | set(writer.fields):
+        old_fields, new_fields = writer.fields.get(part, []), inventory.get(part, [])
+        if len(old_fields) != len(new_fields):
+            raise ValueError('Verification failed: Word field structure changed')
+        for before, after in zip(old_fields, new_fields):
+            if not (before.zotero or after.zotero):
+                continue
+            plan = writer.field_changes.get(before)
+            if not plan:
+                # An unedited field must be untouched, whatever is in it. A draft with a
+                # damaged citation field still gets its redline: that field was only ever
+                # commented on, and its bytes are checked here, not its JSON.
+                if before.raw(original.parts[part]) != after.raw(document.parts[part]):
+                    raise ValueError('Verification failed: unedited Zotero instruction bytes changed')
+                continue
+            try:
+                old_json, literals = json_source(before.code)
+                new_json, _ = json_source(after.code)
+            except ValueError as error:
+                raise ValueError('Verification failed: Zotero field JSON does not parse: ' + str(error)) from error
+            expected = copy.deepcopy(old_json)
+            for path in {entry[0] for entry in plan}:
+                text = value_at(old_json, path)
+                for _, a, b, replacement in sorted((e for e in plan if e[0] == path), key=lambda e: e[1], reverse=True):
+                    text = text[:a] + replacement + text[b:]
+                value_at(expected, path[:-1])[path[-1]] = text
+            # Compare JSON types too (Python considers True == 1). Serialization
+            # here is only a comparison; it is never written into a field.
+            if json.dumps(new_json, sort_keys=True) != json.dumps(expected, sort_keys=True):
+                raise ValueError('Verification failed: Zotero JSON differs from the intended three-string changes')
+            changes = []
+            for path, a, b, replacement in plan:
+                changes.extend(literal_patch(before, original.parts[part], literals, path, a, b, replacement))
+            expected_bytes = [patches(original.parts[part][n.start:n.end],
+                                      [(a-n.start, b-n.start, r) for a, b, r in changes if n.start <= a <= b <= n.end])
+                              for n in before.nodes]
+            if after.raw(document.parts[part]) != expected_bytes:
+                raise ValueError('Verification failed: Zotero instruction bytes changed outside the intended literals')
+            accepted = ''.join(a.char for a in after.atoms(document.roots[part], document.numbers, writer.new_ids))
+            if re.sub(r'\s+', ' ', new_json['properties']['plainCitation']).strip() != re.sub(r'\s+', ' ', accepted).strip():
+                raise ValueError('Verification failed: Zotero plainCitation differs from its accepted displayed text')
 
 
 def validate_edits(edits):
@@ -618,7 +1009,7 @@ def edits_from_findings(findings):
     return edits
 
 
-def generate(draft, edits, output, result, author, date, fault_hook=None, staging_dir=None):
+def generate(draft, edits, output, result, author, date, fault_hook=None, staging_dir=None, zotero_fields='edit'):
     """fault_hook is in-process tests only, never a command-line option."""
     output, result = Path(output), Path(result)
     if os.path.lexists(output):
@@ -630,12 +1021,14 @@ def generate(draft, edits, output, result, author, date, fault_hook=None, stagin
     with result.open('x', encoding='utf-8') as result_file:
         try:
             validate_edits(edits)
+            if zotero_fields not in ('edit', 'comment'):
+                raise ValueError('zotero_fields must be edit or comment')
             stamp = datetime.datetime.fromisoformat(date.replace('Z', '+00:00'))
             if stamp.tzinfo is None:
                 raise ValueError('Date must include a time zone')
             if not author:
                 raise ValueError('Author is required')
-            totals = dict(applied=0, commented=0, commented_instead=0, unplaced=0)
+            totals = dict(applied=0, commented=0, commented_instead=0, unplaced=0, applied_in_zotero_fields=0)
             if not edits:
                 answer = dict(status='no_edits', reason='No confirmed findings to redline', edits=[], totals=totals)
                 json.dump(answer, result_file, ensure_ascii=False, indent=2)
@@ -646,7 +1039,7 @@ def generate(draft, edits, output, result, author, date, fault_hook=None, stagin
                     raise ValueError('Duplicate ZIP members')
                 parts = {i.filename: archive.read(i) for i in infos}
                 archive_comment = archive.comment
-            document = Document(parts); writer = Writer(document, author, date)
+            document = Document(parts); writer = Writer(document, author, date, zotero_fields)
             # Changes claim their spans first, so a comment on the same words never
             # displaces a correction; results are reported in the order given.
             placed = {}
@@ -675,6 +1068,8 @@ def generate(draft, edits, output, result, author, date, fault_hook=None, stagin
             verify(stage, document, writer)
             for entry in outcomes:
                 totals[entry['status']] += 1
+                if entry.get('field') == 'zotero':
+                    totals['applied_in_zotero_fields'] += 1
             digest = hashlib.sha256(stage.read_bytes()).hexdigest()
             answer = dict(status='written', edits=outcomes, totals=totals, sha256=digest)
             json.dump(answer, result_file, ensure_ascii=False, indent=2)
@@ -700,12 +1095,14 @@ def main():
     mode.add_argument('--edits')
     mode.add_argument('--findings')
     parser.add_argument('--staging-dir')
+    parser.add_argument('--zotero-fields', choices=('edit', 'comment'), default='edit')
     args = parser.parse_args()
     try:
         with open(args.edits or args.findings, encoding='utf-8') as source:
             values = json.load(source)
         edits = edits_from_findings(values) if args.findings else values
-        generate(args.draft, edits, args.output, args.result, args.author, args.date, staging_dir=args.staging_dir)
+        generate(args.draft, edits, args.output, args.result, args.author, args.date,
+                 staging_dir=args.staging_dir, zotero_fields=args.zotero_fields)
         return 0
     except Exception as error:
         print('Redline not made: ' + str(error), file=sys.stderr)

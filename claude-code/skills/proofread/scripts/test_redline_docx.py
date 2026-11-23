@@ -28,6 +28,30 @@ def paragraph(contents):
     return '<w:p>' + contents + '</w:p>'
 
 
+def citation(display, items=None, formatted=None):
+    """Invented data; the real-draft samples are never test fixtures."""
+    return dict(citationID='synthetic', properties=dict(plainCitation=display,
+                formattedCitation=display if formatted is None else formatted, noteIndex=7),
+                citationItems=items if items is not None else [dict(id=1, itemData=dict(
+                    title='A Synthetic Title', author=[dict(family='Example')], note='Leçon — café 😀'))])
+
+
+def zotero(value, display=None, code=None, splits=(), entities=False, result_runs=None):
+    if code is None:
+        code = ' ADDIN ZOTERO_ITEM CSL_CITATION ' + json.dumps(value, ensure_ascii=False, separators=(',', ':')) + ' '
+    if display is None:
+        display = value['properties']['plainCitation']
+    chunks = [code[a:b] for a, b in zip((0,) + tuple(splits), tuple(splits) + (len(code),))]
+    def xml(text):
+        escaped = redline.escape(text)
+        return escaped.replace('"', '&quot;').replace("'", '&#x27;') if entities else escaped
+    return ('<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+            ''.join('<w:r><w:instrText xml:space="preserve">' + xml(s) + '</w:instrText></w:r>' for s in chunks) +
+            '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+            (run(display) if result_runs is None else result_runs) +
+            '<w:r><w:fldChar w:fldCharType="end"/></w:r>')
+
+
 class RedlineTests(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix='redline-tests-'))
@@ -52,12 +76,12 @@ class RedlineTests(unittest.TestCase):
     def edit(self, find, replacement='', location='¶0', kind='change', ident='one'):
         return dict(id=ident, location=location, find=find, kind=kind, replacement=replacement, note='Problem. Proposed fix.')
 
-    def generate(self, draft, edits, fault=None):
+    def generate(self, draft, edits, fault=None, **options):
         number = len(list(self.root.glob('result-*')))
         output = self.root / ('output-%d.docx' % number)
         result = self.root / ('result-%d.json' % number)
         before = draft.read_bytes()
-        answer = redline.generate(draft, edits, output, result, 'Dubitante test', DATE, fault)
+        answer = redline.generate(draft, edits, output, result, 'Dubitante test', DATE, fault, **options)
         self.assertEqual(draft.read_bytes(), before)
         self.assertEqual(json.loads(result.read_text()), answer)
         if output.exists():
@@ -136,7 +160,9 @@ class RedlineTests(unittest.TestCase):
         self.assertEqual(len(self.xml(output, 'word/comments.xml').findall('{%s}comment' % W)), 1)
 
     def test_zotero_field_is_only_commented(self):
-        field = '<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> ADDIN ZOTERO_ITEM synthetic </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>' + run('123 U.S. 456') + '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+        # A real JSON object is now required by the output verifier. The volume
+        # still comes from the item/style and the original assertions still hold.
+        field = zotero(citation('123 U.S. 456'))
         draft = self.draft(paragraph(field))
         output, answer = self.generate(draft, [self.edit('123 U.S. 456', '124 U.S. 456')])
         self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
@@ -224,7 +250,7 @@ class RedlineTests(unittest.TestCase):
                  self.edit('note 9 is', 'note 2 is', ident='four')]
         output, answer = self.generate(draft, edits)
         self.assertEqual([e['status'] for e in answer['edits']], ['commented', 'applied', 'commented', 'commented_instead'])
-        self.assertEqual(answer['totals'], dict(applied=1, commented=2, commented_instead=1, unplaced=0))
+        self.assertEqual(answer['totals'], dict(applied=1, commented=2, commented_instead=1, unplaced=0, applied_in_zotero_fields=0))
         body = self.xml(output)
         self.assertEqual(''.join(t.text for t in body.findall('.//{%s}ins//{%s}t' % (W, W))), '1')
         comments = self.xml(output, 'word/comments.xml').findall('{%s}comment' % W)
@@ -234,6 +260,13 @@ class RedlineTests(unittest.TestCase):
         self.assertEqual(len(comments), 2)
         self.assertTrue(any('Also at this place' in x and 'Proposed replacement: note 2 is' in x for x in text))
         self.assertTrue(all(len(c.findall('{%s}p' % W)) >= 1 for c in comments))
+
+    def test_find_padded_with_spaces_is_exact_when_the_replacement_keeps_the_padding(self):
+        draft = self.draft(paragraph(run('See the eror here and the othr one.')))
+        edits = [self.edit(' eror ', ' error '), self.edit(' othr ', 'other', ident='two')]
+        output, answer = self.generate(draft, edits)
+        self.assertEqual([e['status'] for e in answer['edits']], ['applied', 'commented_instead'])
+        self.assertEqual(''.join(t.text for t in self.xml(output).findall('.//{%s}ins//{%s}t' % (W, W))), 'r')
 
     def test_verifier_rejects_wrong_application_before_final_output(self):
         draft = self.draft(paragraph(run('bad text')))
@@ -308,6 +341,307 @@ class RedlineTests(unittest.TestCase):
             with self.assertRaises(redline.expat.ExpatError):
                 redline.generate(draft, [self.edit('bad', 'good')], output, self.root / ('invalid-%d.json' % index), 'Test', DATE, corrupt)
             self.assertFalse(output.exists())
+
+    def field_code(self, output, part='word/document.xml'):
+        return ''.join(n.text or '' for n in self.xml(output, part).iter('{%s}instrText' % W))
+
+    def field_json(self, output, part='word/document.xml'):
+        code = self.field_code(output, part)
+        return json.loads(code[code.index('{'):])
+
+    def assert_field_edit(self, output, answer, original, component, expected, item=0, part='word/document.xml'):
+        self.assertEqual(answer['edits'][0], dict(id='one', status='applied', field='zotero'))
+        self.assertEqual(answer['totals']['applied_in_zotero_fields'], 1)
+        self.assertEqual(sum(answer['totals'][k] for k in ('applied', 'commented', 'commented_instead', 'unplaced')), len(answer['edits']))
+        changed = self.field_json(output, part)
+        self.assertEqual(changed['citationItems'][item][component], expected)
+        for index, entry in enumerate(original['citationItems']):
+            self.assertEqual(changed['citationItems'][index].get('itemData'), entry.get('itemData'))
+        self.assertTrue(list(self.xml(output, part).iter('{%s}ins' % W)))
+        comments = self.xml(output, 'word/comments.xml')
+        paragraphs = [''.join(t.text or '' for t in p.iter('{%s}t' % W)) for p in comments.iter('{%s}p' % W)]
+        self.assertIn(redline.ZOTERO_NOTICE, paragraphs)
+        self.assertTrue(any('Problem. Proposed fix.' in p for p in paragraphs))
+        # No field code is placed in a revision wrapper.
+        for revision in list(self.xml(output, part).iter('{%s}ins' % W)) + list(self.xml(output, part).iter('{%s}del' % W)):
+            self.assertFalse(list(revision.iter('{%s}instrText' % W)))
+
+    def test_zotero_suffix_and_two_items(self):
+        for items in ([dict(suffix='(discussing teh rule)', itemData=dict(title='Keep me'))],
+                      [dict(itemData=dict(title='First')), dict(suffix='(discussing teh rule)', itemData=dict(title='Second'))]):
+            with self.subTest(items=len(items)):
+                shown = 'Alpha, First; Beta, Second (discussing teh rule)'
+                value = citation(shown, items, r'{\scaps Alpha}, First; {\i{}Beta}, Second (discussing teh rule)')
+                draft = self.draft(paragraph(zotero(value)))
+                output, answer = self.generate(draft, [self.edit(shown, shown.replace('teh', 'the'))])
+                self.assert_field_edit(output, answer, value, 'suffix', '(discussing the rule)', len(items)-1)
+                self.assertEqual(self.field_json(output)['properties']['plainCitation'], shown.replace('teh', 'the'))
+
+    def test_zotero_prefix_signal(self):
+        value = citation('Seee Author, Title', [dict(prefix='Seee ', itemData=dict(title='Title'))], r'{\i{}Seee }Author, Title')
+        output, answer = self.generate(self.draft(paragraph(zotero(value))), [self.edit('Seee Author', 'See Author')])
+        # This correction is a deletion, so inspect the deleted run separately.
+        self.assertEqual(answer['edits'][0].get('field'), 'zotero')
+        self.assertEqual(self.field_json(output)['citationItems'][0]['prefix'], 'See ')
+        self.assertEqual(self.field_json(output)['properties']['formattedCitation'], r'{\i{}See }Author, Title')
+        self.assertTrue(list(self.xml(output).iter('{%s}del' % W)))
+
+    def test_zotero_locator_whole_token_and_boundary_insertion(self):
+        for replacement in ('47', '461'):
+            value = citation('Author, 145 Reporter 46', [dict(locator='46', label='page')], r'{\scaps Author}, 145 Reporter 46')
+            output, answer = self.generate(self.draft(paragraph(zotero(value) + run(' outside'))),
+                                           [self.edit('Reporter 46', 'Reporter ' + replacement)])
+            self.assert_field_edit(output, answer, value, 'locator', replacement)
+
+    def test_zotero_locator_substring_is_not_a_whole_token(self):
+        for shown in ('Author 146', 'Author 146 Reporter 46'):
+            value = citation(shown, [dict(locator='46')])
+            _, answer = self.generate(self.draft(paragraph(zotero(value))), [self.edit(shown, shown[:-1] + '7')])
+            self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+            # In the first case nothing matches as a whole token. In the second,
+            # the plain view is unambiguous but the formatted string has two
+            # literal occurrences, so its stricter check declines the edit.
+            self.assertIn('whole-token' if shown == 'Author 146' else 'formattedCitation', answer['edits'][0]['reason'])
+
+    def test_zotero_library_author_title_and_style_are_comments(self):
+        value = citation('Author, Title, 5 Reporter 46 (2000)', [dict(locator='46', itemData=dict(title='Title', author=[dict(family='Author')]))])
+        for find, replacement in (('Author', 'Writer'), ('Title', 'Book'), ('5 Reporter', '6 Reporter'), ('(2000)', '(2001)'), ('Title,', 'Title;')):
+            output, answer = self.generate(self.draft(paragraph(zotero(value))), [self.edit(find, replacement)])
+            self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+            self.assertIn(redline.LIBRARY_REASON, answer['edits'][0]['reason'])
+            self.assertEqual(self.field_json(output), value)
+
+    def test_zotero_duplicate_locator_and_multiple_components_are_comments(self):
+        cases = [('46 Reporter 46', [dict(locator='46')], 'Reporter 46', 'Reporter 47'),
+                 ('Author 46', [dict(locator='46'), dict(locator='46')], '46', '47'),
+                 ('Author (teh)', [dict(suffix='(teh)'), dict(suffix='(teh)')], 'teh', 'the')]
+        for shown, items, find, replacement in cases:
+            value = citation(shown, items)
+            output, answer = self.generate(self.draft(paragraph(zotero(value))), [self.edit(find, replacement)])
+            self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+            self.assertIn('exactly one', answer['edits'][0]['reason'])
+            self.assertEqual(self.field_json(output), value)
+
+    def test_zotero_markup_transformed_quotes_and_rtf_escapes_are_comments(self):
+        cases = [('<i>teh</i>', 'teh', 'the', 'markup'),
+                 ('{teh}', 'teh', 'the', 'markup'),
+                 ('(“teh”)', 'teh', 'the', 'ASCII'),
+                 ('(teh)', 'teh', 'the', 'RTF')]
+        for suffix, find, replacement, reason in cases:
+            shown = 'Author ' + suffix
+            formatted = shown.replace('teh', r't\uc0\u101{}h') if reason == 'RTF' else shown
+            value = citation(shown, [dict(suffix=suffix)], formatted)
+            output, answer = self.generate(self.draft(paragraph(zotero(value))), [self.edit(find, replacement)])
+            self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+            self.assertIn(reason, answer['edits'][0]['reason'])
+            self.assertEqual(self.field_json(output), value)
+        # CSL renders stored HTML and quotes differently; do not infer a mapping.
+        for stored, shown in (('<i>teh</i>', 'teh'), ('("teh")', '(“teh”)')):
+            value = citation('Author ' + shown, [dict(suffix=stored)])
+            _, answer = self.generate(self.draft(paragraph(zotero(value))), [self.edit('teh', 'the')])
+            self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+
+    def test_zotero_rtf_control_digits_are_not_locator_text(self):
+        value = citation('Author 46', [dict(locator='46')], r'Author \u46{}')
+        _, answer = self.generate(self.draft(paragraph(zotero(value))), [self.edit('46', '47')])
+        self.assertIn('RTF control', answer['edits'][0]['reason'])
+
+    def test_zotero_split_instructions_and_unicode_bytes_are_preserved(self):
+        value = citation('Author (teh rule) — café 😀', [dict(suffix='(teh rule)', itemData=dict(title='Leçon — café 😀', note='unchanged'))])
+        code = ' ADDIN ZOTERO_ITEM CSL_CITATION ' + json.dumps(value, ensure_ascii=False, indent=2) + ' '
+        for split in (code.index('ZOTERO') + 3, code.index('teh') + 2, code.rindex('teh') + 2):
+            draft = self.draft(paragraph(zotero(value, code=code, splits=(split,))))
+            output, answer = self.generate(draft, [self.edit('teh', 'the')])
+            self.assert_field_edit(output, answer, value, 'suffix', '(the rule)')
+            self.assertEqual(self.field_code(output).encode(), code.replace('teh', 'the').encode())
+            self.assertEqual(len(list(self.xml(output).iter('{%s}instrText' % W))), 2)
+
+    def test_zotero_json_and_xml_escaping_preserve_original_spellings(self):
+        value = citation('Author (a & b "teh" / rule)', [dict(suffix='(a & b "teh" / rule)', itemData=dict(title='Café 😀'))])
+        code = ' ADDIN ZOTERO_ITEM CSL_CITATION ' + json.dumps(value, ensure_ascii=True, indent=1).replace('/', r'\/').replace('teh', r't\u0065h')
+        draft = self.draft(paragraph(zotero(value, code=code, entities=True)))
+        output, answer = self.generate(draft, [self.edit('teh', 'the & "right" /')])
+        self.assert_field_edit(output, answer, value, 'suffix', '(a & b "the & "right" /" / rule)')
+        with zipfile.ZipFile(output) as z:
+            data = z.read('word/document.xml')
+        self.assertIn(b'Caf\\u00e9 \\ud83d\\ude00', data)
+        self.assertIn(b'&amp; \\&quot;right\\&quot; \\/', data)
+        # The untouched slash escape, indentation and XML quote entities survive.
+        self.assertIn(b'\\/ rule)&quot;', data)
+
+    def test_zotero_split_json_escapes_and_styled_result_runs(self):
+        value = citation('Café 😀 (teh)', [dict(suffix='(teh)')])
+        code = ' ADDIN ZOTERO_ITEM CSL_CITATION ' + json.dumps(value, ensure_ascii=True).replace('teh', r't\u0065h')
+        splits = [m + 3 for m in redline.occurrences(code, r'\u0065')] + [code.index(r'\ud83d') + 8]
+        result_runs = run('Café 😀 (t') + run('e', '<w:rPr><w:i/></w:rPr>') + run('h)', '<w:rPr><w:b/></w:rPr>')
+        for split in splits:
+            draft = self.draft(paragraph(zotero(value, code=code, splits=(split,), result_runs=result_runs, entities=True)))
+            output, answer = self.generate(draft, [self.edit('teh', 'the')])
+            self.assert_field_edit(output, answer, value, 'suffix', '(the)')
+            self.assertEqual(self.field_code(output), code.replace(r't\u0065h', 'the'))
+            insertions = list(self.xml(output).iter('{%s}ins' % W))
+            self.assertEqual([next(n.iter('{%s}t' % W)).text for n in insertions], ['h', 'e'])
+            self.assertIsNotNone(insertions[0].find('.//{%s}i' % W))
+            self.assertIsNotNone(insertions[1].find('.//{%s}b' % W))
+
+    def test_zotero_later_safety_check_cancels_the_stored_patch(self):
+        value = citation('Author (teh)', [dict(suffix='(teh)')])
+        result_runs = run('Author (te') + '<w:del w:id="91"><w:r><w:delText>old</w:delText></w:r></w:del>' + run('h)')
+        draft = self.draft(paragraph(zotero(value, result_runs=result_runs)))
+        output, answer = self.generate(draft, [self.edit('teh', 'the')])
+        self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+        self.assertIn('existing tracked deletion', answer['edits'][0]['reason'])
+        self.assertEqual(self.field_code(output), self.field_code(draft))
+        self.assertEqual(answer['totals']['applied_in_zotero_fields'], 0)
+
+    def test_zotero_cdata_instruction_is_conservatively_commented(self):
+        value = citation('Author (teh)', [dict(suffix='(teh)')])
+        field = zotero(value).replace('<w:instrText xml:space="preserve">', '<w:instrText xml:space="preserve"><![CDATA[').replace('</w:instrText>', ']]></w:instrText>')
+        draft = self.draft(paragraph(field))
+        output, answer = self.generate(draft, [self.edit('teh', 'the')])
+        self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+        self.assertIn('XML markup', answer['edits'][0]['reason'])
+        self.assertEqual(self.field_code(output), self.field_code(draft))
+
+    def test_zotero_dont_update_plain_mismatch_and_unsafe_replacement(self):
+        for case in ('frozen', 'plain', 'new_unicode', 'new_markup', 'formatted_duplicate'):
+            value = citation('Author (teh)', [dict(suffix='(teh)')])
+            replacement = 'the'
+            if case == 'frozen':
+                value['properties']['dontUpdate'] = True
+            elif case == 'plain':
+                value['properties']['plainCitation'] = 'Other (teh)'
+            elif case == 'new_unicode':
+                replacement = 'thé'
+            elif case == 'new_markup':
+                replacement = '{the}'
+            else:
+                value['properties']['formattedCitation'] += ' (teh)'
+            output, answer = self.generate(self.draft(paragraph(zotero(value, display='Author (teh)'))), [self.edit('teh', replacement)])
+            self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+            self.assertEqual(self.field_json(output), value)
+
+    def test_zotero_multiple_nonoverlapping_edits_in_one_field(self):
+        value = citation('Seee Author (teh rule) at 46', [dict(prefix='Seee ', suffix='(teh rule)', locator='46')])
+        edits = [self.edit('Seee', 'See'), self.edit('teh', 'the', ident='two'), self.edit('46', '47', ident='three')]
+        output, answer = self.generate(self.draft(paragraph(zotero(value))), edits)
+        self.assertEqual(answer['totals']['applied'], 3)
+        self.assertEqual(answer['totals']['applied_in_zotero_fields'], 3)
+        self.assertEqual(self.field_json(output)['properties']['plainCitation'], 'See Author (the rule) at 47')
+
+    def test_zotero_adjacent_edits_in_the_same_component(self):
+        value = citation('Author (abcd)', [dict(suffix='(abcd)')])
+        output, answer = self.generate(self.draft(paragraph(zotero(value))), [self.edit('ab', 'AB'), self.edit('cd', 'CD', ident='two')])
+        self.assertEqual(answer['totals']['applied_in_zotero_fields'], 2)
+        changed = self.field_json(output)
+        self.assertEqual(changed['citationItems'][0]['suffix'], '(ABCD)')
+        self.assertEqual(changed['properties']['plainCitation'], 'Author (ABCD)')
+
+    def test_zotero_comment_option_preserves_legacy_reason_and_code(self):
+        value = citation('Author (teh)', [dict(suffix='(teh)')])
+        draft = self.draft(paragraph(zotero(value)))
+        output, answer = self.generate(draft, [self.edit('teh', 'the')], zotero_fields='comment')
+        self.assertEqual(answer['edits'][0], dict(id='one', status='commented_instead', reason='The citation is generated by Zotero and must be changed there.'))
+        self.assertEqual(self.field_code(output), self.field_code(draft))
+        self.assertFalse(list(self.xml(output).iter('{%s}ins' % W)))
+        edits = self.root / 'cli-edits.json'
+        with edits.open('x') as f:
+            json.dump([self.edit('teh', 'the')], f)
+        result, cli_output = self.root / 'cli-result.json', self.root / 'cli-output.docx'
+        args = [sys.executable, '-I', '-B', str(TOOL), '--draft', str(draft), '--edits', str(edits),
+                '--output', str(cli_output), '--result', str(result), '--author', 'Test', '--date', DATE, '--zotero-fields', 'comment']
+        completed = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(result.read_text())['edits'], answer['edits'])
+        self.assertEqual(self.field_code(cli_output), self.field_code(draft))
+
+    def test_zotero_unedited_field_bytes_unchanged(self):
+        value = citation('Author (teh)', [dict(suffix='(teh)')])
+        untouched = zotero(citation('Unedited — café'), entities=True, splits=(20,))
+        draft = self.draft(paragraph(zotero(value) + run('; ') + untouched))
+        output, answer = self.generate(draft, [self.edit('teh', 'the')])
+        self.assertEqual(answer['totals']['applied'], 1)
+        with zipfile.ZipFile(output) as z:
+            self.assertIn(untouched.encode(), z.read('word/document.xml'))
+
+    def test_zotero_field_footnote_comment_is_on_body_reference(self):
+        value = citation('Author (teh)', [dict(suffix='(teh)')])
+        body = paragraph(run('Body') + '<w:r><w:footnoteReference w:id="9"/></w:r>')
+        notes = '<w:footnote w:id="9">' + paragraph('<w:r><w:footnoteRef/></w:r>' + zotero(value)) + '</w:footnote>'
+        output, answer = self.generate(self.draft(body, notes), [self.edit('teh', 'the', 'n.1')])
+        self.assert_field_edit(output, answer, value, 'suffix', '(the)', part='word/footnotes.xml')
+        with zipfile.ZipFile(output) as z:
+            self.assertNotIn(b'comment', z.read('word/footnotes.xml'))
+        p = self.xml(output).find('.//{%s}p' % W)
+        tags = [n.tag for n in p]
+        anchor = tags.index('{%s}commentRangeStart' % W)
+        self.assertIsNotNone(p[anchor+1].find('{%s}footnoteReference' % W))
+        self.assertEqual(tags[anchor+2], '{%s}commentRangeEnd' % W)
+
+    def test_zotero_orphan_footnote_cannot_omit_the_stored_data_warning(self):
+        value = citation('Orphan (teh)', [dict(suffix='(teh)')])
+        notes = '<w:footnote w:id="9">' + paragraph(zotero(value)) + '</w:footnote>'
+        draft = self.draft(paragraph(run('Body')), notes)
+        output, answer = self.generate(draft, [self.edit('teh', 'the', 'nowhere')])
+        self.assertEqual(answer['edits'][0]['status'], 'unplaced')
+        self.assertIn('no reference mark', answer['edits'][0]['reason'])
+        self.assertEqual(self.field_code(output, 'word/footnotes.xml'), self.field_code(draft, 'word/footnotes.xml'))
+
+    def test_zotero_verifier_rejects_wrong_patch_and_unedited_bytes(self):
+        value = citation('Author (teh)', [dict(suffix='(teh)', itemData=dict(title='Original'))])
+        mutations = [(b'"suffix":"(the)"', b'"suffix":"(bad)"'),
+                     (b'"title":"Original"', b'"title":"Corrupted"'),
+                     (b'"noteIndex":7', b'"noteIndex":true'),
+                     (b'"citationID":"synthetic"', b'"citationID" : "synthetic"'),
+                     (b'"suffix":"(the)"', b'"suffix":BROKEN')]
+        for i, (old, new) in enumerate(mutations):
+            draft = self.draft(paragraph(zotero(value)))
+            def corrupt(parts):
+                self.assertIn(old, parts['word/document.xml'])
+                parts['word/document.xml'] = parts['word/document.xml'].replace(old, new)
+                return parts
+            output, result = self.root / ('bad-%d.docx' % i), self.root / ('bad-%d.json' % i)
+            with self.assertRaisesRegex(ValueError, 'Verification failed:.*Zotero'):
+                redline.generate(draft, [self.edit('teh', 'the')], output, result, 'Test', DATE, corrupt)
+            self.assertFalse(output.exists())
+            self.assertEqual(json.loads(result.read_text())['status'], 'failed')
+        draft = self.draft(paragraph(run('bad ') + zotero(value)))
+        def corrupt_untouched(parts):
+            parts['word/document.xml'] = parts['word/document.xml'].replace(b'"noteIndex":7', b'"noteIndex": 7')
+            return parts
+        with self.assertRaisesRegex(ValueError, 'unedited Zotero instruction bytes'):
+            self.generate(draft, [self.edit('bad', 'good')], corrupt_untouched)
+
+    def test_zotero_invalid_json_is_commented_and_the_redline_is_still_made(self):
+        for code in (' ADDIN ZOTERO_ITEM CSL_CITATION {broken}',
+                     ' ADDIN ZOTERO_ITEM CSL_CITATION {"x":1,"x":2}'):
+            draft = self.draft(paragraph(zotero({}, display='bad', code=code)))
+            with zipfile.ZipFile(draft) as z:
+                doc = redline.Document({n: z.read(n) for n in z.namelist()})
+            decision = redline.Writer(doc, 'Test', DATE).place(self.edit('bad', 'good'))
+            self.assertEqual(decision['status'], 'commented_instead')
+            self.assertIn('JSON', decision['reason'])
+            # A damaged field is left exactly as it was; it does not cost the author the redline.
+            output, answer = self.generate(draft, [self.edit('bad', 'good')])
+            self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+            with zipfile.ZipFile(draft) as before, zipfile.ZipFile(output) as after:
+                self.assertIn(redline.escape(code).encode(), after.read('word/document.xml'))
+            self.assertFalse(list(self.xml(output).iter('{%s}ins' % W)))
+
+    def test_zotero_bibliography_crossing_and_simple_fields_are_comments(self):
+        value = citation('Author (teh)', [dict(suffix='(teh)')])
+        bibliography = zotero({}, display='Bibliography teh', code=' ADDIN ZOTERO_BIBL {"uncited":[],"omitted":[],"custom":[]} CSL_BIBLIOGRAPHY ')
+        simple_code = redline.escape(' ADDIN ZOTERO_ITEM CSL_CITATION ' + json.dumps(value), {'"': '&quot;'})
+        cases = [(bibliography, 'teh', 'the', 'bibliography'),
+                 (run('before ') + zotero(value), 'before Author (teh)', 'before Author (the)', 'wholly inside'),
+                 (zotero(value) + zotero(citation('Other')), '(teh)Other', '(the)Other', 'exactly one'),
+                 (zotero(value).replace('<w:r><w:fldChar w:fldCharType="end"/></w:r>', ''), 'teh', 'the', 'complete'),
+                 (zotero(value, result_runs='<w:fldSimple w:instr="DATE">' + run('Author (teh)') + '</w:fldSimple>'), 'teh', 'the', 'exactly one'),
+                 ('<w:fldSimple w:instr="' + simple_code + '">' + run('Author (teh)') + '</w:fldSimple>', 'teh', 'the', 'complete')]
+        for field, find, replacement, reason in cases:
+            _, answer = self.generate(self.draft(paragraph(field)), [self.edit(find, replacement)])
+            self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+            self.assertIn(reason, answer['edits'][0]['reason'])
 
 
 class WorkflowOutputInput(unittest.TestCase):
