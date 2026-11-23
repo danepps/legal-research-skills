@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from common import SCHEMA_VERSION, read_json, utc_now, write_json
+from replacements import finding_schema
 
 
 EMPTY_FILES = (
@@ -42,6 +43,7 @@ def main() -> int:
         help="hidden audit directory; defaults to <draft-parent>/.codex-proofread/runs/<unique-run-id>",
     )
     parser.add_argument("--review-depth", choices=("standard", "exhaustive"), default="standard")
+    parser.add_argument("--replacements", action="store_true", help="request optional exact text corrections")
     parser.add_argument("--min-words", type=int)
     parser.add_argument("--target-words", type=int)
     parser.add_argument("--max-words", type=int)
@@ -79,6 +81,7 @@ def main() -> int:
         "--findings", str(static_path), "--symbols", str(symbols_path),
         "--min-words", str(args.min_words), "--target-words", str(args.target_words),
         "--max-words", str(args.max_words), "--context-words", str(args.context_words),
+        *(["--replacements"] if args.replacements else []),
     ])
     document = read_json(document_path)
     chunks = sum(1 for line in (run_dir / "chunks.jsonl").read_text(encoding="utf-8").splitlines() if line.strip())
@@ -102,6 +105,7 @@ def main() -> int:
         "status": "initialized",
         "output_mode": "report_only",
         "review_depth": args.review_depth,
+        "replacements": args.replacements,
         "publication": {
             "visible_output_path": str(draft.with_name(f"{draft.stem} — Proofread.md")),
             "provenance_required": True,
@@ -122,6 +126,8 @@ def main() -> int:
         "limitations": document.get("limitations", []),
     }
     write_json(run_dir / "run-manifest.json", manifest)
+    (run_dir / "references").mkdir(exist_ok=True)
+    (run_dir / "references" / "finding-schema.md").write_text(finding_schema(args.replacements), encoding="utf-8")
     for name in EMPTY_FILES:
         (run_dir / name).write_text("", encoding="utf-8")
     (run_dir / "report.md").write_text("", encoding="utf-8")

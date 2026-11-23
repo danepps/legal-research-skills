@@ -1,5 +1,24 @@
 # Codex plugin changes
 
+## 1.7.4 — 2026-11-23
+
+- `internal-proofread`: optional exact corrections, for a host program or a
+  requested marked draft that needs text a program can apply. `init_run.py
+  --replacements` (off by default, recorded in the run manifest) lets a worker
+  add `replacement` to a finding: the excerpt with only the correction made.
+- The field is carried through merging, the rejection and verifier audits, and
+  the final `dispositions.jsonl`. It is withdrawn when a later stage revises the
+  suggestion, excerpt, location or severity without supplying a new one, when
+  it equals the excerpt, and on rejected, waived, quoted, formatting and
+  judgment findings. `validate_run.py` rejects a malformed or stale one.
+- With the option off, packets and the worker schema are what they were:
+  workers now read a schema copy generated into the run folder, which leaves
+  the new section out, and a `replacement` supplied anyway is ignored and never
+  written out. A regression test compares off-mode packets with the earlier
+  text.
+- Tested offline only (23 new tests, 37 in the skill). No live run, and nothing
+  yet applies these corrections to a Word file for the Codex skill.
+
 ## 1.7.3 — 2026-11-14
 
 - Reconcile citation and proofreading audits with the final finding. Retractions

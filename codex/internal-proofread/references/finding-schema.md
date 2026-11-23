@@ -144,3 +144,54 @@ For `reopen` or `revised`, the lead must change the disposition away from `rejec
 ## Challenger ledgers
 
 `ingest_challenger.py` writes uniquely mapped external-report items to `challenger-findings.jsonl` using the normal finding schema. It writes unresolved items to `challenger-unmatched.jsonl` with `status: pending`. Before readiness validation, change every unmatched row to `resolved` or `waived` and add a nonempty `resolution` explaining the mapping or disposition.
+
+## Optional exact corrections (enabled runs only)
+
+These instructions apply only when `run-manifest.json` has `replacements: true`.
+Use the run's generated `references/finding-schema.md` for worker prompts; the
+default run's copy contains only the original schema above.
+
+A finding may include an optional string `replacement`: its excerpt with ONLY
+the correction made, character for character. Swapping the excerpt for this
+text must apply the fix and change nothing else. Preserve whitespace and
+punctuation outside the correction. The excerpt must be the exact source slice
+at `location.char_start:location.char_end`, without added ellipses or normalized
+spaces. Do not turn a prose `suggestion` into an edit automatically.
+
+Omit `replacement` for quoted material, formatting-only findings, author
+queries, judgment calls, style choices, publication-stage tasks, and any fix
+that cannot be made by editing the excerpt alone. Mark such findings with
+`quoted_material: true`, `requires_author_judgment: true`, or `excerpt_only: false`
+as applicable; use category `formatting` for formatting-only findings. These
+flags let the validator enforce exclusions that cannot be inferred from plain
+text. Rejected or waived findings never carry a replacement.
+
+Keep the field optional. An empty string or a string equal to the excerpt is
+discarded. For a deletion, include enough unchanged context in the excerpt to
+leave a nonempty corrected string. Workers must not invent `replacement_basis`;
+the scripts record it to detect later changes to the correction's basis. An
+obsolete basis may remain after withdrawal so repeated merges cannot revive
+the old correction; only the top-level `replacement` is an available edit.
+
+When adjudicating or independently verifying a correction, check the exact
+replacement against the frozen passage. A change to the suggestion, excerpt,
+location, or severity withdraws the old replacement unless a new one is
+supplied. A change to the diagnosis alone does not withdraw it. A disposition
+may supply a new `replacement` and the corrected fields; a revised verifier
+audit may do the same in `final_disposition`. If reissuing exactly the same
+replacement after a revision, remove the old `replacement_basis` from the
+revised record first (and from `findings.jsonl` before remerging worker output).
+
+For a rejection audit, use optional `revised_replacement` with `reopen` or
+`revised` for a new exact correction; an empty string withdraws the correction.
+Use it with `revised_suggestion` when changing the suggestion. The lead must
+still reconcile the disposition with the audit. Never attach a correction to
+`confirmed_rejection`.
+
+`build_report.py` reconciles these fields into the existing `dispositions.jsonl`.
+This is the final correction record: join it to `findings.jsonl` by `finding_id`
+for source hash, excerpt, location, severity, and other original finding fields;
+use explicit disposition fields when present. The candidate ledger keeps a
+replacement only when its original fields still match. Apply only `confirmed`
+dispositions. Review `likely` findings manually.
+The readiness validator must pass before a host uses either ledger.

@@ -45,6 +45,13 @@ python3 <skill-dir>/scripts/init_run.py <draft> --review-depth exhaustive
 
 Read the printed `run_dir` from initialization and use it for every later command. Supply `--run-dir` only when an explicit hidden or temporary audit location is required. Never point it at a visible workspace folder.
 
+Add `--replacements` when a host program or requested marked draft needs exact
+text corrections. It is off by default and recorded in `run-manifest.json`.
+Use the generated `<run-dir>/references/finding-schema.md` in every worker and
+verifier prompt. Only enabled runs include instructions for exact corrections.
+When enabled, include those instructions in manually prepared verifier packets
+too, and provide any candidate replacement for independent checking.
+
 Initialization copies the live draft to `source-snapshot.<ext>` and removes its write permissions before extraction. Treat that copy as immutable. `draft_path` and the readiness gate point to the snapshot; `original_draft_path` records the live source only for provenance. Later saves to the live draft cannot stale the run. To review later edits, start a new run and create a new snapshot.
 
 The standard local-review chunk is 1,200–1,800 core words with about 120 context words on each side. Reduce the limits further for unusually dense footnotes or tables:
@@ -64,7 +71,7 @@ For DOCX limitations and marked-copy rules, read [references/docx-output.md](ref
 
 ## Fan out the review
 
-Read [references/orchestration.md](references/orchestration.md) and [references/finding-schema.md](references/finding-schema.md) completely before spawning agents.
+Read [references/orchestration.md](references/orchestration.md) and the run's generated `references/finding-schema.md` completely before spawning agents.
 
 Distribute every file under `packets/` to a separate `proofread-chunk` agent. Distribute boundary, consistency, and every `xref_semantic_*` lane to `proofread-chunk`; distribute formal xref, terminology, structure, and every `serial_comma_*` lane to `proofread-mechanical`. Semantic xref packets include the source call site, source note, target note, target call site, and nearby note chain; require the reviewer to test support, not merely target existence. Serial-comma packets are a deterministic candidate sweep: every candidate must receive a contextual yes/no review so a clean set supports an affirmative class clearance. Require each worker to return its uniquely identified JSON result. If its role is read-only, the lead writes that result to the assigned file; never ask a read-only worker to change its sandbox. A worker with authorized write access may write only its unique result file.
 
@@ -141,7 +148,7 @@ python3 <skill-dir>/scripts/publish_report.py <run-dir> \
 
 The publisher calculates generation time and elapsed wall-clock time, inserts the provenance header, and records the metadata in the hidden manifest. It may replace an existing Codex-authored report, but it must preserve a non-Codex file at `<draft-stem> — Proofread.md` and fall back to `<draft-stem> — Codex Proofread.md`; an explicit occupied `--output` path is an error. Obtain the model label and aggregate token count from the current Codex run or session accounting. Do not estimate either value. If exact aggregate token accounting is unavailable, replace `--tokens N` with `--tokens-unavailable`. This prints `tokens unavailable (runtime did not expose exact usage)` and records a null count. The final production block follows all report content. Accounting limitations never waive the readiness gate.
 
-If the user requests a marked DOCX, create a separate tracked-change copy only through a direct OOXML method that does not launch an office application. Apply only confirmed corrections; add comments for likely errors and author queries. Re-extract and re-lint the marked copy, confirm ZIP/OOXML integrity and XML parseability, and disclose that pagination and visual layout were not rendered. Never invoke `soffice`, `libreoffice`, `render_docx.py`, the documents skill, or any helper/runtime that launches LibreOffice. If a safe direct-OOXML writer is unavailable, publish the report and explain that the marked DOCX was not created. A specifically requested marked copy is the only exception to the one-visible-file default.
+If the user requests a marked DOCX, create a separate tracked-change copy only through a direct OOXML method that does not launch an office application. Apply only confirmed corrections that carry an exact correction in the final disposition, as described in [references/docx-output.md](references/docx-output.md); add comments for likely errors and author queries. Re-extract and re-lint the marked copy, confirm ZIP/OOXML integrity and XML parseability, and disclose that pagination and visual layout were not rendered. Never invoke `soffice`, `libreoffice`, `render_docx.py`, the documents skill, or any helper/runtime that launches LibreOffice. If a safe direct-OOXML writer is unavailable, publish the report and explain that the marked DOCX was not created. A specifically requested marked copy is the only exception to the one-visible-file default.
 
 ## Enforce readiness
 

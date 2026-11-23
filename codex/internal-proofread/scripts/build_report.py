@@ -7,7 +7,8 @@ import argparse
 import re
 from pathlib import Path
 
-from common import read_json, read_jsonl, utc_now, write_json
+from common import read_json, read_jsonl, utc_now, write_json, write_jsonl
+from replacements import bind_audit, effective_finding, resolve_records
 
 
 VISIBLE_STATUSES = {"confirmed", "likely", "query", "fixed", "waived", "style", "prepublication"}
@@ -179,10 +180,27 @@ def main() -> int:
         for display, block_id in symbols.get("display_note_to_block", {}).items()
     }
     findings = read_jsonl(run_dir / "findings.jsonl")
-    dispositions = {row.get("finding_id"): row for row in read_jsonl(run_dir / "dispositions.jsonl")}
+    disposition_rows = read_jsonl(run_dir / "dispositions.jsonl")
+    if manifest.get("replacements", False):
+        finding_by_id = {row.get("finding_id"): row for row in findings}
+        for name in ("verifier-audit.jsonl", "rejection-audit.jsonl"):
+            audits = read_jsonl(run_dir / name)
+            bound = [bind_audit(row, finding_by_id.get(row.get("finding_id"), {}), block_by_id) for row in audits]
+            if bound != audits:
+                write_jsonl(run_dir / name, bound)
+    resolved_findings, resolved_dispositions = resolve_records(
+        run_dir, findings, disposition_rows, manifest.get("replacements", False), block_by_id)
+    if resolved_findings != findings:
+        write_jsonl(run_dir / "findings.jsonl", resolved_findings)
+    if resolved_dispositions != disposition_rows:
+        write_jsonl(run_dir / "dispositions.jsonl", resolved_dispositions)
+    findings = resolved_findings
+    dispositions = {row.get("finding_id"): row for row in resolved_dispositions}
     groups: dict[str, list[tuple[dict, dict]]] = {name: [] for name in ("confirmed", "likely", "query", "fixed", "waived", "style", "prepublication", "rejected", "pending")}
     for row in findings:
         disposition = dispositions.get(row.get("finding_id"), {})
+        if manifest.get("replacements", False):
+            row = effective_finding(row, disposition)
         status = str(disposition.get("status", "pending"))
         groups.setdefault(status, []).append((row, disposition))
     status = args.status or ("complete_with_limits" if groups["query"] or groups["waived"] or groups["pending"] else "complete")

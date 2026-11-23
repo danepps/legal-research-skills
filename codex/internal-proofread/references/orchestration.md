@@ -12,7 +12,7 @@
 ## Fanout sequence
 
 1. Initialize the run and inspect `run-manifest.json`, `chunks.jsonl`, and the packet counts.
-2. Spawn one `proofread-chunk` agent per packet, respecting the session concurrency cap. Use `fork_turns="none"`; each agent must read only its packet plus `finding-schema.md`. Read-only agents return the requested JSON for the lead to persist at the unique result path; only agents with authorized write access may write that path directly.
+2. Spawn one `proofread-chunk` agent per packet, respecting the session concurrency cap. Use `fork_turns="none"`; each agent must read only its packet plus the run's generated `references/finding-schema.md`. Use that same run-specific schema for lanes, recall, clean audits, lead dispositions, and verifier packets. Read-only agents return the requested JSON for the lead to persist at the unique result path; only agents with authorized write access may write that path directly.
 3. Spawn the boundary lane with `proofread-chunk`.
 4. Spawn formal xref, terminology, structure, and every `serial_comma_*` shard with `proofread-mechanical`; spawn consistency and every `xref_semantic_*` shard with `proofread-chunk`.
 5. Launch each concurrency wave in one parent turn and wait once for the wave. Do not poll or list each child separately, and do not permit children to spawn descendants.

@@ -14,6 +14,7 @@ Releases of the `legal-research` plugin for Claude Code and the companion Codex 
 - New optional workflow argument `replacements` (default off), passed only when a redline was chosen. With it on, proofers and the consistency agents add `replacement`, the find string with only the correction made, when the fix is a pure text substitution. The verifier is shown it and asked to check that it changes nothing but the error; it can correct it (`revised_replacement`) or withdraw it. A replacement is dropped when the verifier revises the fix, the severity or the find string without supplying a new one, when a revised find string fails the snapshot check, when it equals the find string, and on author queries and typeface findings.
 - Known limit: the deterministic lint's findings (a doubled word, a broken note number) carry no replacement, so they arrive as comments, not tracked changes.
 - Tests: `scripts/test_workflow_findings.py` (22 checks, stubbed agents) and `scripts/test_redline_docx.py` (25 tests on synthetic documents). The writer was drafted by Codex (gpt-6-astra) and reviewed and extended by Claude.
+- Codex plugin 1.7.4 (see `codex/CHANGELOG.md`), released the same day: the Codex `internal-proofread` skill gains the matching optional exact corrections in its findings. Nothing applies them to a Word file for that skill yet.
 
 ## 1.6.7 (2026-11-22)
 

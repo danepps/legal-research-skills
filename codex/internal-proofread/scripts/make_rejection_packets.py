@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 from common import file_sha256, read_json, read_jsonl, write_jsonl
+from replacements import instructions, without_replacements
 
 
 PACKET_SIZE = 8
@@ -129,6 +130,7 @@ def render_packet(
     packet_findings: list[tuple[dict, dict, bool]],
     result_path: Path,
     structure: dict | None,
+    replacements: bool = False,
 ) -> str:
     lines = [
         f"# Independent candidate audit {packet_id}",
@@ -177,7 +179,7 @@ def render_packet(
             "### Candidate record",
             "",
             "```json",
-            json.dumps(finding, indent=2, ensure_ascii=False),
+            json.dumps(finding if replacements else without_replacements(finding), indent=2, ensure_ascii=False),
             "```",
             "",
             "### Full frozen source context",
@@ -197,7 +199,7 @@ def render_packet(
                 "as the finite predicate of the entire clause.",
                 "",
             ])
-    return "\n".join(lines)
+    return "\n".join(lines) + instructions(replacements)
 
 
 def main() -> int:
@@ -298,7 +300,7 @@ def main() -> int:
             for finding, _context, _clause_analysis in packet_findings
         ) else None
         packet_path.write_text(
-            render_packet(packet_id, source_hash, packet_findings, result_path, packet_structure),
+            render_packet(packet_id, source_hash, packet_findings, result_path, packet_structure, manifest.get("replacements", False)),
             encoding="utf-8",
         )
         manifest_rows.append({

@@ -10,6 +10,7 @@ from collections import Counter
 from pathlib import Path
 
 from common import file_sha256, read_json, read_jsonl, validate_finding_location
+from replacements import resolve_records, validate_records
 
 
 REQUIRED = (
@@ -102,6 +103,15 @@ def main() -> int:
     source_blocks = {block.get("block_id"): block for block in document.get("blocks", []) + document.get("notes", [])}
     if len(block_ids) != len(set(block_ids)):
         errors.append("document contains duplicate block IDs")
+    if manifest.get("replacements", False):
+        errors.extend(validate_records(run_dir, findings, dispositions, source_blocks))
+        if args.require_ready and not errors:
+            try:
+                final_findings, final_dispositions = resolve_records(run_dir, findings, dispositions, True, source_blocks)
+                if final_findings != findings or final_dispositions != dispositions:
+                    errors.append("exact corrections are stale; rerun build_report.py")
+            except (ValueError, TypeError, KeyError) as exc:
+                errors.append(f"invalid exact correction: {exc}")
     for row in static + challenger + findings:
         if row.get("source_sha256") != source_hash:
             errors.append(f"finding has stale source hash: {row.get('finding_id')}")

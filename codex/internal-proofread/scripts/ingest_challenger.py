@@ -14,6 +14,7 @@ import unicodedata
 from pathlib import Path
 
 from common import file_sha256, normalize_space, read_json, read_jsonl, stable_id, write_json, write_jsonl
+from replacements import without_replacements
 
 
 ITEM_RE = re.compile(
@@ -334,6 +335,9 @@ def main() -> int:
                 row["resolution"] = prior.get("resolution")
         all_mapped = [row for row in existing_mapped if row.get("report_sha256") != report_hash] + mapped
         all_unmatched = [row for row in existing_unmatched if row.get("report_sha256") != report_hash] + unmatched
+        if not manifest.get("replacements", False):
+            all_mapped = without_replacements(all_mapped)
+            all_unmatched = without_replacements(all_unmatched)
         unmatched_counts = {
             status: sum(1 for row in unmatched if row.get("status") == status)
             for status in ("pending", "resolved", "waived")
