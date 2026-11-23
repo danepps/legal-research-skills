@@ -15,7 +15,8 @@ export const meta = {
 //   outDir, draftName, chunkFiles:[...paths], lintFindings:[...],
 //   counts:{paragraphs, footnotes, words}, headings, noteParas, sha256,
 //   snapshotTime, formatting:<proof.json formatting block>,
-//   deep:boolean, style:boolean, fable:boolean
+//   deep:boolean, style:boolean, fable:boolean,
+//   replacements:boolean (optional; ask agents for exact replacement text, for a redline)
 // }
 let A = args || {}
 if (typeof A === 'string') { try { A = JSON.parse(A) } catch { A = {} } }
@@ -34,6 +35,10 @@ const SHA256 = A.sha256 || null
 const SNAPTIME = A.snapshotTime || null
 const DEEP = !!A.deep
 const STYLE = !!A.style
+// Off unless a host asks for it (a program building a redline from the returned findings).
+// With it off, every prompt and schema is what it was before 1.6.8: no agent is asked for a
+// replacement and none is returned.
+const REPL = !!A.replacements
 // Proofers run on Opus by default; `fable:true` escalates them to Fable for a
 // near-final read. Consistency, verify, and report always inherit the session
 // model — verify is the false-positive gate and report is the deliverable.
@@ -84,6 +89,7 @@ const FINDING_ITEM = {
     find: { type: 'string', description: 'VERBATIM text copied from the draft, long enough to be unique for Cmd+F' },
     problem: { type: 'string' },
     fix: { type: 'string', description: 'the minimal correction' },
+    ...(REPL ? { replacement: { type: 'string', description: 'OPTIONAL, and only when the fix is a pure text substitution: the find string with ONLY the correction made, character for character, so that swapping find for replacement in the draft applies the fix and changes nothing else. Omit it for author queries, typeface findings, judgment calls, and any fix that cannot be made by editing the find string alone.' } } : {}),
     severity: { enum: SEVERITIES },
     category: { type: 'string', description: 'typo | missing-word | doubled-word | agreement | tense | wrong-word | garbled | punctuation | capitalization | cross-reference | consistency | style' },
   },
@@ -123,6 +129,7 @@ const VERIFY_SCHEMA = {
           note: { type: 'string', description: 'one sentence: why, quoting the actual draft text you re-read' },
           revised_problem: { type: 'string' },
           revised_fix: { type: 'string' },
+          ...(REPL ? { revised_replacement: { type: 'string', description: 'only with verdict "revised": the corrected replacement (the find string with ONLY the correction made), or an empty string to withdraw a replacement that is wrong or that the fix does not justify' } } : {}),
           revised_severity: { enum: SEVERITIES, description: 'only with verdict "revised": the corrected severity — e.g. a prose "error" that turns out to sit inside a quotation becomes a "query"' },
           revised_category: { type: 'string', description: 'only with verdict "revised": the corrected category — e.g. "quote-integrity" for a revised-into-query finding' },
           revised_find: { type: 'string', description: 'only with verdict "revised", and only when the original find string is wrong (absent from the passage, contains markup tags, or anchors the wrong spot): the replacement, copied VERBATIM and tag-free from the snapshot line you re-read. It is checked against the snapshot afterwards and dropped if it is not there.' },
@@ -183,7 +190,12 @@ const GROUND_RULES = `GROUND RULES — read carefully; violations produce false 
 ${STYLE ? '- Style mode is ON: you MAY additionally flag genuine style problems (severity "style") — confusing sentences, unintended repetition, tonal slips — sparingly, at most 3 per chunk.' : ''}
 - Every finding needs a VERBATIM "find" string copied character-for-character from the draft
   (unique enough to locate with Cmd+F in Word — include a few surrounding words), the
-  location label, what is wrong, and the minimal fix.
+  location label, what is wrong, and the minimal fix.${REPL ? `
+- When the fix is a pure text substitution, ALSO give "replacement": the find string with only
+  the correction made (find "the clerk each refusal" -> replacement "the clerk to record each
+  refusal"). A program may apply it to the draft as a tracked change, so it must be exact and
+  must change nothing but the error. Omit it for queries, typeface findings, judgment calls,
+  and anything that cannot be fixed by editing the find string alone.` : ''}
 - If you are not sure something is an error, use severity "likely" or omit it. An empty
   findings list is a fine answer. Never pad.`
 
@@ -484,7 +496,11 @@ revised_category when the finding was mis-classed (a prose "error" inside a quot
 "likely"), and revised_find ONLY when the original find string is itself wrong — absent
 from the passage, carrying markup tags, or anchored to the wrong spot. A revised_find must
 be copied verbatim and tag-free from the snapshot line you just re-read; it is grepped
-against the snapshot afterwards and discarded if it is not found there. Confirm only what a
+against the snapshot afterwards and discarded if it is not found there. ${REPL ? `Some findings carry a
+"replacement" (the find string with the correction made), which a program may apply to the
+draft as a tracked change: check that it differs from the find string ONLY by the correction
+and that the result reads correctly in the passage. If it is wrong, give revised_replacement;
+if the fix needs the author's judgment, withdraw it with revised_replacement "". ` : ''}Confirm only what a
 careful law-review editor would actually mark — but do not reject a genuine error merely
 because it is small.
 CATEGORY-SPECIFIC RULES:
@@ -514,8 +530,8 @@ ${FMT_OK ? `- TYPEFACE findings (category "typeface", or a category starting "fm
 ${GROUND_RULES}
 
 FINDINGS (verify batch ${bi + 1}/${batches.length}):
-${JSON.stringify(batch.map(({ id, location, find, problem, fix, severity, category }) =>
-      ({ id, location, find, problem, fix, severity, category })), null, 1)}
+${JSON.stringify(batch.map(({ id, location, find, problem, fix, replacement, severity, category }) =>
+      ({ id, location, find, problem, fix, ...(REPL && typeof replacement === 'string' && replacement ? { replacement } : {}), severity, category })), null, 1)}
 
 Return a verdict for EVERY id.`,
     { label: `verify:batch-${bi}`, phase: 'Verify', schema: VERIFY_SCHEMA, ...RO }), (r) => !!r && Array.isArray(r.verdicts))
@@ -558,6 +574,12 @@ for (const f of toVerify) {
     category: rev && typeof v.revised_category === 'string' && v.revised_category.trim() ? v.revised_category.trim() : f.category,
     verifierNote: v.note,
   }
+  // A replacement is applied to the draft by a program, so it survives only while everything
+  // it was written against still stands. The verifier's own revised_replacement wins (an
+  // empty string withdraws it); otherwise any revision to the fix, the find string or the
+  // severity drops it, because the original replacement no longer matches the finding.
+  if (rev && typeof v.revised_replacement === 'string') out.replacement = v.revised_replacement
+  else if (rev && (v.revised_fix || typeof v.revised_find === 'string' || v.revised_severity)) delete out.replacement
   if (out.severity === 'style' && !STYLE) { rejected.push({ ...f, why: `revised to style severity; style mode is off (${v.note})` }); continue }
   if (rev && typeof v.revised_find === 'string') {
     const nf = v.revised_find.replace(/<\/?(i|sc|caps)>/g, '').trim()
@@ -592,6 +614,7 @@ Return one result per id.`,
     if (present.get(f.id)) { f.originalFind = f.find; f.find = nf; findsRevised++ }
     else {
       findsRevisedRejected++
+      delete f.replacement // written against the revised find string, which was not kept
       f.verifierNote = `${f.verifierNote || ''} [verifier proposed a replacement find string that was ${res ? 'not found verbatim in the snapshot' : 'not checked — validation agent failed'}; original find string kept]`.trim()
     }
   }
@@ -635,6 +658,14 @@ function locLabel(loc) {
 }
 for (const f of [...confirmed, ...unvetted]) f.locationPath = locLabel(f.location)
 const TYPEFACE = (f) => /^(fmt-|typeface)/.test(f.category || '')
+// A replacement reaches the return only when it could be applied mechanically: a non-empty
+// string that differs from the find string, on a finding that is neither an author query nor
+// a typeface finding (italics and small caps are not text substitutions).
+const usableReplacement = (f) => {
+  const r = typeof f.replacement === 'string' ? f.replacement : ''
+  if (!REPL || !r.trim() || r === f.find || f.severity === 'query' || TYPEFACE(f)) return null
+  return r
+}
 const CITE_MECH = (f) => !TYPEFACE(f) && /^(cite-|pincite|case-cite|supra-)/.test(f.category || '')
 
 // ---- Phase: Report ------------------------------------------------------------------
@@ -793,4 +824,10 @@ return {
   exitState: (degradation.length || unproofedChunks.length || missingLanes.length || noVerdict.length) ? 'complete_with_limits' : 'complete',
   degradation,
   rejectedFindings: rejected.map(({ location, find, why }) => ({ location, find, why })),
+  // The confirmed findings as data, in draft order, for a host that builds a redline. Unvetted
+  // findings are not here: nothing a verifier did not confirm may be applied to a draft.
+  findings: confirmed.map((f) => {
+    const r = usableReplacement(f)
+    return { location: f.location, find: f.find, problem: f.problem, fix: f.fix, severity: f.severity, category: f.category, ...(r ? { replacement: r } : {}) }
+  }),
 }
