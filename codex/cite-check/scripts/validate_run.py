@@ -315,6 +315,8 @@ def main() -> int:
 
     if manifest.get("cache_recovery_version") not in (None, 1):
         errors.append("unsupported cache_recovery_version")
+    if manifest.get("case_identity_version") not in (None, 1):
+        errors.append("unsupported case_identity_version")
 
     if args.require_ready:
         for issue in extraction.get("blocking_issues", []):
@@ -426,7 +428,10 @@ def main() -> int:
                 errors.append(f"verdicts.jsonl row {index}: invalid verification_basis")
             if verdict.get("category") == "fabricated":
                 errors.append(f"verdicts.jsonl row {index}: use not_found_in_sources_checked")
-            if verdict.get("category") == "metadata_error" and verdict.get("status") == "mismatch":
+            resolutions = verdict.get("identity_resolutions", {})
+            year_finding = (isinstance(resolutions, dict) and isinstance(resolutions.get("year"), dict)
+                            and resolutions["year"].get("disposition") == "finding")
+            if (verdict.get("category") == "metadata_error" or year_finding) and verdict.get("status") == "mismatch":
                 if verdict.get("verification_basis") in {"snippet_only", "unavailable", "secondary_reproduction"}:
                     errors.append(f"verdicts.jsonl row {index}: metadata correction cannot rest on snippets, secondary reproductions, or unavailable evidence")
                 record = verdict.get("metadata_record")
@@ -454,6 +459,8 @@ def main() -> int:
                         errors.append(f"verdicts.jsonl row {index}: metadata record must identify corrected fields")
                     elif "author_order" in fields and record.get("record_type") not in AUTHOR_ORDER_RECORD_TYPES:
                         errors.append(f"verdicts.jsonl row {index}: author-order correction requires a title or landing page")
+                    elif year_finding and "year" not in fields:
+                        errors.append(f"verdicts.jsonl row {index}: year mismatch metadata record must identify year")
             adverse = verdict.get("status") in {"mismatch", "unverified", "partial"}
             if adverse and not occurs_in_draft(verdict.get("draft_find_string"), corpus):
                 errors.append(f"verdicts.jsonl row {index}: adverse draft_find_string not found in draft")
@@ -876,6 +883,13 @@ def main() -> int:
                 unlock = str(row.get("unlock_path", "")).strip()
                 if unlock and unlock not in limit_section:
                     errors.append(f"report.md Couldn't check section omits unlock_path for: {item_id}")
+
+        identity_path = args.run_dir / "case-identity-checks.jsonl"
+        if (schema_version >= 6 and manifest.get("case_identity_version") == 1) or identity_path.exists():
+            from identity_validation import validate_identity
+            identity_rows = load_jsonl(identity_path, errors)
+            validate_identity(manifest, units, verdicts, identity_rows, corpus,
+                              report.read_text(encoding="utf-8") if report.is_file() else "", errors)
 
         if schema_version >= 6 and manifest.get("cache_recovery_version") == 1:
             from cache_recovery import validate_recovery

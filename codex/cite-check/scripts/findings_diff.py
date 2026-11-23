@@ -116,6 +116,8 @@ def snapshot(run):
                       "quote": "\n".join(sorted(quotes.get(unit["unit_id"], []))), "source": source, "cite": source,
                       "verdict": verdict["category"], "find": verdict.get("draft_find_string"),
                       "problem": verdict["category"], "label": verdict["suggested_action"],
+                      **({"identity_resolutions": verdict["identity_resolutions"]}
+                         if "identity_resolutions" in verdict else {}),
                       "unit_id": unit["unit_id"], "footnote": unit.get("footnote_number"),
                       "note_id": unit.get("note_id"), "paragraph_number": unit.get("paragraph_number")})
     reviews = run / "case-review.jsonl"

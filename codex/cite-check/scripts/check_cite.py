@@ -2,7 +2,8 @@
 """Screen citation identity; unresolved lookups get caption and citation-text leads.
 
 Search hits are candidates, never automatic identity or substantive verification.
---name applies to a single citation; batch misses still get citation-text searches.
+--name/--year carry draft values for a single citation. --units-file takes JSONL
+case units with unit_id, lookup_citation, draft_case_name and draft_year.
 Stdlib only. Authentication: environment, then ~/.config/courtlistener/token.
 """
 from __future__ import annotations
@@ -21,6 +22,123 @@ BASE = "https://www.courtlistener.com"
 API = BASE + "/api/rest/v4/citation-lookup/"
 TOKEN_FILE = Path("~/.config/courtlistener/token").expanduser()
 PARTY_NOISE = set("the of a an et al inc llc corp co ltd city county state united states america president fellows board trustees secretary commissioner department in re ex rel for and on by at to".split())
+# Keep comparison normalization separate from fallback-search token selection.
+# Agreement between distinctive words screens identity; it does not prove it.
+CAPTION_ABBREVIATIONS = {
+    "bd": "board", "educ": "education", "dept": "department",
+    "assn": "association", "commn": "commission", "natl": "national",
+    "intl": "international", "univ": "university", "co": "company",
+    "corp": "corporation", "inc": "incorporated", "ltd": "limited",
+}
+CAPTION_NOISE = PARTY_NOISE | set(
+    "v vs versus parte people commonwealth company corporation incorporated limited "
+    "commission association national international university government petitioner "
+    "petitioners respondent respondents appellant appellants appellee appellees".split())
+SOVEREIGN_ABBREVIATIONS = {
+    "alabama": "Ala.", "alaska": "Alaska", "arizona": "Ariz.", "arkansas": "Ark.",
+    "california": "Cal.", "colorado": "Colo.", "connecticut": "Conn.", "delaware": "Del.",
+    "florida": "Fla.", "georgia": "Ga.", "hawaii": "Haw.", "idaho": "Idaho",
+    "illinois": "Ill.", "indiana": "Ind.", "iowa": "Iowa", "kansas": "Kan.",
+    "kentucky": "Ky.", "louisiana": "La.", "maine": "Me.", "maryland": "Md.",
+    "massachusetts": "Mass.", "michigan": "Mich.", "minnesota": "Minn.",
+    "mississippi": "Miss.", "missouri": "Mo.", "montana": "Mont.", "nebraska": "Neb.",
+    "nevada": "Nev.", "new hampshire": "N.H.", "new jersey": "N.J.",
+    "new mexico": "N.M.", "new york": "N.Y.", "north carolina": "N.C.",
+    "north dakota": "N.D.", "ohio": "Ohio", "oklahoma": "Okla.", "oregon": "Or.",
+    "pennsylvania": "Pa.", "rhode island": "R.I.", "south carolina": "S.C.",
+    "south dakota": "S.D.", "tennessee": "Tenn.", "texas": "Tex.", "utah": "Utah",
+    "vermont": "Vt.", "virginia": "Va.", "washington": "Wash.",
+    "west virginia": "W. Va.", "wisconsin": "Wis.", "wyoming": "Wyo.",
+    "district of columbia": "D.C.", "puerto rico": "P.R.", "guam": "Guam",
+}
+
+
+def caption_tokens(name):
+    text = re.sub(r"[.'’ʼ]", "", str(name).casefold())
+    return re.findall(r"[^\W\d_]+", text, re.UNICODE)
+
+
+SOVEREIGN_ALIASES = {
+    tuple(caption_tokens(alias)): name
+    for name, abbreviation in SOVEREIGN_ABBREVIATIONS.items()
+    for alias in (name, abbreviation, abbreviation.replace(" ", ""), abbreviation.replace(".", " "))
+}
+MAX_SOVEREIGN_WORDS = max(map(len, SOVEREIGN_ALIASES))
+
+
+def caption_words(name):
+    words = caption_tokens(name)
+    distinctive, sovereigns = set(), set()
+    index = 0
+    while index < len(words):
+        # Consume the longest complete name first: West Virginia is not Virginia,
+        # and New York must not leave a shared 'new' in a different caption.
+        for width in range(min(MAX_SOVEREIGN_WORDS, len(words) - index), 0, -1):
+            sovereign = SOVEREIGN_ALIASES.get(tuple(words[index:index + width]))
+            if sovereign:
+                sovereigns.add(sovereign)
+                index += width
+                break
+        else:
+            word = CAPTION_ABBREVIATIONS.get(words[index], words[index])
+            if word not in CAPTION_NOISE and len(word) > 1:
+                distinctive.add(word)
+            index += 1
+    # Sovereigns do not clear criminal-party mismatches. Preserve comparison of
+    # captions consisting only of sovereigns, using canonical whole names.
+    return distinctive or sovereigns
+
+
+def word_agreement(left, right):
+    """Explain agreement between normalized caption words, without spellchecking."""
+    if left == right:
+        return "exact"
+    shorter, longer = sorted((left, right), key=len)
+    if len(shorter) >= 4 and longer.startswith(shorter):
+        return "prefix"
+    if len(shorter) < 5 or len(longer) - len(shorter) > 1:
+        return None
+    if len(shorter) == len(longer):
+        return "one_edit" if sum(a != b for a, b in zip(shorter, longer)) == 1 else None
+    # Lengths differ by one. Skip the first differing letter in the longer word;
+    # the remainder must agree exactly. A transposition does not qualify.
+    for index, letter in enumerate(shorter):
+        if letter != longer[index]:
+            return "one_edit" if shorter[index:] == longer[index + 1:] else None
+    return "one_edit"
+
+
+def compare_identity(name, year, case_name, date_filed, *, matched=True):
+    """Compare only supplied draft values with an unambiguous lookup result."""
+    if name is not None and not isinstance(name, str):
+        raise ValueError("draft_case_name must be a string or null")
+    if year not in (None, "") and (isinstance(year, bool) or not re.fullmatch(r"[0-9]{4}", str(year))):
+        raise ValueError("draft_year must be a four-digit year or null")
+    caption = {"draft": name, "resolved": case_name}
+    if not name or not name.strip():
+        caption["result"] = "not_supplied"
+    elif not matched or not case_name:
+        caption["result"] = "resolved_unavailable"
+    else:
+        left, right = caption_words(name), caption_words(case_name)
+        caption["shared_words"] = sorted(left & right)
+        agreements = []
+        for draft_word in sorted(left):
+            for resolved_word in sorted(right):
+                rule = word_agreement(draft_word, resolved_word)
+                if rule in {"prefix", "one_edit"}:
+                    agreements.append({"draft": draft_word, "resolved": resolved_word, "rule": rule})
+        if agreements:
+            caption["word_agreements"] = agreements
+        caption["result"] = ("indeterminate" if not left or not right else
+                             "match" if left & right or agreements else "mismatch")
+    resolved_year = re.match(r"^([0-9]{4})(?:-|$)", str(date_filed or ""))
+    resolved_year = resolved_year.group(1) if resolved_year else None
+    years = {"draft": year, "resolved": resolved_year, "date_filed": date_filed}
+    years["result"] = ("not_supplied" if year in (None, "") else
+                       "resolved_unavailable" if not matched or not resolved_year else
+                       "match" if str(year) == resolved_year else "mismatch")
+    return {"caption": caption, "year": years}
 
 
 def token() -> str | None:
@@ -188,7 +306,8 @@ def lookup_state(result):
     return "unresolved"
 
 
-def screen(text, name=None, limit=10):
+def screen(text, name=None, limit=10, year=None):
+    compare_identity(name, year, None, None)  # Reject malformed inputs before I/O.
     error = None
     try:
         results = request_json(API, urllib.parse.urlencode({"text": text}).encode())
@@ -196,8 +315,8 @@ def screen(text, name=None, limit=10):
             raise ValueError("unexpected citation-lookup response shape")
     except (OSError, ValueError) as exc:
         results, error = [], str(exc)
-    if name and len(results) > 1:
-        raise ValueError("--name requires a single recognized citation, not a batch")
+    if (name or year not in (None, "")) and len(results) > 1:
+        raise ValueError("--name/--year require a single recognized citation, not a batch")
     if not results:
         results = [{"citation": text, "error_message": error or "No citations recognized"}]
     output = []
@@ -216,6 +335,8 @@ def screen(text, name=None, limit=10):
                 row["ambiguous_matches"] = len(clusters)
         if result.get("error_message"):
             row["error"] = result["error_message"]
+        row["identity_comparison"] = compare_identity(
+            name, year, row.get("case_name"), row.get("date_filed"), matched=state == "matched")
         if state != "matched":
             row["fallbacks"] = fallback_searches(row["citation"], name, limit)
             row["routes_tried"] += [k for k in ("caption", "citation_text") if row["fallbacks"][k]["status"] != "skipped"]
@@ -224,23 +345,64 @@ def screen(text, name=None, limit=10):
     return output
 
 
+def screen_units(units, limit=10):
+    """Bind each request to a unit explicitly; never depend on API offsets/order."""
+    cases = [u for u in units if u.get("source_type") == "case" and u.get("unit_kind") != "internal_reference"]
+    seen = set()
+    for unit in cases:
+        uid = unit.get("unit_id")
+        if not isinstance(uid, str) or not uid.strip() or uid in seen:
+            raise ValueError("case units require unique nonempty unit_id values")
+        seen.add(uid)
+        if not isinstance(unit.get("lookup_citation"), str) or not unit["lookup_citation"].strip():
+            raise ValueError(f"{uid}: supply one lookup_citation")
+        if "draft_case_name" not in unit or "draft_year" not in unit:
+            raise ValueError(f"{uid}: supply draft_case_name and draft_year (null if absent)")
+        compare_identity(unit["draft_case_name"], unit["draft_year"], None, None)
+    output = []
+    for unit in cases:
+        rows = screen(unit["lookup_citation"], unit["draft_case_name"], limit, unit["draft_year"])
+        if len(rows) != 1:
+            raise ValueError(f"{unit['unit_id']}: lookup_citation must identify one citation")
+        output.append(dict(rows[0], unit_id=unit["unit_id"], source_id=unit.get("source_id"),
+                           lookup_citation=unit["lookup_citation"]))
+    return output
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("text", nargs="*")
     parser.add_argument("--input-file", type=Path)
-    parser.add_argument("--name", help="Caption for a single citation; never inferred from the first batch match")
+    parser.add_argument("--units-file", type=Path, help="JSONL citation units with explicit draft metadata")
+    parser.add_argument("--output", type=Path, help="Create a new JSONL screen ledger; refuses an existing file")
+    parser.add_argument("--name", help="Caption printed in the draft for a single citation")
+    parser.add_argument("--year", help="Decision year printed in the draft for a single citation")
     parser.add_argument("--limit", type=int, default=10)
     args = parser.parse_args()
     chunks = [text.strip() for text in args.text if text.strip()]
     if args.input_file:
         chunks.append(args.input_file.read_text(encoding="utf-8"))
-    if not chunks or not 1 <= args.limit <= 100:
+    if args.units_file and (chunks or args.name is not None or args.year is not None):
+        parser.error("--units-file cannot be combined with text, --input-file, --name or --year")
+    if (not chunks and not args.units_file) or not 1 <= args.limit <= 100:
         parser.error("provide citation text and a --limit between 1 and 100")
+    if args.output and args.output.exists():
+        parser.error("--output already exists; preserve it and choose a new path")
     if not token():
         print("No CourtListener token; verify directly and disclose unavailable API routes.", file=sys.stderr)
         return 1
     try:
-        output = screen(" ;\n".join(chunks), args.name, args.limit)
+        if args.units_file:
+            units = [json.loads(line) for line in args.units_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            if any(not isinstance(unit, dict) for unit in units):
+                raise ValueError("--units-file rows must be objects")
+            output = screen_units(units, args.limit)
+        else:
+            output = screen(" ;\n".join(chunks), args.name, args.limit, args.year)
+        if args.output:
+            with args.output.open("x", encoding="utf-8") as handle:
+                for row in output:
+                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     except (OSError, ValueError) as exc:
         print(f"check_cite: {exc}", file=sys.stderr)
         return 1

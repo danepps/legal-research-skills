@@ -24,6 +24,20 @@ never a clean treatment result. Keep the existing route requirements below.
 
 ## Existence before history
 
+Use `check_cite.py`'s deterministic comparison before treating a lookup hit as
+the cited case. Supply the printed caption/year explicitly (`--name`/`--year`
+for one cite, or `--units-file` with the fields in
+[ledger-fields.md](ledger-fields.md#case-identity-screens)). Preserve the output
+in `case-identity-checks.jsonl`. A nameless cite uses null caption and produces
+`not_supplied`; ordinary generic words alone produce no identity conclusion.
+Sovereign names are excluded when other distinctive words remain; captions
+consisting only of sovereign names compare those complete names instead.
+Resolve every caption/year mismatch with opened evidence in the ordinary verdict
+and report before completion. `found: true` only means the reporter resolved.
+For a caption finding, either the printed name or reporter citation may be wrong;
+confirm the intended authority before running history against the returned case.
+These are core identity/metadata findings, not optional history advisories.
+
 A reporter-lookup miss triggers both a caption search (one distinctive word per
 side in `caseName:`) and a full-text phrase search for the citation string:
 
@@ -31,8 +45,10 @@ side in `caseName:`) and a full-text phrase search for the citation string:
 python3 <skill-dir>/scripts/check_cite.py 'REPORTER CITATION' --name 'A v. B'
 ```
 
-`--name` is for a single citation. Batch misses still receive citation-text
-searches; obtain each missing caption from the draft/context and rerun that cite.
+`--name` is for a single citation and must come from the draft. Raw text batch
+misses still receive citation-text searches; obtain each missing caption from the
+draft/context and rerun that cite. `--units-file` carries each unit's caption into
+the existing fallback searches as well as the comparison.
 Record the routes tried, failed, or unavailable before calling identity
 unconfirmed. Search results are candidates. A later opinion quoting a reporter
 citation corroborates it but can repeat a miscitation; inspect that passage and

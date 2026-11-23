@@ -17,6 +17,43 @@ Prefer: user-supplied local source; official or primary source; authoritative re
 
 Treat citation lookup as identity screening. Retrieve the opinion for quotations, holdings, propositions, and pincites. Check caption only against a caption actually printed in the footnote or body; nameless reporter citations can be correct. For Supreme Court cases prefer official slip opinions or bound volumes. A first-page U.S. Reports pin may point to a syllabus; distinguish syllabus from opinion language. Describe negative-treatment review as approximate, not Shepard’s or KeyCite. Run the [history and two-route treatment pass](case-review.md), including a record of each case not checked. After an identity-lookup miss, try caption and quoted citation-string searches before reporting unconfirmed; list attempted and unavailable routes.
 
+`check_cite.py` deterministically compares the draft caption/year supplied with
+each citation against the unambiguous lookup's `case_name`/`date_filed`. Supply
+them explicitly from the draft through `--name`/`--year` for a single cite or
+the per-unit JSONL mode; never infer a caption from the returned case. The script
+does not parse caption boundaries or rely on API text-position fields.
+See [case screen fields](ledger-fields.md#case-identity-screens) for the run ledger.
+
+Caption screening normalizes listed Bluebook abbreviations, punctuation and case,
+ignores procedural labels and generic party/organization words, and looks for
+any agreeing distinctive words across the full captions. Words agree exactly,
+by prefix when the shorter has at least four letters, or by one insertion,
+deletion or substitution when both have at least five letters. A transposition
+is two edits. This screens wrong identities, not misspelled party names.
+Nonempty sets with no agreeing pair produce a mismatch.
+The 50 states, District of Columbia, Puerto Rico and Guam,
+including their Bluebook abbreviations, are generic when a caption has any
+other distinctive word. Recognize multi-word sovereign names as whole units;
+if no other distinctive words remain, compare the canonical sovereign names
+instead. Thus a shared Ohio cannot clear Mapp against Terry, while a caption
+consisting only of Arizona and California can still match its abbreviated form.
+A side with neither distinctive words nor sovereign names is indeterminate.
+Extra first names, party lists, `et al.`, and an acronym beside another matching
+distinctive party word do not cause a mismatch. Agreement is a screening result, not final identity
+confirmation. Years differ only when both a draft year and resolved year exist;
+absent inputs, missing metadata and ambiguous lookups yield no mismatch finding.
+
+Retain every mismatch in `case-identity-checks.jsonl`. A lookup hit cannot by
+itself justify `identity_confirmed: true`. Open the underlying record and resolve
+each caption/year discrepancy separately in `identity_resolutions`, as a finding
+or an evidenced explanation that it is not an error. Do not replace a returned
+mismatch with a skipped/unscreened record. Apply the existing metadata provenance,
+severity and audit rules; unavailable stronger evidence leaves a confirm item
+partial with its unlock path. A confirmed caption error cannot confirm the
+draft's identity. A year-only error can retain confirmed identity while reporting
+the metadata finding. Report both compared values and the disposition; for
+caption findings explain that either the name or reporter citation may be wrong.
+
 ### Statutes, rules, and regulations
 
 Use the official code, legislature, agency, rule publisher, or court. Verify section identity, version/effective date, quoted operative text, and the relevant historical version.
@@ -114,6 +151,7 @@ Read the [ledger field reference](ledger-fields.md) before writing rows; it list
 - `source-ledger.jsonl`: one source per row with canonical citation, type, identifiers, status, verification basis, versions, and retrieval notes.
 - `quote-checks.jsonl`: one or more deterministic source-file checks per prepared quotation, linked to its citation unit and source, with source path/hash, match status, page basis, and review flags.
 - `verdicts.jsonl`: one row per unit with status, severity, category, basis, evidence, suggested action, and adverse-finding draft string.
+- `case-identity-checks.jsonl`: per-case-unit deterministic lookup comparisons or explicit unscreened access records. New runs set `case_identity_version: 1`; the gate reconciles all case units and every mismatch resolution and report disclosure. Present ledgers are also checked in older runs.
 - `verifier-audit.jsonl`: independent audit rows with `verdict_id`, `audit_status`, evidence, notes, and auditor identity/session when available.
 
 For quotation and other non-support audits, update the single final verdict in

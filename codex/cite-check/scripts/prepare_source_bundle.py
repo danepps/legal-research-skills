@@ -101,6 +101,8 @@ def build_bundle(run: Path, source_id: str) -> dict:
         "source_record_available": bool(source),
         "path_base": "Resolve relative source paths against run_dir; read only needed excerpts.",
         "citation_units": selected,
+        "case_identity_checks": [r for r in rows(run, "case-identity-checks.jsonl", True)
+                                 if r.get("unit_id") in ids],
         "resolution_context_path": str(run / "resolution-context.jsonl") if context else None,
         "prepared_quotes": prepared,
         "quote_scope": "Quotes at the same location are context, not inferred attribution. Use explicit links or resolve attribution from the complete footnote.",

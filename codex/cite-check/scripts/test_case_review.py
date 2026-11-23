@@ -27,6 +27,7 @@ class ReviewTests(unittest.TestCase):
         self.manifest = json.loads((self.run / 'run-manifest.json').read_text())
         self.assertEqual(self.manifest['schema_version'], 6)
         self.manifest.pop('cache_recovery_version', None)  # Pre-recovery compatibility fixture.
+        self.manifest.pop('case_identity_version', None)  # Pre-identity-screen compatibility fixture.
         self.manifest.update(status='ready_for_validation', completion_target='complete')
         self.manifest['counts'].update(prepared_units=0, quote_checks=0, verified=1, partial=0, mismatch=0, unverified=0, existence_only=1)
         text = 'Alpha v. Beta, 1 F.3d 2 (2000).'
