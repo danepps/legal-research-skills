@@ -132,6 +132,16 @@ check(d[by_note[5][0]["i"]] == "verified", "quoted book -> verified")
 check(d[by_note[6][0]["i"]] == "unresolved-xref", "broken supra stays a finding-grade unresolved xref")
 check("unchecked" not in c, "no instance left unchecked in a full run (%s)" % c)
 
+print("dispositions — a case name/year that differs from the lookup (2026-11-23)")
+L4 = json.loads(json.dumps(L))
+mar = by_note[2][1]["i"]
+c4 = cl.assign_dispositions(L4, case_ex, sec_ex, qv, cite_mismatches={mar: "case name differs from the lookup: 5 U.S. 137 resolves to Thomas v. Arizona"})
+d4 = {x["i"]: x for x in L4["instances"]}
+check(d4[mar]["disposition"] == "finding" and "Thomas v. Arizona" in d4[mar]["reason"],
+      "an existing case cite whose name differs from the lookup -> finding, not existence-only")
+check(d4[by_note[2][2]["i"]]["disposition"] == "existence-only", "the other unquoted case in the note is unaffected")
+check("Thomas v. Arizona" in cl.render([dict(d4[mar])]), "the rendered ledger shows why the instance is a finding")
+
 print("dispositions — partial run")
 L3 = json.loads(json.dumps(L))
 c3 = cl.assign_dispositions(L3, case_ex, {}, qv, secondary_pass_ran=False)

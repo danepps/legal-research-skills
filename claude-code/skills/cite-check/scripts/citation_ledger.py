@@ -627,17 +627,20 @@ def support_disposition(verdict):
 
 def assign_dispositions(ledger, case_existence=None, secondary_existence=None,
                         quote_verdicts=None, secondary_pass_ran=True,
-                        case_pass_ran=True, support_verdicts=None):
+                        case_pass_ran=True, support_verdicts=None, cite_mismatches=None):
     """case_existence: {normalized cite: {"exists": bool|None}}
     secondary_existence: {source key: {"exists": bool|None}}
     quote_verdicts: {instance i: [verdict, ...]} (already joined to instances)
     support_verdicts: {instance i: verdict} from the opt-in support pass
+    cite_mismatches: {instance i: reason} for full case citations whose case name or year
+      differs from what the reporter cite resolved to (computed in the workflow, 2026-11-23)
     Mutates ledger instances in place, adding `disposition` (+ `reason`), and
     returns counts by disposition."""
     case_existence = case_existence or {}
     secondary_existence = secondary_existence or {}
     quote_verdicts = quote_verdicts or {}
     support_verdicts = support_verdicts or {}
+    cite_mismatches = cite_mismatches or {}
     inst = ledger["instances"]
     for x in inst:
         k = x["kind"]
@@ -688,8 +691,10 @@ def assign_dispositions(ledger, case_existence=None, secondary_existence=None,
             elif ex.get("exists") is False and ex.get("basis") != "unconfirmed":
                 exists = False  # located a catalog/site and it is not there
             # exists False + basis "unconfirmed" = could not tell -> unverifiable below
-        if any(v in FINDING_VERDICTS for v in vs) or exists is False:
+        if any(v in FINDING_VERDICTS for v in vs) or exists is False or x["i"] in cite_mismatches:
             x["disposition"] = "finding"
+            if x["i"] in cite_mismatches:
+                x["reason"] = cite_mismatches[x["i"]]
         elif sd == "support-finding" or sd == "support-confirm":
             x["disposition"] = sd
             x["reason"] = "support pass: %s" % support_verdicts[x["i"]]
@@ -751,7 +756,7 @@ def render(instances, anchors=None):
         note = x.get("n", x.get("note"))
         row = "| n.%s | %s | %s | %s | %s%s | %s |" % (
             note, x["i"], x.get("k", x.get("kind")), x.get("s", x.get("signal", "")) or "—", d,
-            (" (%s)" % why) if why and d in ("unchecked", "unverifiable", "support-unverifiable") else "",
+            (" (%s)" % why) if why and d in ("unchecked", "unverifiable", "support-unverifiable", "finding") else "",
             text[:200])
         if anchors:
             a = anchors.get(str(note)) or anchors.get(note) or {}

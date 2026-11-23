@@ -7,7 +7,8 @@ the previous file with the new one and prints a Markdown "Since the last report"
 findings that are NEW, findings STILL OPEN (unchanged), and findings RESOLVED (no longer
 reported). Dispositions carry forward by a stable key built from the finding's own content
 (the draft quote, the source, the verdict; the find-string and problem for a form finding;
-the cite for an existence or history item; the claim, source and verdict for a support
+the cite for an existence or history item; the field, reporter cite and the draft's own value
+for a case name or year that differs from the lookup; the claim, source and verdict for a support
 item), never from the footnote number, which renumbers
 every time the author adds a note.
 
@@ -44,6 +45,11 @@ def key_of(item):
         basis = f"{norm(item.get('find'))}|{norm(item.get('problem'))[:60]}"
     elif kind in ("existence", "history", "treatment", "secondary"):
         basis = f"{kind}|{norm(item.get('cite') or item.get('source'))}"
+    elif kind == "case-metadata":
+        # a case name or year that differs from what the reporter cite resolves to (2026-11-23):
+        # one item per field, keyed by the cite and the draft's own value, so fixing the year
+        # resolves the year item and a renumbered note changes nothing
+        basis = f"case-metadata|{item.get('field') or ''}|{norm(item.get('cite'))}|{norm(item.get('draft'))}"
     elif kind == "supra":
         basis = f"supra|{norm(item.get('claims'))}|{item.get('supraNote')}"
     elif kind in ("support", "support-confirm"):
