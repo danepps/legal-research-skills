@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from common import read_json, read_jsonl, write_jsonl
+from replacements import instructions, without_replacements
 
 
 def choose_chunks(blocks: list[dict], minimum: int, target: int, maximum: int) -> list[list[dict]]:
@@ -178,7 +179,8 @@ def semantic_note_references(blocks: list[dict], notes: list[dict], symbols: dic
 
 
 def write_chunk_packet(path: Path, chunk: dict, core: list[dict], before: list[dict], after: list[dict],
-                       owned_notes: list[dict], static_findings: list[dict], source_hash: str) -> None:
+                       owned_notes: list[dict], static_findings: list[dict], source_hash: str,
+                       replacements: bool = False) -> None:
     lines = [
         f"# Proofreading packet {chunk['chunk_id']}",
         "",
@@ -196,16 +198,18 @@ def write_chunk_packet(path: Path, chunk: dict, core: list[dict], before: list[d
     lines += render_blocks("Owned footnotes", owned_notes)
     if static_findings:
         lines.extend(["## Static candidates to confirm, reject, or refine", "", "```json"])
-        lines.extend(json.dumps(row, ensure_ascii=False, sort_keys=True) for row in static_findings)
+        lines.extend(json.dumps(row if replacements else without_replacements(row), ensure_ascii=False, sort_keys=True) for row in static_findings)
         lines.extend(["```", ""])
     lines += render_blocks("Context after (not owned)", after)
-    path.write_text("\n".join(lines), encoding="utf-8")
+    path.write_text("\n".join(lines) + instructions(replacements), encoding="utf-8")
 
 
 def write_lane_packets(run_dir: Path, chunks: list[dict], blocks: list[dict], notes: list[dict],
-                       symbols: dict, source_hash: str) -> list[str]:
+                       symbols: dict, source_hash: str, replacements: bool = False) -> list[str]:
     lanes = run_dir / "lane-packets"
     lanes.mkdir(parents=True, exist_ok=True)
+    if not replacements:
+        symbols = without_replacements(symbols)
     block_by_id = {str(block.get("block_id")): block for block in blocks}
     boundary = [
         "# Boundary and continuity lane",
@@ -221,7 +225,7 @@ def write_lane_packets(run_dir: Path, chunks: list[dict], blocks: list[dict], no
         boundary.extend([f"## {left['chunk_id']} → {right['chunk_id']}", ""])
         boundary += render_blocks("Left side", left_blocks)
         boundary += render_blocks("Right side", right_blocks)
-    (lanes / "boundary.md").write_text("\n".join(boundary), encoding="utf-8")
+    (lanes / "boundary.md").write_text("\n".join(boundary) + instructions(replacements), encoding="utf-8")
 
     note_index_rows = compact_notes(symbols.get("notes", []))
     packets = {
@@ -251,7 +255,7 @@ def write_lane_packets(run_dir: Path, chunks: list[dict], blocks: list[dict], no
     for name, (instruction, payload) in packets.items():
         text = [f"# {name.title()} lane", "", f"Source SHA-256: `{source_hash}`", "", instruction,
                 f"Return `lane-results/{name}.json` using the lane-result schema.", "", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```", ""]
-        (lanes / f"{name}.md").write_text("\n".join(text), encoding="utf-8")
+        (lanes / f"{name}.md").write_text("\n".join(text) + instructions(replacements), encoding="utf-8")
 
     semantic_refs = semantic_note_references(blocks, notes, symbols)
     semantic_lane_names: list[str] = []
@@ -271,7 +275,7 @@ def write_lane_packets(run_dir: Path, chunks: list[dict], blocks: list[dict], no
             instruction, f"Return `lane-results/{name}.json` with lane `{name}` using the lane-result schema.",
             "", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```", "",
         ]
-        (lanes / f"{name}.md").write_text("\n".join(text), encoding="utf-8")
+        (lanes / f"{name}.md").write_text("\n".join(text) + instructions(replacements), encoding="utf-8")
 
     serial_lane_names: list[str] = []
     serial_candidates = list(symbols.get("serial_comma_candidates", []))
@@ -291,7 +295,7 @@ def write_lane_packets(run_dir: Path, chunks: list[dict], blocks: list[dict], no
             instruction, f"Return `lane-results/{name}.json` with lane `{name}` using the lane-result schema.",
             "", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```", "",
         ]
-        (lanes / f"{name}.md").write_text("\n".join(text), encoding="utf-8")
+        (lanes / f"{name}.md").write_text("\n".join(text) + instructions(replacements), encoding="utf-8")
     return ["boundary", *packets.keys(), *semantic_lane_names, *serial_lane_names]
 
 
@@ -305,7 +309,14 @@ def main() -> int:
     parser.add_argument("--target-words", type=int, default=1000)
     parser.add_argument("--max-words", type=int, default=1200)
     parser.add_argument("--context-words", type=int, default=120)
+    parser.add_argument("--replacements", action="store_true")
     args = parser.parse_args()
+    manifest_path = args.run_dir / "run-manifest.json"
+    if manifest_path.is_file():
+        enabled = read_json(manifest_path).get("replacements", False)
+        if args.replacements and not enabled:
+            parser.error("--replacements conflicts with the run manifest; start a new enabled run")
+        args.replacements = enabled
     if not (0 < args.min_words <= args.target_words <= args.max_words):
         parser.error("require 0 < min-words <= target-words <= max-words")
     document = read_json(args.document)
@@ -360,10 +371,10 @@ def main() -> int:
         }
         chunks.append(row)
         candidate_rows = [item for item in static if item.get("location", {}).get("block_id") in set(core_ids + row["owned_note_ids"])]
-        write_chunk_packet(packets / f"{chunk_id}.md", row, core, before, after, owned_notes, candidate_rows, source_hash)
+        write_chunk_packet(packets / f"{chunk_id}.md", row, core, before, after, owned_notes, candidate_rows, source_hash, args.replacements)
 
     write_jsonl(args.run_dir / "chunks.jsonl", chunks)
-    lane_names = write_lane_packets(args.run_dir, chunks, blocks, notes, symbols, source_hash)
+    lane_names = write_lane_packets(args.run_dir, chunks, blocks, notes, symbols, source_hash, args.replacements)
     print(f"created {len(chunks)} owned chunks and {len(lane_names)} global lane packets")
     return 0
 

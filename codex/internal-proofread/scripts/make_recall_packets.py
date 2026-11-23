@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from common import read_json, read_jsonl, word_count, write_jsonl
+from replacements import instructions
 
 
 def require_first_pass_complete(run_dir: Path, manifest: dict, source_hash: str, findings_path: Path) -> None:
@@ -197,6 +198,7 @@ def write_packet(
     note_ids: list[str],
     spans: list[dict],
     result_path: Path,
+    replacements: bool = False,
 ) -> None:
     schema = {
         "packet_id": packet_id,
@@ -235,7 +237,7 @@ def write_packet(
         "",
     ]
     lines += render_material("Owned body blocks" if packet_kind == "body" else "Owned notes", items)
-    path.write_text("\n".join(lines), encoding="utf-8")
+    path.write_text("\n".join(lines) + instructions(replacements), encoding="utf-8")
 
 
 def main() -> int:
@@ -337,7 +339,7 @@ def main() -> int:
             "result_path": str(result_path.resolve()),
         }
         rows.append(row)
-        write_packet(packet_path, packet_id, kind, items, source_hash, block_ids, note_ids, spans, result_path.resolve())
+        write_packet(packet_path, packet_id, kind, items, source_hash, block_ids, note_ids, spans, result_path.resolve(), manifest.get("replacements", False))
 
     expected_body = [str(item["block_id"]) for item in body]
     expected_notes = [str(item["block_id"]) for item in notes]

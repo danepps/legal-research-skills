@@ -10,7 +10,7 @@ Default to report-only output. When the user requests a marked draft:
 
 1. Preserve the original file.
 2. Use a direct OOXML writer that does not launch an office application to create a new `.docx`; if none is available, stop after the report.
-3. Apply only `confirmed` corrections as tracked changes.
+3. Apply a `confirmed` correction as a tracked change only when its final row in `dispositions.jsonl` carries a `replacement`. Join that row to `findings.jsonl` by `finding_id`, using explicit disposition fields when present. Replace its exact excerpt at the recorded location with that string. If the field is absent, leave the correction for manual review; never apply prose from `suggestion`.
 4. Add comments for `likely`, `query`, and quoted-material findings.
 5. Do not apply `rejected` or `waived` candidates.
 6. Re-extract the marked copy, rerun deterministic linting, and confirm that every intended change appears and no unrelated text changed.

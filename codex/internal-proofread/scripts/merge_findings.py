@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 from common import normalize_space, read_json, read_jsonl, stable_id, validate_finding_location, write_jsonl
+from replacements import FLAGS, allowed, basis, bind, clear, validate_replacement
 
 
 VALID_CATEGORIES = {
@@ -23,7 +24,7 @@ def load_result(path: Path) -> dict:
     return value
 
 
-def normalize_agent_finding(raw: dict, source_hash: str, origin: str, source_id: str) -> dict:
+def normalize_agent_finding(raw: dict, source_hash: str, origin: str, source_id: str, replacements: bool = False) -> dict:
     location = raw.get("location") if isinstance(raw.get("location"), dict) else {}
     block_id = location.get("block_id") or raw.get("block_id")
     start = int(location.get("char_start", raw.get("char_start", 0)) or 0)
@@ -32,6 +33,8 @@ def normalize_agent_finding(raw: dict, source_hash: str, origin: str, source_id:
     if category not in VALID_CATEGORIES:
         category = "other"
     excerpt = normalize_space(str(raw.get("excerpt") or raw.get("exact_text") or ""))
+    if replacements and "replacement" in raw:
+        excerpt = raw.get("excerpt", raw.get("exact_text", ""))
     suggestion = normalize_space(str(raw.get("suggestion") or raw.get("proposed_change") or ""))
     message = normalize_space(str(raw.get("message") or raw.get("reason") or "Agent-reported proofreading candidate."))
     impact = str(raw.get("impact", "medium")).lower()
@@ -39,7 +42,7 @@ def normalize_agent_finding(raw: dict, source_hash: str, origin: str, source_id:
         impact = "medium"
     confidence = float(raw.get("confidence", 0.75))
     finding_id = str(raw.get("finding_id") or stable_id(source_hash, origin, source_id, block_id, start, end, category, excerpt, prefix="A"))
-    return {
+    row = {
         "finding_id": finding_id,
         "source_sha256": source_hash,
         "origin": origin,
@@ -62,6 +65,11 @@ def normalize_agent_finding(raw: dict, source_hash: str, origin: str, source_id:
         "suggestion": suggestion,
         "status": "candidate",
     }
+    if replacements:
+        for key in ("replacement", "replacement_basis", *FLAGS):
+            if key in raw:
+                row[key] = raw[key]
+    return row
 
 
 def substantially_overlaps(left: dict, right: dict) -> bool:
@@ -87,6 +95,8 @@ def main() -> int:
     args = parser.parse_args()
     run_dir = args.run_dir.expanduser().resolve()
     manifest = read_json(run_dir / "run-manifest.json")
+    replacements = manifest.get("replacements", False)
+    previous = {row.get("finding_id"): row for row in read_jsonl(run_dir / "findings.jsonl")} if replacements else {}
     source_hash = str(manifest.get("draft_sha256"))
     rows = read_jsonl(run_dir / "static-findings.jsonl") + read_jsonl(run_dir / "challenger-findings.jsonl")
     result_files = (
@@ -111,12 +121,20 @@ def main() -> int:
         for index, item in enumerate(findings):
             if not isinstance(item, dict):
                 raise ValueError(f"{path}: finding {index + 1} must be an object")
-            rows.append(normalize_agent_finding(item, source_hash, origin, source_id))
+            if replacements:
+                validate_replacement(item)
+            rows.append(normalize_agent_finding(item, source_hash, origin, source_id, replacements))
 
     document = read_json(run_dir / "document.json")
     blocks = {block.get("block_id"): block for block in document.get("blocks", []) + document.get("notes", [])}
-    for row in rows:
+    for index, row in enumerate(rows):
         validate_finding_location(row, blocks)
+        old = previous.get(row.get("finding_id"), {})
+        old_basis = old.get("replacement_basis")
+        if (replacements and "replacement" in row and "replacement_basis" not in row
+                and isinstance(old_basis, dict) and old_basis.get("value") == row["replacement"]):
+            row["replacement_basis"] = old_basis
+        rows[index] = bind(row, replacements, blocks)
     order = {block.get("block_id"): index for index, block in enumerate(document.get("blocks", []) + document.get("notes", []), 1)}
     rows.sort(key=lambda row: (
         order.get(row.get("location", {}).get("block_id"), 10**9),
@@ -125,6 +143,7 @@ def main() -> int:
         row.get("finding_id", ""),
     ))
     merged: list[dict] = []
+    conflicts = set()
     for row in rows:
         existing = next((item for item in reversed(merged) if substantially_overlaps(item, row)), None)
         if existing is None:
@@ -142,6 +161,24 @@ def main() -> int:
         existing["confidence"] = max(float(existing.get("confidence", 0)), float(row.get("confidence", 0)))
         if row.get("impact") == "high":
             existing["impact"] = "high"
+        if replacements:
+            for key in ("quoted_material", "requires_author_judgment"):
+                if row.get(key):
+                    existing[key] = True
+            if row.get("excerpt_only") is False:
+                existing["excerpt_only"] = False
+            if not allowed(existing, blocks) or not allowed(row, blocks):
+                clear(existing)
+                conflicts.add(existing["finding_id"])
+        if replacements and "replacement" in row and basis(existing) == basis(row):
+            identity = existing["finding_id"]
+            if identity not in conflicts:
+                if "replacement" in existing and existing["replacement"] != row["replacement"]:
+                    clear(existing)
+                    conflicts.add(identity)
+                elif "replacement" not in existing:
+                    existing["replacement"] = row["replacement"]
+                    existing["replacement_basis"] = row["replacement_basis"]
 
     output = sorted(merged, key=lambda row: (
         order.get(row.get("location", {}).get("block_id"), 10**9),

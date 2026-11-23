@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 from common import read_json, read_jsonl, write_jsonl
+from replacements import bind_audit, clear, without_replacements
 
 
 VALID = {"confirmed_rejection", "reopen", "revised"}
@@ -19,6 +20,7 @@ def main() -> int:
     args = parser.parse_args()
     run_dir = args.run_dir.expanduser().resolve()
     manifest = read_json(run_dir / "run-manifest.json")
+    replacements = manifest.get("replacements", False)
     source_hash = str(manifest.get("draft_sha256") or "")
     packets = read_jsonl(run_dir / "rejection-packets.jsonl")
     expected = [finding_id for packet in packets for finding_id in packet.get("finding_ids", [])]
@@ -51,6 +53,20 @@ def main() -> int:
         raise SystemExit(f"missing rejection audit rows: {', '.join(missing[:10])}")
 
     ordered = [by_id[finding_id] for finding_id in expected]
+    if replacements:
+        findings = read_jsonl(run_dir / "findings.jsonl")
+        document = read_json(run_dir / "document.json")
+        blocks = {row.get("block_id"): row for row in document.get("blocks", []) + document.get("notes", [])}
+        finding_by_id = {row.get("finding_id"): row for row in findings}
+        ordered = [bind_audit(row, finding_by_id.get(row["finding_id"], {}), blocks) for row in ordered]
+        withdraw = {row["finding_id"] for row in ordered if row.get("rejection_status") == "confirmed_rejection"
+                    or any(key in row for key in ("revised_suggestion", "revised_excerpt", "revised_location", "revised_severity", "revised_replacement"))}
+        for name, records in (("findings.jsonl", findings), ("dispositions.jsonl", read_jsonl(run_dir / "dispositions.jsonl"))):
+            updated = [clear(dict(row)) if row.get("finding_id") in withdraw else row for row in records]
+            if updated != records:
+                write_jsonl(run_dir / name, updated)
+    else:
+        ordered = without_replacements(ordered)
     write_jsonl(run_dir / "rejection-audit.jsonl", ordered)
     counts = Counter(row["rejection_status"] for row in ordered)
     print(f"merged {len(ordered)} rejection audits: {dict(sorted(counts.items()))}")
