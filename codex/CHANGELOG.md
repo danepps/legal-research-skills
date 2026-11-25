@@ -1,5 +1,41 @@
 # Codex plugin changes
 
+## 1.7.6 — 2026-11-25
+
+- `internal-proofread`: read referenced endnotes as a separate series after footnotes.
+  Render labels from settings/sections (default lower Roman), retain raw IDs and reference
+  order, support starts/section restarts/text custom marks, and disclose numbering
+  fallbacks. Markers, primary/recall/semantic/rejection packets, challenger mapping,
+  location validation, exact replacements and reports carry endnote coverage. Local
+  citation checks cover pincite arithmetic, volume/year consistency, missing years and
+  supra names in both note series. Ambiguous references are suppressed; cross-note
+  comparisons stay within a series. Existing Codex typeface limitations remain.
+  Synthetic regressions include note lints, merge/report replacements, coverage gates
+  and byte-identical no-endnote extraction at `19c9937`.
+- Remaining gaps include comment-body prose, image-only text, equation/embedded-object
+  contents and imported `altChunk` content; text-box coverage and final layout are not
+  guaranteed. Separators and unreferenced endnotes are intentionally excluded.
+- `internal-proofread`: replace the filename-based header/footer scan with section
+  relationship resolution and inheritance. Ignore unused parts and generated furniture;
+  deduplicate prose while preserving every section, type, part, paragraph and segment.
+  Header/footer insertions are included; deletions and move sources are excluded.
+- Separate primary and recall chunks preserve body boundaries. Prose and local citation
+  mechanics run on author notes, without footnote terminal-punctuation or note-direction
+  rules. Packets, challenger mapping, validation, merging, exact replacements and reports
+  retain header/footer locations; first-page stories sort before the body, other running
+  stories after notes. No header/footer prose adds no empty extraction field. Markdown
+  output is unchanged. Each plugin bundles its own helper; neither imports the other.
+- Tested offline using standard-library Python and synthetic documents: extraction and
+  compatibility fixtures, all six types, duplicate parts, fields, tracked text, primary
+  and recall/audit packet context, challenger mapping, location validation and exact
+  replacement survival through merge/report. Repository validation uses
+  `python3 run_tests.py`. No real draft, live model proofreading, Word opening/rendering,
+  Word accept/reject UI, Zotero refresh, live host or fresh installation was tested.
+  Codex still has no bundled redline writer; its optional exact corrections retain the
+  source location for a downstream writer.
+- Checked by hand after the tests (2026-11-25), on the snapshot of the live Dubitante run that exposed the gap: both extractors now return the first-page footer's author note, with the run-together word that was missed; in the Claude Code extractor the draft's 16 existing chunks are byte-for-byte unchanged and a 17th carries the header and footer text; the redline writer placed a correction for that word as a tracked insertion inside the footer part and anchored a comment-type finding at the start of the body, beginning with its location. Inspected as XML, not in Word. One nit left: a footer's rule line of underscores is extracted as text.
+- Endnotes, checked by hand after the tests (2026-11-25): the snapshot of the live run's draft was converted so that its 351 footnotes became decimal-numbered endnotes. The Claude Code extractor returns all 351 with their numbers, marks their references `[EN#n]`, and every deterministic lint rule fires exactly as often as on the footnote version (13 missing final periods among them); the redline writer applied the same 41 changes, 12 of them periods appended in the endnotes part, none opening inside a field. The unconverted draft extracts byte-for-byte as before. A converted file is not a document Word produced, and nothing was opened in Word.
+
 ## 1.7.5 — 2026-11-23
 
 - `cite-check`: deterministically compare a draft's printed case caption and year

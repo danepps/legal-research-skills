@@ -21,14 +21,14 @@ ITEM_RE = re.compile(
     r"^\s*(?:[-*+]\s+)?"
     r"(?:"
     r"(?:\*\*(?P<bold_location>[^*\n]+)\*\*|"
-    r"(?P<plain_location>(?:¶\s*\d+|n\.\s*\d+|note\s+\d+|B\d{6}|FN\S+)))"
+    r"(?P<plain_location>(?:¶\s*\d+|en\.\S+|endnote\s+\S+|n\.\s*\d+|note\s+\d+|B\d{6}|HF\d{6}|FN\S+|EN\d+)))"
     r"\s*(?:—|–|:|-)\s*"
     r")?"
     r"`(?P<excerpt>(?:\\`|[^`])+)`"
     r"\s*(?:—|–|:|-)\s*(?P<tail>.+?)\s*$",
     flags=re.IGNORECASE,
 )
-PLACEHOLDER_RE = re.compile(r"\[FN#\d+\]", flags=re.IGNORECASE)
+PLACEHOLDER_RE = re.compile(r"\[(?:FN#\d+|EN#[^\]\r\n]+)\]", flags=re.IGNORECASE)
 SEPARATOR_RE = re.compile(r"\s+[—–]\s+")
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$")
 
@@ -159,11 +159,23 @@ def infer_impact(section: str, category: str, message: str) -> str:
 
 def candidate_blocks(location: str, blocks: list[dict], notes: list[dict], symbols: dict) -> tuple[list[dict], str | None]:
     label = normalize_space(location)
-    direct = re.fullmatch(r"(B\d{6}|FN\S+)", label, flags=re.IGNORECASE)
+    direct = re.fullmatch(r"(B\d{6}|HF\d{6}|FN\S+|EN\d+)", label, flags=re.IGNORECASE)
     if direct:
         block_id = direct.group(1).upper()
         selected = [row for row in blocks + notes if str(row.get("block_id", "")).upper() == block_id]
         return selected, None if selected else f"reported block {block_id} is absent from document.json"
+
+    if re.search(r'\b(?:header|footer)\b', label, re.I):
+        selected = [row for row in blocks if row.get('location_label', '').casefold() == label.casefold()]
+        return selected, None if selected else 'reported header/footer location is absent from document.json'
+
+    endnote = re.fullmatch(r'(?:en\.|endnote\s+)\s*(.+)', label, re.I)
+    if endnote:
+        display = endnote[1]
+        selected = [row for row in notes if row.get('story') == 'endnote' and
+                    (row.get('location', {}).get('location_label', '').casefold() == ('en.' + display).casefold()
+                     or row.get('location_label', '').casefold() == label.casefold())]
+        return selected, None if len(selected) == 1 else 'reported endnote location is absent or ambiguous'
 
     note = re.fullmatch(r"(?:n\.|note)\s*(\d+)", label, flags=re.IGNORECASE)
     if note:
@@ -173,7 +185,7 @@ def candidate_blocks(location: str, blocks: list[dict], notes: list[dict], symbo
             selected = [row for row in notes if row.get("block_id") == block_id]
             return selected, None if selected else f"displayed note {display} maps to absent block {block_id}"
         # Older or plain-text runs may not expose displayed-note mappings.
-        return notes, None
+        return [row for row in notes if row.get('story') != 'endnote'], None
 
     if re.fullmatch(r"¶\s*\d+", label):
         return blocks, None
@@ -187,7 +199,7 @@ def map_item(item: dict, pool: list[dict]) -> tuple[list[dict], str]:
     matches: list[dict] = []
     for block in pool:
         text = str(block.get("text", ""))
-        normalized_text, index_map = normalize_with_map(text)
+        normalized_text, index_map = normalize_with_map(text, strip_placeholders='[EN#' in text)
         for start, end in find_occurrences(normalized_text, needle):
             if not index_map:
                 continue
@@ -304,6 +316,7 @@ def main() -> int:
                     "confidence": 0.75,
                     "detection": "semantic",
                     "location": {
+                        **block.get('location', {}),
                         "story": block.get("story"),
                         "block_id": block.get("block_id"),
                         "char_start": match["char_start"],

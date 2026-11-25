@@ -7,7 +7,7 @@ import argparse
 import re
 from pathlib import Path
 
-from common import read_json, read_jsonl, utc_now, write_json, write_jsonl
+from common import read_json, read_jsonl, report_order, utc_now, write_json, write_jsonl, linked_note_ids
 from replacements import bind_audit, effective_finding, resolve_records
 
 
@@ -41,11 +41,22 @@ def search_anchor(
     if not block:
         return normalized(row.get("excerpt", "")), False
     text = str(block.get("text", ""))
-    words = list(re.finditer(r"\S+", text))
-    if not words:
-        return normalized(row.get("excerpt", "")), False
     start = max(0, min(len(text), int(location.get("char_start", 0) or 0)))
     end = max(start, min(len(text), int(location.get("char_end", start) or start)))
+    # Synthetic endnote markers are not searchable Word prose. Bound an anchor
+    # to one contiguous side of a marker, retaining its exact source bytes.
+    segments, cursor = [], 0
+    for marker in re.finditer(r'\[EN#[^\]\r\n]+\]', text):
+        segments.append((cursor, marker.start()))
+        cursor = marker.end()
+    segments.append((cursor, len(text)))
+    segments = [(a, b) for a, b in segments if text[a:b].strip()]
+    if not segments:
+        return '', False
+    low, high = min(segments, key=lambda span: max(span[0] - start, start - span[1], 0))
+    words = list(re.compile(r"\S+").finditer(text, low, high))
+    if not words:
+        return '', False
     overlapping = [
         index for index, match in enumerate(words)
         if match.end() > start and match.start() < max(end, start + 1)
@@ -87,7 +98,7 @@ def search_anchor(
     anchor = current()
     if (
         allow_note_fallback
-        and block.get("story") == "footnote"
+        and block.get("story") in {"footnote", "endnote"}
         and anchor_occurrences(anchor, searchable_texts) != 1
         and block_id in note_parent_by_id
     ):
@@ -113,9 +124,11 @@ def item_text(
     block_id = location.get("block_id") or "global"
     block = block_by_id.get(block_id, {})
     body_ids = [key for key, value in block_by_id.items()
-                if value.get("story") not in {"footnote", "endnote"}]
+                if value.get("story") not in {"footnote", "endnote", "header", "footer"}]
     location_label = str(block.get("story") or "Draft").replace("_", " ").title()
-    if block_id in raw_to_display:
+    if block.get('location_label'):
+        location_label = block['location_label']
+    elif block_id in raw_to_display:
         location_label = f"Note {raw_to_display[block_id]}"
     elif block_id in body_ids:
         progress = round(100 * body_ids.index(block_id) / max(1, len(body_ids) - 1))
@@ -147,6 +160,10 @@ def section(
     if not rows:
         lines.extend(["None.", ""])
     else:
+        order = {block_id: index for index, block_id in enumerate(block_by_id)}
+        rows = sorted(rows, key=lambda pair: (
+            order.get(pair[0].get('location', {}).get('block_id'), 10**9),
+            pair[0].get('location', {}).get('char_start', 0)))
         for row, disposition in rows:
             lines.extend([
                 item_text(row, disposition, raw_to_display, block_by_id, searchable_texts, note_parent_by_id),
@@ -166,14 +183,16 @@ def main() -> int:
     document = read_json(run_dir / "document.json")
     symbols = read_json(run_dir / "symbols.json")
     source_blocks = document.get("blocks", []) + document.get("notes", [])
+    order = report_order(document.get('blocks', []), document.get('notes', []))
+    source_blocks.sort(key=lambda block: order.get(block.get('block_id'), 10**9))
     block_by_id = {
         str(block.get("block_id")): block
         for block in source_blocks if block.get("block_id")
     }
     note_parent_by_id: dict[str, dict] = {}
     for block in document.get("blocks", []):
-        for note_id in block.get("footnote_ids", []):
-            note_parent_by_id.setdefault(f"FN{note_id}", block)
+        for note_id in linked_note_ids(block):
+            note_parent_by_id.setdefault(note_id, block)
     searchable_texts = [normalized(block.get("text", "")) for block in source_blocks]
     raw_to_display = {
         block_id: display
@@ -195,6 +214,9 @@ def main() -> int:
     if resolved_dispositions != disposition_rows:
         write_jsonl(run_dir / "dispositions.jsonl", resolved_dispositions)
     findings = resolved_findings
+    order = report_order(document.get('blocks', []), document.get('notes', []))
+    findings.sort(key=lambda row: (order.get(row.get('location', {}).get('block_id'), 10**9),
+                                   row.get('location', {}).get('char_start', 0)))
     dispositions = {row.get("finding_id"): row for row in resolved_dispositions}
     groups: dict[str, list[tuple[dict, dict]]] = {name: [] for name in ("confirmed", "likely", "query", "fixed", "waived", "style", "prepublication", "rejected", "pending")}
     for row in findings:

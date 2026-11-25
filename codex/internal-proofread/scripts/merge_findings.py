@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-from common import normalize_space, read_json, read_jsonl, stable_id, validate_finding_location, write_jsonl
+from common import normalize_space, read_json, read_jsonl, report_order, stable_id, validate_finding_location, write_jsonl
 from replacements import FLAGS, allowed, basis, bind, clear, validate_replacement
 
 
@@ -54,6 +54,7 @@ def normalize_agent_finding(raw: dict, source_hash: str, origin: str, source_id:
         "confidence": max(0.0, min(1.0, confidence)),
         "detection": str(raw.get("detection", "semantic")),
         "location": {
+            **location,
             "story": location.get("story"),
             "block_id": block_id,
             "char_start": start,
@@ -135,7 +136,7 @@ def main() -> int:
                 and isinstance(old_basis, dict) and old_basis.get("value") == row["replacement"]):
             row["replacement_basis"] = old_basis
         rows[index] = bind(row, replacements, blocks)
-    order = {block.get("block_id"): index for index, block in enumerate(document.get("blocks", []) + document.get("notes", []), 1)}
+    order = report_order(document.get('blocks', []), document.get('notes', []))
     rows.sort(key=lambda row: (
         order.get(row.get("location", {}).get("block_id"), 10**9),
         int(row.get("location", {}).get("char_start", 0)),

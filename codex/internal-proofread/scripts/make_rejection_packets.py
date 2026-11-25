@@ -14,7 +14,7 @@ from replacements import instructions, without_replacements
 
 PACKET_SIZE = 8
 AUDIT_CATEGORIES = {"possible_omission", "duplication", "xref", "numbering"}
-BLOCK_ID_PATTERN = re.compile(r"\b(?:B\d{6}|FN\d+)\b")
+BLOCK_ID_PATTERN = re.compile(r"\b(?:B\d{6}|HF\d{6}|[FE]N\d+)\b")
 CLAUSE_MARKER_PATTERN = re.compile(r"\b(?:whether|if)\b", flags=re.IGNORECASE)
 
 
@@ -121,6 +121,9 @@ def structural_index(document: dict, symbols: dict | None) -> dict:
             "indexed_headings": symbols.get("headings", []),
             "display_note_to_block": symbols.get("display_note_to_block", {}),
         })
+    if symbols is not None and symbols.get('display_endnote_to_block') is not None:
+        value['display_endnote_to_block'] = symbols['display_endnote_to_block']
+        value['note_reference_policy'] = symbols.get('note_reference_policy')
     return value
 
 

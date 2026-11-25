@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from pathlib import Path
+import re
 
 from common import read_jsonl, validate_finding_location
 
@@ -56,6 +57,8 @@ def validate_replacement(row: dict, blocks: dict | None = None) -> None:
         return
     if not isinstance(row['replacement'], str):
         raise ValueError('replacement must be a string')
+    if any(re.search(r'\[EN#[^\]\r\n]+\]', str(row.get(key, ''))) for key in ('excerpt', 'replacement')):
+        raise ValueError('replacement cannot include or alter a synthetic endnote marker')
     if 'replacement_basis' in row and not isinstance(row['replacement_basis'], dict):
         raise ValueError('replacement_basis must be an object')
     if not allowed(row, blocks):

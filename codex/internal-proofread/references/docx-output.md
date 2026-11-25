@@ -2,7 +2,19 @@
 
 The extractor reads visible inserted text and excludes deleted text. Disclose that tracked-change view at the start of every DOCX run. Do not accept or reject existing changes in the source draft.
 
-The deterministic extractor reads body paragraphs, tables, headers, footers, footnotes, bookmarks, and field instructions directly from OOXML. It cannot establish final pagination, read image-only text, or fully reproduce Microsoft Word's field updating and numbering behavior. It does not resolve effective run italics, small caps, or capitalization inherited through Word styles. Do not infer displayed capitalization or make typeface findings from plain extracted text; Word may apply all caps to a heading through its style. Disclose this formatting limitation in DOCX reports.
+The deterministic extractor reads body paragraphs, tables, referenced headers and footers, footnotes and referenced endnotes directly from OOXML. It also indexes bookmarks and field instructions in body and endnote material, with footnote metadata retained on each note; instructions are metadata, never proofreading prose. Header/footer page, page-reference, page-count, section, running-title and date/time field results are excluded; other field results retain the normal text view. Identical header/footer prose is deduplicated with every section/type/part/paragraph occurrence retained. It cannot establish final pagination, read image-only text, or fully reproduce Microsoft Word's field updating and numbering behavior. It does not resolve effective run italics, small caps, or capitalization inherited through Word styles. Do not infer displayed capitalization or make typeface findings from plain extracted text; Word may apply all caps to a heading through its style. Disclose this formatting limitation in DOCX reports.
+
+Endnote numbering reads document and section properties. It supports decimal,
+lower/upper Roman and lower/upper letter formats, starts, continuous/section restart,
+and text custom marks in the reference run. An absent format means lower Roman;
+unsupported formats use that default with a limitation. Page-based restarts fall back
+to continuous numbering with a limitation, since pagination is unavailable. Duplicate
+labels remain separate notes; their `@N` location suffix is reference order, never a
+rendered number. Unrepresentable custom marks receive a disclosed placeholder.
+Cross-reference checks accept decimal aliases and Roman labels, suppress ambiguous
+targets, and compare only within one note series. Separators and unreferenced endnotes
+are excluded. Comment-body prose, equation/embedded-object contents and imported
+`altChunk` content have no dedicated reader; text-box coverage is not guaranteed.
 
 Treat `PAGEREF` fields and prose page-number references as unresolved until the user opens the document in Microsoft Word and updates the fields. Never launch an office application to update them automatically. Treat text boxes, equations, embedded objects, pagination, and visual layout as limitations if extraction counts cannot be reconciled.
 
@@ -12,6 +24,9 @@ Default to report-only output. When the user requests a marked draft:
 2. Use a direct OOXML writer that does not launch an office application to create a new `.docx`; if none is available, stop after the report.
 3. Apply a `confirmed` correction as a tracked change only when its final row in `dispositions.jsonl` carries a `replacement`. Join that row to `findings.jsonl` by `finding_id`, using explicit disposition fields when present. Replace its exact excerpt at the recorded location with that string. If the field is absent, leave the correction for manual review; never apply prose from `suggestion`.
 4. Add comments for `likely`, `query`, and quoted-material findings.
+   For a header/footer finding, use a body-start comment beginning with its complete
+   location and exact affected words unless Microsoft documentation establishes support
+   for anchors in that story. Do not infer Word compatibility from the XML schema.
 5. Do not apply `rejected` or `waived` candidates.
 6. Re-extract the marked copy, rerun deterministic linting, and confirm that every intended change appears and no unrelated text changed.
 7. Confirm that the marked copy is a valid ZIP/OOXML package, parse every XML part, re-extract its text, and disclose that pagination and visual layout were not rendered.

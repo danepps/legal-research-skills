@@ -47,6 +47,10 @@ import re
 import sys
 import zipfile
 from xml.etree import ElementTree as ET
+# Isolated (-I) hosts omit the script directory from the normal import path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from header_footer import collect as collect_headers_footers
+from endnotes import index as endnote_index, reference_copy, visible, references as endnote_references, targets as endnote_targets
 
 # Shared citation-FORM library (typeface + short forms + the .docx run-formatting
 # reader) lives with the other cross-skill machinery in legal-research/, so
@@ -133,20 +137,39 @@ def to_roman(n):
     return ROMAN_NUM[n] if 0 < n < len(ROMAN_NUM) else str(n)
 
 
-def parse_docx(src):
+def parse_docx(src, headers_footers=None, endnotes=None, limitations=None):
     if src.lower().endswith(".docx"):
         zf = zipfile.ZipFile(src)
-        fn_root = _load_xml(zf, "word/footnotes.xml")
         body_root = _load_xml(zf, "word/document.xml")
         styles_src = zf
     else:
-        fn_root = _load_xml(src, "word/footnotes.xml")
         body_root = _load_xml(src, "word/document.xml")
         styles_src = src
+    try:
+        fn_root = _load_xml(styles_src, 'word/footnotes.xml')
+    except (KeyError, FileNotFoundError):
+        fn_root = ET.Element(W + 'footnotes')
     try:
         styles = parse_styles(_load_xml(styles_src, "word/styles.xml"))
     except (KeyError, OSError, ET.ParseError):
         styles = {}
+
+    def optional_xml(member):
+        try:
+            return _load_xml(styles_src, member)
+        except (KeyError, FileNotFoundError):
+            return None
+    end_records, end_limits = endnote_index(optional_xml)
+    end_numbers = {r['note_id']: r['number'] for r in end_records}
+
+    def read_spans(paragraph, style):
+        return runs_spans(reference_copy(paragraph, end_numbers), styles, style)
+
+    if limitations is not None:
+        limitations.extend(end_limits)
+    if headers_footers is not None:
+        headers_footers.extend(collect_headers_footers(
+            optional_xml, lambda p: read_spans(p, _para_style(p)), clean_spans))
 
     notes_by_id = {}
     for fn in fn_root.findall(W + "footnote"):
@@ -156,23 +179,52 @@ def parse_docx(src):
         for i, p in enumerate(fn.findall(W + "p")):
             if i:
                 spans.append((" ", frozenset()))
-            spans += runs_spans(p, styles, _para_style(p))
+            spans += read_spans(p, _para_style(p))
         text, sp = clean_spans(spans)
         notes_by_id[fn.get(W + "id")] = {"text": text, "spans": sp}
 
+    if endnotes is not None and end_records:
+        en_root = optional_xml('word/endnotes.xml')
+        by_id = {n.get(W + 'id'): n for n in en_root.findall(W + 'endnote')}
+        for record in end_records:
+            node = by_id[record['note_id']]
+            spans = []
+            for i, paragraph in enumerate(n for n in visible(node) if n.tag == W + 'p'):
+                if i:
+                    spans.append((' ', frozenset()))
+                spans.extend(read_spans(paragraph, _para_style(paragraph)))
+            text, sp = clean_spans(spans)
+            endnotes.append(dict(record, text=text, spans=sp, words=len(text.split())))
     paras, order = [], []
     has_ins = has_del = False
-    for p in body_root.iter(W + "p"):
+    if end_records:
+        en_root = optional_xml('word/endnotes.xml')
+        has_ins = en_root.find('.//' + W + 'ins') is not None
+        has_del = en_root.find('.//' + W + 'del') is not None
+
+    body_paragraphs = (n for n in visible(body_root) if n.tag == W + "p") if end_records else body_root.iter(W + "p")
+    for p in body_paragraphs:
         if p.find(".//" + W + "ins") is not None:
             has_ins = True
         if p.find(".//" + W + "del") is not None:
             has_del = True
         style = _para_style(p)
-        t, sp = clean_spans(runs_spans(p, styles, style))
+        t, sp = clean_spans(read_spans(p, style))
         for ref in p.iter(W + "footnoteReference"):
             order.append(ref.get(W + "id"))
         if t:
-            paras.append({"text": t, "style": style, "spans": sp})
+            entry = {"text": t, "style": style, "spans": sp}
+            if end_records:
+                entry['endnote_ids'] = [n.get(W + 'id') for n in visible(p) if n.tag == W + 'endnoteReference']
+            paras.append(entry)
+    if headers_footers:
+        for record in headers_footers:
+            for occurrence in record['location']['occurrences']:
+                root = optional_xml(occurrence['part'])
+                has_ins |= root.find('.//' + W + 'ins') is not None
+                has_del |= root.find('.//' + W + 'del') is not None
+    if isinstance(styles_src, zipfile.ZipFile):
+        styles_src.close()
     return notes_by_id, paras, order, has_ins, has_del, True
 
 
@@ -228,7 +280,7 @@ def build_number_map(order):
 # ---- lint: deterministic near-certain checks ----------------------------------
 DOUBLED = re.compile(r"\b([A-Za-z]{2,})\s+\1\b", re.IGNORECASE)
 DOUBLED_OK = {"had", "that", "is"}  # "had had", "that that" are grammatical
-FN_BEFORE_PUNCT = re.compile(r"(\[FN#\d+\])\s*([.,;:])")
+FN_BEFORE_PUNCT = re.compile(r"(\[(?:FN#\d+|EN#[^\]\r\n]+)\])\s*([.,;:])")
 NO_SPACE_AFTER_COMMA = re.compile(r"[A-Za-z],[A-Za-z]")
 SPACE_BEFORE_PUNCT = re.compile(r"[A-Za-z]\s+[,;]")
 ET_AL = re.compile(r"\bet\.\s?al\b")
@@ -262,9 +314,10 @@ def lint_text(text, loc):
         add("doubled-word", m, "repeated word: %r" % m.group(0),
             "delete one %r" % m.group(1), "likely")
     for m in FN_BEFORE_PUNCT.finditer(text):
-        add("footnote-before-punctuation", m,
-            "footnote call %s precedes the punctuation mark" % m.group(1),
-            "move the footnote call after the %r" % m.group(2))
+        kind = 'endnote' if m.group(1).startswith('[EN#') else 'footnote'
+        add(kind + "-before-punctuation", m,
+            "%s call %s precedes the punctuation mark" % (kind, m.group(1)),
+            "move the %s call after the %r" % (kind, m.group(2)))
     for m in NO_SPACE_AFTER_COMMA.finditer(text):
         add("no-space-after-comma", m, "missing space after comma",
             "insert a space", "likely")
@@ -610,6 +663,75 @@ def supra_name_lint(notes):
     return out
 
 
+def endnote_ref_findings(text, loc, current, records):
+    out = []
+    for match, targets in endnote_references(text, records):
+        problems = []
+        if any(target is None for target in targets):
+            problems.append('target endnote does not exist in the extracted endnote series')
+        else:
+            lo, hi = targets[0]['order'], targets[-1]['order']
+            if len(targets) > 1 and lo >= hi:
+                problems.append('endnote range runs backwards')
+            if current is not None and ((match[1].lower() == 'supra' and hi >= current)
+                                        or (match[1].lower() == 'infra' and lo <= current)):
+                problems.append('endnote reference points in the wrong direction')
+        for problem in problems:
+            out.append(dict(rule='note-cross-reference', location=loc,
+                            find=_ctx(text, match.start(), match.end()), exact=match[0],
+                            problem=problem, fix='re-check the endnote number', severity='error'))
+    return out
+
+
+def endnote_name_lint(records):
+    lookup = endnote_targets(records)
+    pattern = re.compile(SUPRA_NAME.pattern.replace(r"(\d+)", r"(\d+|[ivxlcdmIVXLCDM]+)\b"))
+    out = []
+    for record in records:
+        text = record['text']
+        for match in pattern.finditer(text):
+            targets = lookup.get(match[2].casefold(), [])
+            if len(targets) != 1:
+                continue  # Missing targets have their own rule; ambiguous ones are suppressed.
+            tokens = re.split(r'\s+', match[1].split('&')[0].strip())
+            while tokens and _surname(tokens[0]) in _SIGNALS:
+                tokens.pop(0)
+            key = _surname(tokens[0]) if tokens else ''
+            target = targets[0]['text']
+            if len(key) < 4:
+                continue
+            rule = ('supra-target-name' if key not in _surname(target) else
+                    'supra-name-spelling' if key not in {_surname(w) for w in target.split()} else None)
+            if rule:
+                out.append(dict(rule=rule, location=record['location'],
+                    find=_ctx(text, match.start(), match.end()), exact=match[0],
+                    problem='Author %s is absent or spelled differently in endnote %s.' % (tokens[0], targets[0]['number']),
+                    fix='check the author name and the endnote target', severity='likely'))
+    return out
+
+
+def endnote_labels(rows, records):
+    """Adapt legacy ordinal-keyed note rules without conflating display labels."""
+    by_order = {r['order']: r for r in records}
+    def prose(text):
+        text = re.sub(r'\bn\.(\d+)', lambda m: by_order[int(m[1])]['location_label']
+                      if int(m[1]) in by_order else m[0], text)
+        text = re.sub(r'\bnote (\d+)', lambda m: 'endnote ' + by_order[int(m[1])]['number']
+                      if int(m[1]) in by_order else m[0], text)
+        return text.replace('footnotes', 'endnotes').replace('footnote', 'endnote')
+    for row in rows:
+        row = dict(row)
+        loc = row.get('location')
+        if isinstance(loc, dict) and loc.get('where') == 'footnote':
+            row['location'] = by_order[loc['note']]['location']
+        elif isinstance(loc, str) and loc.startswith('n.'):
+            row['location'] = by_order[int(loc[2:])]['location_label']
+        for key in ('problem', 'fix', 'issue', 'recommendation', 'minority', 'dominant'):
+            if key in row:
+                row[key] = prose(row[key])
+        yield row
+
+
 # ---- heading structure ----------------------------------------------------------
 ROMAN = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100}
 
@@ -731,6 +853,34 @@ def consistency_data(full_lower, full, locate):
             "defined_terms": terms, "stats": stats}
 
 
+def range_lint(notes):
+    lint = []
+    all_notes = " ".join(notes.values())
+    endash_ranges = len(re.findall(r"\d–\d", all_notes))
+    hyphen_ranges = re.findall(r"\b\d{2,4}-\d{1,4}\b", all_notes)
+    if endash_ranges >= 3 * max(1, len(hyphen_ranges)) and hyphen_ranges:
+        flagged = 0
+        for num in sorted(notes):
+            for m in re.finditer(r"\b\d{2,4}-\d{1,4}\b", notes[num]):
+                # skip docket/statute-section numbers and URLs, which legitimately hyphenate
+                before = notes[num][:m.start()]
+                if re.search(r"(?:Nos?\.|§|[Dd]ocket)\s*$", before) or before.endswith(("/", "=", "-")):
+                    continue
+                lint.append({"rule": "cite-range-hyphen",
+                             "location": {"where": "footnote", "note": num},
+                             "find": _ctx(notes[num], m.start(), m.end()),
+                             "exact": m.group(0),
+                             "problem": "page range uses a hyphen; the draft's convention is an en dash (%d en-dash ranges vs %d hyphens)"
+                                        % (endash_ranges, len(hyphen_ranges)),
+                             "fix": "use an en dash (–)", "severity": "likely"})
+                flagged += 1
+                if flagged >= 12:
+                    break
+            if flagged >= 12:
+                break
+    return lint
+
+
 # ---- main -----------------------------------------------------------------------
 def main(argv):
     if len(argv) < 2:
@@ -743,10 +893,11 @@ def main(argv):
         chunk_words = int(argv[argv.index("--chunk-words") + 1])
     os.makedirs(os.path.join(outdir, "chunks"), exist_ok=True)
 
+    headers_footers, endnotes, limitations = [], [], []
     if src.lower().endswith((".md", ".markdown", ".txt")):
         notes_by_id, raw_paras, order, has_ins, has_del, fmt_ok = parse_markdown(src)
     else:
-        notes_by_id, raw_paras, order, has_ins, has_del, fmt_ok = parse_docx(src)
+        notes_by_id, raw_paras, order, has_ins, has_del, fmt_ok = parse_docx(src, headers_footers, endnotes, limitations)
     id2num = build_number_map(order)
     footnote_count = len(id2num)
 
@@ -819,6 +970,19 @@ def main(argv):
         notes[num] = render(rec["text"])
         note_spans[num] = shift_spans(rec["text"], rec.get("spans") or [], id2num)
 
+    for record in endnotes:
+        record['spans'] = shift_spans(record['text'], record['spans'], id2num)
+        record['text'] = render(record['text'])
+    end_text = {r['order']: r['text'] for r in endnotes}
+    end_spans = {r['order']: r['spans'] for r in endnotes}
+    if endnotes and footnote_count:
+        limitations.append('Body/header/footer note references are ambiguous in a draft with both series; those references are suppressed. References inside a note resolve only within its own series.')
+
+    def non_note_refs(text, loc):
+        if endnotes:
+            return [] if footnote_count else endnote_ref_findings(text, loc, None, endnotes)
+        return note_ref_findings(text, loc, None, footnote_count)
+
     # ---- lint + cross-refs ----
     lint, part_refs = [], []
     for p in paras:
@@ -826,7 +990,7 @@ def main(argv):
             continue
         loc = {"where": "body", "para": p["id"]}
         lint += lint_text(p["text"], loc)
-        lint += note_ref_findings(p["text"], loc, None, footnote_count)
+        lint += non_note_refs(p["text"], loc)
         part_refs += collect_part_refs(p["text"], loc)
     for num in sorted(notes):
         loc = {"where": "footnote", "note": num}
@@ -842,6 +1006,30 @@ def main(argv):
     lint += missing_year_lint(notes)
     lint += duplicate_passage_lint(paras)
     lint += short_form_lint(notes)
+    for record in headers_footers:
+        text, loc = record['text'], record['location']
+        lint += lint_text(text, loc)
+        lint += non_note_refs(text, loc)
+        part_refs += collect_part_refs(text, loc)
+        # Local citation typography applies to author notes, but note sequencing,
+        # short-form distance, terminal punctuation and footnote typeface do not.
+        lint += cite_mechanics_lint(text, loc)
+        lint += pincite_lint(text, loc)
+        lint += us_volume_year_lint(text, loc)
+
+    for record in endnotes:
+        text, loc = record['text'], record['location']
+        lint += lint_text(text, loc)
+        lint += endnote_ref_findings(text, loc, record['order'], endnotes)
+        part_refs += collect_part_refs(text, loc)
+        for check in (cite_mechanics_lint, terminal_punct_finding, pincite_lint, us_volume_year_lint):
+            rows = check(text, loc)
+            for row in rows:
+                row['problem'] = row['problem'].replace('footnote', 'endnote')
+            lint += rows
+    for check in (caption_consistency, missing_year_lint, short_form_lint):
+        lint += list(endnote_labels(check(end_text), endnotes))
+    lint += endnote_name_lint(endnotes)
 
     # ---- typeface (only when the formatting layer is real) ----
     fmt_conventions, case_inventory, case_counts = [], [], {}
@@ -856,31 +1044,16 @@ def main(argv):
                                   {"where": "footnote", "note": num}, True)
         case_inventory, fmt_conventions, case_counts = case_name_typeface(
             paras, notes, para_spans, note_spans)
+        for record in endnotes:
+            lint += typeface_lint(record['text'], record['spans'], record['location'], True)
+        if endnotes:
+            en_inventory, en_conventions, en_case_counts = case_name_typeface([], end_text, {}, end_spans)
+            case_inventory += list(endnote_labels(en_inventory, endnotes))
+            fmt_conventions += list(endnote_labels(en_conventions, endnotes))
     # page-range dash style: flag hyphen ranges only when en-dash clearly
     # dominates the draft's own footnotes (a convention, not an absolute)
-    all_notes = " ".join(notes.values())
-    endash_ranges = len(re.findall(r"\d–\d", all_notes))
-    hyphen_ranges = re.findall(r"\b\d{2,4}-\d{1,4}\b", all_notes)
-    if endash_ranges >= 3 * max(1, len(hyphen_ranges)) and hyphen_ranges:
-        flagged = 0
-        for num in sorted(notes):
-            for m in re.finditer(r"\b\d{2,4}-\d{1,4}\b", notes[num]):
-                # skip docket/statute-section numbers and URLs, which legitimately hyphenate
-                before = notes[num][:m.start()]
-                if re.search(r"(?:Nos?\.|§|[Dd]ocket)\s*$", before) or before.endswith(("/", "=", "-")):
-                    continue
-                lint.append({"rule": "cite-range-hyphen",
-                             "location": {"where": "footnote", "note": num},
-                             "find": _ctx(notes[num], m.start(), m.end()),
-                             "exact": m.group(0),
-                             "problem": "page range uses a hyphen; the draft's convention is an en dash (%d en-dash ranges vs %d hyphens)"
-                                        % (endash_ranges, len(hyphen_ranges)),
-                             "fix": "use an en dash (–)", "severity": "likely"})
-                flagged += 1
-                if flagged >= 12:
-                    break
-            if flagged >= 12:
-                break
+    lint += range_lint(notes)
+    lint += list(endnote_labels(range_lint(end_text), endnotes))
     lint += heading_structure_findings(labeled_headings)
 
     # Part/Section refs pointing at labels the draft doesn't have. Only when we
@@ -912,6 +1085,11 @@ def main(argv):
     lines.append("===== FOOTNOTES =====")
     for num in sorted(notes):
         lines.append("[n.%d] %s" % (num, notes[num]))
+    if endnotes:
+        lines += ['', '===== ENDNOTES =====']
+        lines += ['[%s] %s' % (r['location_label'], r['text']) for r in endnotes]
+    for record in headers_footers:
+        lines.append('[%s] %s' % (record['location_label'], record['text']))
     fulltext = "\n\n".join(lines)
     with open(os.path.join(outdir, "fulltext.txt"), "w", encoding="utf-8") as f:
         f.write(fulltext)
@@ -936,6 +1114,12 @@ def main(argv):
         for num in sorted(notes):
             flines.append("[n.%d] %s"
                           % (num, render_marked(notes[num], note_spans.get(num, []))))
+        if endnotes:
+            flines += ['', '===== ENDNOTES =====']
+            flines += ['[%s] %s' % (r['location_label'], render_marked(r['text'], r['spans'])) for r in endnotes]
+        for record in headers_footers:
+            flines.append('[%s] %s' % (record['location_label'],
+                          render_marked(record['text'], record['spans'])))
         with open(os.path.join(outdir, "fulltext_fmt.txt"), "w", encoding="utf-8") as f:
             f.write("\n\n".join(flines))
 
@@ -953,6 +1137,11 @@ def main(argv):
                 hits.append("n.%d" % num)
             if len(hits) >= 6:
                 break
+        for record in endnotes + headers_footers:
+            if len(hits) >= 6:
+                break
+            if pat.search(record['text']):
+                hits.append(record['location_label'])
         return hits
     cons = consistency_data(fulltext.lower(), fulltext, locate)
 
@@ -962,10 +1151,15 @@ def main(argv):
     for i, p in enumerate(raw_paras):
         fn_of_para[i] = [id2num[fid] for fid in FN_PLACEHOLDER.findall(p["text"])
                          if fid in id2num]
+    en_of_para = {p['id']: [] for p in paras}
+    # Raw IDs disambiguate repeated/custom labels when attaching notes to callers.
+    if endnotes:
+        for i, raw in enumerate(raw_paras):
+            en_of_para[i] = [r for r in endnotes if r['note_id'] in raw.get('endnote_ids', [])]
     for p in paras:
         if p.get("toc"):
             continue  # Word regenerates the TOC; don't proofread it
-        note_words = sum(len(notes[n].split()) for n in fn_of_para[p["id"]] if n in notes)
+        note_words = sum(len(notes[n].split()) for n in fn_of_para[p["id"]] if n in notes) + sum(r["words"] for r in en_of_para[p["id"]])
         if cur and cur_words + p["words"] + note_words > chunk_words:
             chunks.append(cur)
             cur, cur_words = [], 0
@@ -984,8 +1178,31 @@ def main(argv):
             "word_count": sum(paras[pid]["words"] for pid in ids)
                           + sum(len(notes[n].split()) for n in cnotes),
         }
+        cends = [r for r in endnotes if any(r in en_of_para[pid] for pid in ids)]
+        if cends:
+            payload['endnotes'] = [{k: v for k, v in r.items() if k != 'spans'} for r in cends]
+            payload['word_count'] += sum(r['words'] for r in cends)
         path = os.path.join(outdir, "chunks", "chunk-%02d.json" % ci)
         with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+        chunk_files.append(path)
+
+    # Append bounded story chunks; existing body/note chunks retain their bytes.
+    groups, group, words = [], [], 0
+    for record in headers_footers:
+        if group and words + record['words'] > chunk_words:
+            groups.append(group)
+            group, words = [], 0
+        group.append(record)
+        words += record['words']
+    if group:
+        groups.append(group)
+    for group in groups:
+        ci = len(chunk_files)
+        path = os.path.join(outdir, 'chunks', 'chunk-%02d.json' % ci)
+        payload = {'chunk_id': ci, 'paragraphs': [], 'footnotes': [],
+                   'headers_footers': group, 'word_count': sum(r['words'] for r in group)}
+        with open(path, 'w', encoding='utf-8') as f:
             json.dump(payload, f, ensure_ascii=False, indent=1)
         chunk_files.append(path)
 
@@ -1002,7 +1219,8 @@ def main(argv):
         "paragraph_count": len(paras),
         "footnote_count": footnote_count,
         "word_count": sum(p["words"] for p in paras)
-                      + sum(len(t.split()) for t in notes.values()),
+                      + sum(len(t.split()) for t in notes.values())
+                      + sum(r['words'] for r in headers_footers) + sum(r['words'] for r in endnotes),
         "tracked_insertions": has_ins,
         "tracked_deletions": has_del,
         "headings": labeled_headings,
@@ -1021,12 +1239,20 @@ def main(argv):
             "conventions": fmt_conventions,
             "case_name_counts": case_counts,
             "case_name_candidates": case_inventory,
-            "italic_runs": sum(1 for sp in list(para_spans.values()) + list(note_spans.values())
+            "italic_runs": sum(1 for sp in list(para_spans.values()) + list(note_spans.values()) + list(end_spans.values())
                                for s in sp if "i" in s[2]),
-            "small_caps_runs": sum(1 for sp in list(para_spans.values()) + list(note_spans.values())
+            "small_caps_runs": sum(1 for sp in list(para_spans.values()) + list(note_spans.values()) + list(end_spans.values())
                                    for s in sp if "smallCaps" in s[2]),
         },
     }
+    if endnotes:
+        data['endnotes'] = [{k: v for k, v in r.items() if k != 'spans'} for r in endnotes]
+        data['endnote_count'] = len(endnotes)
+        data['formatting']['endnote_case_name_counts'] = en_case_counts if fmt_ok else {}
+    if limitations:
+        data['limitations'] = limitations
+    if headers_footers:
+        data['headers_footers'] = headers_footers
     with open(os.path.join(outdir, "proof.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
 
@@ -1041,6 +1267,7 @@ def main(argv):
         "all_caps_headings": sum(1 for h in labeled_headings if h.get("display")),
         "paragraph_count": data["paragraph_count"],
         "footnote_count": footnote_count,
+        **({"endnote_count": len(endnotes)} if endnotes else {}),
         "word_count": data["word_count"],
         "chunk_count": len(chunk_files),
         "lint_finding_count": len(lint),

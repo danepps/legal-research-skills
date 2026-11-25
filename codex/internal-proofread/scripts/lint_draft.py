@@ -9,6 +9,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from common import excerpt_around, normalize_space, read_json, stable_id, write_json, write_jsonl
+from endnotes import references as endnote_references, targets as endnote_targets
+from note_lints import local as local_note_lints, supra as supra_lints
 
 
 XREF_RE = re.compile(
@@ -74,6 +76,7 @@ def finding(document: dict, rule_id: str, category: str, block: dict, start: int
         "confidence": confidence,
         "detection": detection,
         "location": {
+            **block.get('location', {}),
             "story": block.get("story"),
             "block_id": block.get("block_id"),
             "char_start": start,
@@ -265,7 +268,7 @@ def main() -> int:
     crossrefs: list[dict] = []
     definitions: list[dict] = []
     targets: dict[str, list[str]] = defaultdict(list)
-    case_citations: dict[str, list[dict]] = defaultdict(list)
+    case_citations: dict[tuple[str, str], list[dict]] = defaultdict(list)
 
     # OOXML footnote IDs are storage identifiers, not displayed note numbers.
     # Build the displayed-number map from first reference order in the body.
@@ -280,6 +283,11 @@ def main() -> int:
     display_to_raw = {str(index): raw_id for index, raw_id in enumerate(referenced_note_ids, 1)}
     raw_to_display = {raw_id: int(display) for display, raw_id in display_to_raw.items()}
 
+    endnotes = [dict(note, number=note['display_number']) for note in notes if note.get('story') == 'endnote']
+    end_lookup = endnote_targets(endnotes)
+    footnote_lookup = {display: [n for n in notes if n.get('story') == 'footnote' and str(n.get('note_id')) == raw]
+                       for display, raw in display_to_raw.items()}
+    both_series = bool(endnotes) and any(n.get('story') == 'footnote' for n in notes)
     toc_by_heading, toc_entries = toc_heading_index(blocks)
 
     for block in blocks:
@@ -344,6 +352,16 @@ def main() -> int:
             findings.append(finding(document, "text.repeated_punctuation", "punctuation", block, match.start(), match.end(),
                                     "Punctuation mark is repeated.", "Review and retain only the intended punctuation.", 0.97,
                                     severity="error", impact="low"))
+        for match in re.finditer(r'\[EN#[^\]\r\n]+\]\s*[.,;:]', text):
+            findings.append(finding(document, 'endnote.before_punctuation', 'punctuation', block,
+                                    match.start(), match.end(), 'Endnote call precedes punctuation.',
+                                    'Move the endnote call after punctuation.', 0.99, severity='error', impact='low'))
+        if block.get('story') in {'footnote', 'endnote'}:
+            for rule, start, end, message, suggestion in local_note_lints(text):
+                findings.append(finding(document, rule, 'footnote', block, start, end, message, suggestion, 0.96, impact='low'))
+            lookup = end_lookup if block.get('story') == 'endnote' else footnote_lookup
+            for rule, start, end, message, suggestion in supra_lints(text, lookup):
+                findings.append(finding(document, rule, 'xref', block, start, end, message, suggestion, 0.92, impact='high'))
         for match in MIXED_SIGNAL_RE.finditer(text):
             findings.append(finding(
                 document, "citation.mixed_signal", "footnote", block, match.start(), match.end(),
@@ -387,7 +405,7 @@ def main() -> int:
             case_name = normalize_space(match.group("case"))
             case_name = re.sub(r"^(?:(?:But\s+)?(?:see|cf\.|accord)|compare)\s+", "", case_name, flags=re.I)
             normalized_case = re.sub(r"[^a-z0-9]+", " ", case_name.casefold()).strip()
-            case_citations[normalized_case].append({
+            case_citations[(block.get('story'), normalized_case)].append({
                 "case_name": case_name,
                 "volume": match.group("volume"),
                 "page": match.group("page"),
@@ -416,11 +434,11 @@ def main() -> int:
                                     "Check quote boundaries; a quotation may intentionally span paragraphs.", 0.68,
                                     detection="heuristic"))
 
-        if block.get("story") == "footnote" and stripped and stripped[-1] not in ".!?…":
+        if block.get("story") in {"footnote", "endnote"} and stripped and stripped[-1] not in ".!?…":
             findings.append(finding(
-                document, "footnote.missing_terminal_punctuation", "footnote", block,
+                document, block["story"] + ".missing_terminal_punctuation", "footnote", block,
                 max(0, len(stripped) - min(24, len(stripped))), len(stripped),
-                "The footnote does not end with terminal punctuation.",
+                f"The {block['story']} does not end with terminal punctuation.",
                 "Add the appropriate terminal punctuation unless the note intentionally continues elsewhere.",
                 0.96, severity="error", impact="low", detection="exact",
             ))
@@ -455,7 +473,7 @@ def main() -> int:
                                     "Confirm whether the later block was pasted accidentally.", 0.99, severity="error", impact="high"))
 
     case_citation_variants = []
-    for normalized_case, occurrences in case_citations.items():
+    for (_, normalized_case), occurrences in case_citations.items():
         core_variants = {
             (item["volume"], item["page"], item["year"])
             for item in occurrences
@@ -502,6 +520,27 @@ def main() -> int:
                         "Confirm the intended internal reference or create the missing target.", 0.98,
                         severity="error", impact="high",
                     ))
+        series = block.get('story')
+        if endnotes and (series == 'endnote' or (series not in {'footnote', 'endnote'} and not both_series)):
+            for match, resolved in endnote_references(text, endnotes):
+                refs = [n['block_id'] for n in resolved if n is not None]
+                crossrefs.append(dict(block_id=block['block_id'], kind='note', series='endnote', label=match[2],
+                    direction=match[1].lower(), char_start=match.start(), char_end=match.end(),
+                    excerpt=excerpt_around(text, match.start(), match.end()), targets=refs))
+                rule = message = None
+                if any(n is None for n in resolved):
+                    rule, message = 'xref.missing_note', 'Referenced endnote was not extracted.'
+                elif (len(resolved) > 1 and resolved[0]['order'] >= resolved[-1]['order']):
+                    rule, message = 'xref.note_direction', 'The endnote range runs backwards.'
+                elif series == 'endnote' and ((match[1].lower() == 'supra' and resolved[-1]['order'] >= block['order']) or
+                                              (match[1].lower() == 'infra' and resolved[0]['order'] <= block['order'])):
+                    rule, message = 'xref.note_direction', 'The endnote reference points in the wrong direction.'
+                if rule:
+                    findings.append(finding(document, rule, 'xref', block, match.start(), match.end(), message,
+                                            'Check the endnote reference within its own series.', 0.99, severity='error', impact='high'))
+            continue
+        if both_series and series not in {'footnote', 'endnote'}:
+            continue  # An unqualified body reference has no certain series.
         for match in NOTE_XREF_RE.finditer(text):
             direction, number = match.groups()
             raw_target = display_to_raw.get(number)
@@ -735,7 +774,7 @@ def main() -> int:
                 "occurrences": occurrences[:5] + name_pairs[reverse][:5],
             })
 
-    note_by_raw = {str(note.get("note_id")): note for note in notes}
+    note_by_raw = {(note.get("story", "footnote"), str(note.get("note_id"))): note for note in notes}
     body_note_numeric_links = []
     century_note_links = []
     trigger_re = re.compile(
@@ -744,9 +783,11 @@ def main() -> int:
     )
     for block in blocks:
         text = str(block.get("text", ""))
-        if not block.get("footnote_ids"):
+        linked_keys = [(story, str(value)) for story, field in (('footnote', 'footnote_ids'), ('endnote', 'endnote_ids'))
+                       for value in block.get(field, [])]
+        linked_notes = [note_by_raw[key] for key in linked_keys if key in note_by_raw]
+        if not linked_notes:
             continue
-        linked_notes = [note_by_raw[value] for value in map(str, block.get("footnote_ids", [])) if value in note_by_raw]
         note_years = sorted({year for note in linked_notes for year in re.findall(r"\b(?:17|18|19|20)\d{2}\b", str(note.get("text", "")))})
         body_matches = list(trigger_re.finditer(text))
         for match in body_matches:
@@ -784,7 +825,8 @@ def main() -> int:
         "notes": [
             {
                 "raw_note_id": note.get("note_id"),
-                "display_number": raw_to_display.get(str(note.get("note_id"))),
+                "display_number": note.get('display_number') if note.get('story') == 'endnote' else raw_to_display.get(str(note.get("note_id"))),
+                **({'story': note.get('story'), 'section': note.get('section'), 'number_value': note.get('number_value')} if endnotes else {}),
                 "block_id": note.get("block_id"),
                 "order": note.get("order"),
             }
@@ -813,6 +855,10 @@ def main() -> int:
         "target_index": dict(sorted(targets.items())),
         "block_order": block_order,
     }
+    if endnotes:
+        symbols['display_endnote_to_block'] = {r['number']: r['block_id'] for r in endnotes
+            if len(end_lookup.get(r['number'].casefold(), [])) == 1}
+        symbols['note_reference_policy'] = 'Resolve within the source series; suppress ambiguous mixed-series body references and repeated endnote labels.'
     findings.sort(key=lambda row: (block_order.get(str(row.get("location", {}).get("block_id")), 10**9), int(row.get("location", {}).get("char_start", 0)), row["finding_id"]))
     write_json(args.symbols, symbols)
     write_jsonl(args.findings, findings)
