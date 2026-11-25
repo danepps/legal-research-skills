@@ -18,13 +18,32 @@ DOCX headers and footers are now read, including first-page author notes; genera
 page furniture is excluded. Repeated prose is reviewed once with every section/type
 listed, in additional chunks that leave the body chunks unchanged.
 
+Referenced DOCX endnotes are read in reference order, with their displayed numbers,
+and receive the same note-level proofreading as footnotes in a separate series.
+They travel with their body call sites and appear after footnotes in each report category.
+
+Endnote records use `endnotes`, `where: endnote`, and `en.<label>` locations; inline
+markers are `[EN#<label>]`. Copy the supplied location exactly. Numbering supports
+decimal, lower/upper Roman and lower/upper letter formats, starts, section restarts,
+and custom marks stored as text in the reference run; the absent-format default is
+lower Roman. Unsupported formats fall back to that default with a limitation;
+page restarts cannot be determined without pagination. Repeated labels get an `@N`
+reference-order suffix for location identity only. Ambiguous restarted references,
+and unqualified body/header/footer note references when both series exist, are
+suppressed rather than guessed. All note comparisons stay within their own series.
+Pass extraction `limitations` to the workflow and disclose them in the report.
+
+Comment-body prose, image-only text, equation/embedded-object contents and imported
+`altChunk` content have no dedicated reader. Unreferenced endnotes and separator
+entries are excluded. Text-box coverage and final layout are not guaranteed.
+
 Header/footer records in `proof.json` and chunks use `headers_footers`, with a
 `location` object (`where` plus `occurrences`: part, type, section, paragraph `para`,
 and segment) and an exact `location_label`. Copy the complete label into findings.
 Sections, physical paragraphs and prose segments are one-based; segments on opposite
 sides of an excluded field are separate, so never join them into a find string. The
 full-text files use the same bracketed labels. First-page header/footer findings sort
-before the body; other header/footer findings sort after the footnotes, within each
+before the body; other header/footer findings sort after footnotes and endnotes, within each
 report category. A shared record with any first-page occurrence sorts with first-page
 stories. Local citation typography and pincite checks apply to this prose; footnote
 terminal punctuation, note-order and short-form-distance rules do not. Explicit
@@ -178,7 +197,7 @@ Default chunking is 1800 words — sized so each proofer reads carefully rather 
 For **deep**, run the extractor a SECOND time into a separate outdir with
 `--chunk-words 1200` and concatenate both runs' `chunk_files` into the workflow's
 `chunkFiles` (use the 1800 run's `proof.json`/`fulltext.txt` as `outDir`; the snapshot is
-identical so paragraph ids line up). Prints a summary (paragraph/footnote/
+identical so paragraph ids line up). Prints a summary (paragraph/footnote/endnote/
 word counts, chunk_count, lint_finding_count…). It writes `<scratch>/proof/proof.json`,
 `fulltext.txt`, and `chunks/chunk-NN.json`.
 
@@ -190,7 +209,7 @@ word counts, chunk_count, lint_finding_count…). It writes `<scratch>/proof/pro
   markdown/plain-text draft — say so at deliver time, since the typeface section will be
   absent.
 - Pull the workflow args from `proof.json` (compact, no indent):
-  `python3 -c "import json;d=json.load(open('<scratch>/proof/proof.json'));print(json.dumps({'chunkFiles':d['chunk_files'],'lintFindings':d['lint_findings'],'headings':d['headings'],'noteParas':d['note_para'],'sha256':d['sha256'],'formatting':d['formatting'],'counts':{'paragraphs':d['paragraph_count'],'footnotes':d['footnote_count'],'words':d['word_count']}}))"`
+  `python3 -c "import json;d=json.load(open('<scratch>/proof/proof.json'));print(json.dumps({'chunkFiles':d['chunk_files'],'lintFindings':d['lint_findings'],'headings':d['headings'],'noteParas':d['note_para'],'endnotes':d.get('endnotes',[]),'limitations':d.get('limitations',[]),'sha256':d['sha256'],'formatting':d['formatting'],'counts':{'paragraphs':d['paragraph_count'],'footnotes':d['footnote_count'],'endnotes':d.get('endnote_count',0),'words':d['word_count']}}))"`
 
 ### 4. Launch the workflow
 ```
@@ -202,9 +221,11 @@ Workflow({
     draftName:   "<draft filename without extension>",
     chunkFiles:  <proof.json chunk_files>,
     lintFindings:<proof.json lint_findings>,
-    counts:      { paragraphs, footnotes, words },
+    counts:      { paragraphs, footnotes, endnotes, words },
     headings:    <proof.json headings>,     // [{para,label,text}] — report location paths
     noteParas:   <proof.json note_para>,    // note -> referencing ¶ (for paths on n.N)
+    endnotes:    <proof.json endnotes or []>, // rendered labels, locations and reference order
+    limitations: <proof.json limitations or []>,
     sha256:      <proof.json sha256>,
     formatting:  <proof.json formatting>,   // typeface layer; available:false on .md drafts
     snapshotTime:"<when the snapshot was taken>",
@@ -277,7 +298,7 @@ is what it was before the option existed.
   `cp -n` never replaces an existing file; if one is there, add ` 2`, ` 3` to the name. The
   script normally applies a tracked change only for a confirmed finding of severity `error` that
   carries a `replacement`; other findings become comments, and so does a change that
-  would touch a footnote mark, an existing tracked deletion, or a Word field other than a
+  would touch a footnote or endnote mark, an existing tracked deletion, or a Word field other than a
   Zotero citation. Inside a Zotero citation it follows the rule that a fix is never typed
   into the displayed text alone: when the changed characters belong to one item's pincite
   (`locator`), signal (`prefix`) or parenthetical (`suffix`), it corrects the field's stored
@@ -286,7 +307,7 @@ is what it was before the option existed.
   will show the new text. Anything from the library item or the citation style (author,
   title, volume, page, year) stays a comment that says to change it in Zotero.
   The one exception is `cite-terminal-punct` without a replacement: when the excerpt matches
-  the footnote's end and punctuation, revision, field-boundary and conflicting-edit checks
+  the footnote's or endnote's end and punctuation, revision, field-boundary and conflicting-edit checks
   pass, the writer appends a plain tracked period outside every field, preserving field bytes
   and outside trailing whitespace; otherwise it keeps a comment. This is `kind: append-period`
   in `--edits` input (omit `replacement`) and the result, counts in `applied`, and does not count
@@ -297,7 +318,9 @@ is what it was before the option existed.
   Header/footer comments are anchored at the start of the body and begin with the
   complete location and the affected words. This is a conservative fallback, not a
   claim that Word accepts comments anchored inside headers or footers. An unplaceable
-  finding stays `unplaced` with a reason. The appended-period exception is footnote-only.
+  finding stays `unplaced` with a reason. The appended-period exception applies to
+  footnotes and endnotes. Endnote comments anchor to the original body reference and
+  name the endnote; rejected/accepted text and field verification include `word/endnotes.xml`.
   `--zotero-fields comment` turns field editing off. Tell the user how many changes went
   into Zotero fields (`applied_in_zotero_fields` in the result). Before writing anything it checks
   that the copy with its changes rejected equals the snapshot exactly, and with them accepted

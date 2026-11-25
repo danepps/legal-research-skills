@@ -4,15 +4,27 @@ Releases of the `legal-research` plugin for Claude Code and the companion Codex 
 
 ## 1.6.13 (2026-11-25)
 
-`proofread` now reads referenced DOCX headers and footers, including first-page author
-notes. It resolves section relationships and inheritance, excludes unused parts and
+`proofread` now reads referenced DOCX headers, footers and endnotes, including first-page
+author notes. It resolves section relationships and inheritance, excludes unused parts and
 generated page furniture, and reviews repeated prose once with every occurrence named.
 Separate prose segments prevent find strings from crossing omitted field results.
 Additional chunks, both full-text views, prose/citation typography lint, verification
 prompts and report locations carry the new coverage. Body chunks and extraction with
-no header/footer prose retain their existing output; Markdown is unchanged.
+no added story prose retain their existing output; Markdown is unchanged.
 
-- First-page story findings sort before the body, other running stories after footnotes.
+- Endnotes follow reference order with separate display labels, locations and markers.
+  Settings/section formats, starts, section restarts and text custom marks are read;
+  unsupported formats and page restarts disclose their fallback. Repeated numbers stay
+  distinct. Note-level lints and comparisons run within each series; ambiguous references
+  are suppressed. Endnotes accompany their call sites in chunks and sort after footnotes.
+  Endnote tracked changes, reference-anchored comments, appended periods, accept/reject
+  verification and Zotero field handling use the existing footnote safeguards.
+  Synthetic regressions cover these paths and no-endnote extraction bytes at `19c9937`.
+- Remaining gaps include comment-body prose, image-only text, equation/embedded-object
+  contents and imported `altChunk` content; text-box coverage and final layout are not
+  guaranteed. Separators and unreferenced endnotes are intentionally excluded.
+
+- First-page story findings sort before the body, other running stories after both note series.
   Citation typography applies to author notes; footnote terminal punctuation, note-order,
   short-form-distance and footnote typeface rules do not. Explicit first/even references
   are inspected even when their display switch is off; no pagination is inferred.
@@ -20,7 +32,8 @@ no header/footer prose retain their existing output; Markdown is unchanged.
   is unsafe. It verifies accepted/rejected text and exact header/footer field bytes.
   Comments share a body-start anchor and name all locations. This follows the conservative
   ticket fallback; support for Word anchors inside headers/footers was not established.
-  Unplaceable findings remain reported with reasons. Appended periods remain footnote-only.
+  Unplaceable findings remain reported with reasons. Appended periods apply to footnotes
+  and endnotes under the same certainty checks.
 - Tested with synthetic OOXML and standard-library Python, plus the existing local Node
   workflow-stub pattern: all six story types, shared/identical parts, inheritance, fields,
   tracked text, comments, rejection/acceptance, corruption failures, isolated CLI imports,
@@ -28,6 +41,7 @@ no header/footer prose retain their existing output; Markdown is unchanged.
   `python3 run_tests.py`. No real draft, live model proofreading, Word opening/accept-reject
   UI, pagination, Zotero refresh, live Claude/Codex host or fresh installation was tested.
 - Checked by hand after the tests (2026-11-25), on the snapshot of the live Dubitante run that exposed the gap: both extractors now return the first-page footer's author note, with the run-together word that was missed; in the Claude Code extractor the draft's 16 existing chunks are byte-for-byte unchanged and a 17th carries the header and footer text; the redline writer placed a correction for that word as a tracked insertion inside the footer part and anchored a comment-type finding at the start of the body, beginning with its location. Inspected as XML, not in Word. One nit left: a footer's rule line of underscores is extracted as text.
+- Endnotes, checked by hand after the tests (2026-11-25): the snapshot of the live run's draft was converted so that its 351 footnotes became decimal-numbered endnotes. The Claude Code extractor returns all 351 with their numbers, marks their references `[EN#n]`, and every deterministic lint rule fires exactly as often as on the footnote version (13 missing final periods among them); the redline writer applied the same 41 changes, 12 of them periods appended in the endnotes part, none opening inside a field. The unconverted draft extracts byte-for-byte as before. A converted file is not a document Word produced, and nothing was opened in Word.
 
 ## 1.6.12 (2026-11-25)
 

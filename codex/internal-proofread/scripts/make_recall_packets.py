@@ -240,6 +240,8 @@ def write_packet(
         "```",
         "",
     ]
+    if any(n.get('story') == 'endnote' for n in items):
+        lines += ['Endnotes are a separate numbered series. Resolve note references only within it; suppress ambiguous repeated labels. EN IDs are storage identifiers.', '']
     lines += render_material("Owned body blocks" if packet_kind == "body" else "Owned notes", items)
     path.write_text("\n".join(lines) + instructions(replacements), encoding="utf-8")
 
@@ -301,7 +303,10 @@ def main() -> int:
     stories = [b for b in body if b.get('story') in {'header', 'footer'}]
     body_packets = bounded_body_packets(prose, args.body_min_words, args.body_target_words, args.body_max_words)
     body_packets += bounded_body_packets(stories, args.body_min_words, args.body_target_words, args.body_max_words)
-    note_packets = bounded_note_packets(notes, args.note_target_words, args.note_max_words, args.note_max_count)
+    note_packets = []
+    for series in ('footnote', 'endnote'):
+        series_notes = [note for note in notes if note.get('story', 'footnote') == series]
+        note_packets += bounded_note_packets(series_notes, args.note_target_words, args.note_max_words, args.note_max_count)
 
     packets_dir = run_dir / "recall-packets"
     results_dir = run_dir / "recall-results"

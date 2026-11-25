@@ -12,6 +12,20 @@ author notes and inherited references; unused parts and generated page furniture
 excluded. Repeated prose is reviewed once, with all occurrences named, in additional
 primary and recall chunks that preserve the body chunk boundaries.
 
+Referenced DOCX endnotes are read in reference order, with displayed numbers, and
+receive the same note-level proofreading as footnotes in a separate series.
+They travel with their body call sites and appear after footnotes in each report category.
+
+Endnotes use `EN<raw-id>` block IDs, `story: endnote`, and `[EN#<display-number>]`
+inline markers; raw IDs are never display numbers. Copy the source location metadata
+and character offsets, including for optional exact corrections. Do not include or
+alter synthetic markers in a replacement. Resolve within-series references using
+`display_endnote_to_block`; repeated labels are omitted from this map and receive
+`@N` reference-order suffixes in their short locations. Ambiguous restarted references
+and unqualified body/header/footer references in mixed-series drafts are suppressed.
+Read and disclose extraction limitations; see the numbering details in
+[references/docx-output.md](references/docx-output.md).
+
 Header/footer blocks have `HF` IDs, `story: header` or `footer`, a `location` object
 (`where` and `occurrences`), and a human `location_label`. Copy the source location
 metadata and add the usual block ID and character offsets to findings, including
@@ -29,7 +43,7 @@ when their display switch is off; extraction does not infer actual pagination.
 - Publish nothing visible until the readiness gate passes. For report-only work, the sole visible output is `<draft-stem> — Proofread.md` beside the draft.
 - Give every published report a provenance header and a final production block naming Codex, the exact model, local date, elapsed wall-clock time through audit, aggregate runtime-reported tokens or the explicit unavailable disclosure, and subagent roles. Never invent accounting or let unavailable tokens block an audited report.
 - Freeze a byte-for-byte source snapshot inside the run directory and bind every artifact to its SHA-256 hash. Never review the live draft path.
-- Give every reviewable block and footnote exactly one primary owner.
+- Give every reviewable block, footnote and endnote exactly one primary owner.
 - Use overlap only as context. Do not report context-only defects from a chunk packet.
 - Return structured findings with exact excerpts and stable block coordinates.
 - Do not rewrite for elegance, organization, tone, or substantive argument.
@@ -153,7 +167,7 @@ Put confirmed errors first, followed by likely errors, author queries, pre-publi
 Default to report-only output. Treat `report.md` inside the hidden run directory as canonical but internal. Do not ask the user to browse the run directory and do not copy any other artifact into a visible folder.
 
 Within each report section, first-page header/footer findings precede body findings,
-then come footnotes, then other header/footer findings. Keep every occurrence in the
+then come footnotes, endnotes, then other header/footer findings. Keep every occurrence in the
 header/footer label; a repeated record with any first-page use sorts with that group.
 Its exact search anchor remains in the header/footer prose, without a body fallback.
 

@@ -27,6 +27,7 @@ from xml.etree import ElementTree as ET
 # not the working directory or an installed skill tree.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from header_footer import collect as collect_headers_footers, referenced_parts
+from endnotes import index as endnote_index
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 REL = 'http://schemas.openxmlformats.org/package/2006/relationships'
@@ -142,7 +143,7 @@ def text_view(node, number_map, new_ids=frozenset(), accept=True):
         if current.tag == w('ins') and ident in new_ids and not accept:
             return
         if current.tag == w('r'):
-            refs = [c for c in current.children if c.tag == w('footnoteReference')]
+            refs = [c for c in current.children if c.tag in (w('footnoteReference'), w('endnoteReference'))]
             if any(c.attrs.get(w('customMarkFollows'), '').lower() in ('1', 'true', 'on') for c in refs):
                 consumed = frozenset(c for c in current.children if c.tag == w('t'))
         text = None
@@ -153,6 +154,9 @@ def text_view(node, number_map, new_ids=frozenset(), accept=True):
         elif current.tag == w('footnoteReference'):
             custom = current.attrs.get(w('customMarkFollows'), '').lower() in ('1', 'true', 'on')
             text = '[FN#%s]' % number_map.get('*' if custom else current.attrs.get(w('id')), '?')
+        elif current.tag == w('endnoteReference'):
+            label = number_map.get('EN:' + current.attrs.get(w('id'), ''))
+            text = '[EN#%s]' % label if label is not None else ''
         elif current.tag in (w('tab'), w('br'), w('cr')):
             text = ' '
         elif current.tag == w('noBreakHyphen'):
@@ -163,8 +167,12 @@ def text_view(node, number_map, new_ids=frozenset(), accept=True):
             visit(child, rejected_deletion, consumed)
 
     # The extractor walks descendants, not the paragraph/footnote itself.
-    if node.tag == w('footnote'):
-        for i, paragraph in enumerate(c for c in node.children if c.tag == w('p')):
+    if node.tag in (w('footnote'), w('endnote')):
+        paragraphs = [c for c in node.children if c.tag == w('p')]
+        if node.tag == w('endnote'):
+            paragraphs = [c for c in node.walk() if c.tag == w('p')
+                          and not any(c.ancestor(w(tag)) for tag in ('del', 'moveFrom'))]
+        for i, paragraph in enumerate(paragraphs):
             if i:
                 atoms.append(Atom(' ', None, 0))
             for child in paragraph.children:
@@ -204,6 +212,7 @@ class Document:
         self.roots = {name: parse(data) for name, data in parts.items() if xml_part(name)}
         self.body = self.roots['word/document.xml']
         self.notes = self.roots.get('word/footnotes.xml')
+        self.endnotes = self.roots.get('word/endnotes.xml')
         self.numbers = {}
         self.note_refs = {}  # footnote id -> its first reference mark in the text
         # Match extract_proof.parse_docx's per-paragraph traversal, even for
@@ -216,15 +225,24 @@ class Document:
                         if ident not in self.numbers:
                             self.numbers[ident] = len(self.numbers) + 1
                             self.note_refs[ident] = ref
+        def read_xml(name):
+            return ET.fromstring(parts[name]) if name in parts else None
+        self.endnote_records, _ = endnote_index(read_xml)
+        self.endnote_by_id = {r['note_id']: r for r in self.endnote_records}
+        self.numbers.update({'EN:' + r['note_id']: r['number'] for r in self.endnote_records})
+        for ref in self.body.walk():
+            if (ref.tag == w('endnoteReference') and ref.attrs.get(w('id')) in self.endnote_by_id
+                    and not any(ref.ancestor(w(tag)) for tag in ('del', 'moveFrom'))):
+                self.note_refs.setdefault('EN:' + ref.attrs[w('id')], ref)
         self.locations, self.units, self.search = {}, {}, []
         body_index = 0
-        for name, root in [('word/document.xml', self.body), ('word/footnotes.xml', self.notes)]:
+        for name, root in [('word/document.xml', self.body), ('word/footnotes.xml', self.notes), ('word/endnotes.xml', self.endnotes)]:
             if root is None:
                 continue
             for i, p in enumerate(n for n in root.walk() if n.tag == w('p')):
                 self.units[(name, 'p', i)] = p
                 if name == 'word/document.xml':
-                    if cleaned(text_view(p, self.numbers))[0]:
+                    if (not self.endnote_records or not any(p.ancestor(w(tag)) for tag in ('del', 'moveFrom'))) and cleaned(text_view(p, self.numbers))[0]:
                         self.locations['¶%d' % body_index] = (name, p)
                         body_index += 1
                     self.search.append((name, p))
@@ -237,8 +255,13 @@ class Document:
                 if number is not None:
                     self.locations['n.%d' % number] = ('word/footnotes.xml', fn)
                 self.search.append(('word/footnotes.xml', fn))
-        def read_xml(name):
-            return ET.fromstring(parts[name]) if name in parts else None
+        if self.endnotes:
+            for i, node in enumerate(c for c in self.endnotes.children if c.tag == w('endnote')):
+                self.units[('word/endnotes.xml', 'en', i)] = node
+                record = self.endnote_by_id.get(node.attrs.get(w('id')))
+                if record is not None:
+                    self.locations[record['location_label']] = ('word/endnotes.xml', node)
+                    self.search.append(('word/endnotes.xml', node))
         def read_spans(paragraph):
             node = parse(ET.tostring(paragraph, encoding='utf-8'))
             return [(''.join(a.char for a in text_view(node, self.numbers)), frozenset())]
@@ -675,12 +698,20 @@ class Writer:
         return field, plan
 
     def footnote_comment(self, unit, find, note):
-        note_node = unit if unit.tag == w('footnote') else unit.ancestor(w('footnote'))
-        ident = note_node.attrs.get(w('id')) if note_node is not None else None
+        kind = 'endnote' if unit.tag == w('endnote') or unit.ancestor(w('endnote')) is not None else 'footnote'
+        note_node = unit if unit.tag == w(kind) else unit.ancestor(w(kind))
+        raw_id = note_node.attrs.get(w('id')) if note_node is not None else None
+        ident = ('EN:' + raw_id) if kind == 'endnote' and raw_id is not None else raw_id
         ref = self.doc.note_refs.get(ident)
         if ref is None or ref.parent is None or ref.parent.tag != w('r'):
             return None
-        labelled = 'Footnote %s, at \u201c%s\u201d: %s' % (self.doc.numbers.get(ident, '?'), find, note)
+        number = self.doc.numbers.get(ident, '?')
+        label = '%s %s' % (kind.title(), number)
+        if kind == 'endnote':
+            record = self.doc.endnote_by_id[raw_id]
+            if '@' in record['location_label']:
+                label += ' (section %s, reference %s)' % (record['section'], record['order'])
+        labelled = '%s, at “%s”: %s' % (label, find, note)
         if ident in self.note_comments:
             index = self.note_comments[ident]
             self.comments[index][1] += '\n' + labelled
@@ -820,7 +851,7 @@ class Writer:
         if find.startswith('\u2026'):
             find = find[1:].lstrip()
         location = self.doc.locations.get(edit['location'])
-        if not location or not re.fullmatch(r'n\.[1-9][0-9]*', edit['location']) or location[1].tag != w('footnote'):
+        if not location or location[1].tag not in (w('footnote'), w('endnote')):
             result = self.place(dict(edit, kind='comment'))
             if result['status'] == 'commented':
                 result['status'] = 'commented_instead'
@@ -831,6 +862,8 @@ class Writer:
             atoms, text, boundary, anchor, point = self.period_plan(part, unit, find)
         except ValueError as error:
             reason = str(error)
+            if unit.tag == w('endnote'):
+                reason = reason.replace('footnote', 'endnote')
         note = edit['note'] + ('\nNot applied: ' + reason if reason else '')
         index = self.footnote_comment(unit, find, note)
         if reason:
@@ -856,6 +889,8 @@ class Writer:
 
     def place(self, edit):
         location = edit['location']
+        if location.startswith('en.') and location not in self.doc.locations:
+            return dict(id=edit['id'], status='unplaced', reason='Unknown or ambiguous endnote location; no body fallback attempted.')
         if location not in self.doc.header_locations:
             if re.search(r'\b(?:header|footer)\b', location, re.I):
                 return dict(id=edit['id'], status='unplaced', reason='Unknown header/footer location; no body fallback attempted.')
@@ -974,8 +1009,8 @@ class Writer:
                         field_plan = self.zotero_change(part, touched, selected, changed, insertion, replacement)
                     except ValueError as error:
                         reason = str(error)
-            if reason is None and any(c.node and c.node.tag == w('footnoteReference') for c in selected):
-                reason = 'The span touches a footnote reference mark.'
+            if reason is None and any(c.node and c.node.tag in (w('footnoteReference'), w('endnoteReference')) for c in selected):
+                reason = 'The span touches a note reference mark.'
             if reason is None and any(n.tag in (w('del'), w('moveFrom')) and first.node.start < n.end and n.start < last.node.end for n in self.doc.roots[part].walk()):
                 reason = 'The span crosses an existing tracked deletion or move source.'
             if reason is None and (any(c.node is None or c.node.tag != w('t') for c in selected)
@@ -991,7 +1026,7 @@ class Writer:
             index = self.story_comment(edit['location'], find, note)
             if index is None:
                 return dict(id=edit['id'], status='unplaced', reason='No body paragraph can carry the header/footer comment.')
-        elif part == 'word/footnotes.xml':
+        elif part in ('word/footnotes.xml', 'word/endnotes.xml'):
             # Word has no comments inside footnotes and drops any it finds there when it
             # opens the file. A footnote finding's comment hangs on the footnote's reference
             # mark in the text instead: one comment per footnote, naming the words it is about.
@@ -1144,7 +1179,7 @@ def verify(staged, original, writer):
         parts = {i.filename: archive.read(i) for i in archive.infolist()}
     document = Document(parts)  # parses every .xml and .rels part
     if document.units.keys() != original.units.keys() or document.numbers != original.numbers:
-        raise ValueError('Verification failed: paragraph/footnote structure changed')
+        raise ValueError('Verification failed: paragraph/note structure changed')
     for key, node in original.units.items():
         before = text_view(node, original.numbers)
         after = document.units[key]

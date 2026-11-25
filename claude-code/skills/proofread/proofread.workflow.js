@@ -35,7 +35,7 @@ if (!isObj(A)) argProblems.push('args is missing or is not an object')
 else {
   if (typeof A.outDir !== 'string' || !A.outDir.trim()) argProblems.push('outDir (the extractor\'s output folder) is missing')
   if (!Array.isArray(A.chunkFiles) || !A.chunkFiles.length || A.chunkFiles.some((c) => typeof c !== 'string' || !c.trim())) argProblems.push('chunkFiles must be a non-empty list of chunk file paths')
-  for (const k of ['lintFindings', 'headings']) if (A[k] != null && !Array.isArray(A[k])) argProblems.push(`${k} must be a list`)
+  for (const k of ['lintFindings', 'headings', 'endnotes', 'limitations']) if (A[k] != null && !Array.isArray(A[k])) argProblems.push(`${k} must be a list`)
   for (const k of ['counts', 'noteParas', 'formatting']) if (A[k] != null && !isObj(A[k])) argProblems.push(`${k} must be an object`)
 }
 if (argProblems.length) throw new Error(`proofread workflow: unusable arguments (${argProblems.join('; ')}). No agent was started. Launch the workflow again with args as a JSON object built from the step-3 output.`)
@@ -49,6 +49,14 @@ const CHUNK_FILES = A.chunkFiles || []
 const LINT = A.lintFindings || []
 const COUNTS = A.counts || {}
 const HEADINGS = A.headings || []      // [{para, label, text}] from proof.json
+const ENDNOTES = A.endnotes || []
+const EXTRACTION_LIMITATIONS = A.limitations || []
+const ENDNOTE_LOCS = new Map(ENDNOTES.map(n => [n.location_label, n]))
+for (const l of LINT) if (l.location?.where === 'endnote') {
+  const loc = l.location
+  const label = loc.location_label || `en.${loc.note}`
+  if (!ENDNOTE_LOCS.has(label)) ENDNOTE_LOCS.set(label, {number:loc.note, order:loc.order, section:loc.section})
+}
 const NOTE_PARAS = A.noteParas || {}   // {noteNumber: referencing paragraph id}
 const SHA256 = A.sha256 || null
 const SNAPTIME = A.snapshotTime || null
@@ -107,7 +115,7 @@ const FINDING_ITEM = {
   type: 'object',
   required: ['location', 'find', 'problem', 'fix', 'severity', 'category'],
   properties: {
-    location: { type: 'string', description: '¶123 (body), n.45 (footnote), or the exact location_label supplied for a header/footer segment, including every occurrence' },
+    location: { type: 'string', description: '¶123 (body), n.45 (footnote), en.i (endnote; copy its location_label, including any @ suffix), or the exact location_label supplied for a header/footer segment, including every occurrence' },
     find: { type: 'string', description: 'VERBATIM text copied from the draft, long enough to be unique for Cmd+F' },
     problem: { type: 'string' },
     fix: { type: 'string', description: 'the minimal correction' },
@@ -197,13 +205,17 @@ const GROUND_RULES = `GROUND RULES — read carefully; violations produce false 
   if pasted twice, a word that breaks the quote's own sentence — flag it with severity
   "query" and category "quote-integrity": the action is "verify this quotation against its
   source," never "fix the draft." Unbalanced quotation marks themselves are ordinary flags.
-- In footnotes, IGNORE citation strings entirely — reporter abbreviations, signals, short
+- In footnotes and endnotes, IGNORE citation strings entirely — reporter abbreviations, signals, short
   forms, "supra"/"Id." mechanics, pincite format are ALL out of scope (a separate cite-check
   skill owns them, and a Bluebook linter this is not). DO proofread the PROSE inside
-  footnotes: textual sentences and the words inside explanatory parentheticals like
+  both note series: textual sentences and the words inside explanatory parentheticals like
   "(holding that the the statute applies)".
-- [FN#n] markers are footnote-call positions, not text. [¶n] / [n.n] prefixes are location
-  labels, not text.
+- [FN#n] and [EN#n] mark footnote and endnote calls, not prose. [¶n], [n.n] and [en.n]
+  prefixes are locations. Endnotes are a SEPARATE numbered series: resolve a note's supra/infra
+  references only within its own series, and compare citation captions, names, years and
+  typeface conventions within a series. Suppress ambiguous body/header/footer references
+  when both series exist, and references to repeated endnote labels. Never guess a target.
+  An endnote location suffix @N disambiguates by reference order; it is not displayed in Word.
 - Header/footer records are prose too, including author notes and run-together words
   across Word runs. Copy their entire location_label unchanged. Generated page furniture
   is excluded; separate segments must never be joined into a find string. Apply no
@@ -230,10 +242,10 @@ phase('Consistency')
 log('launching whole-document consistency agents')
 const consUsageP = lane('consistency:usage', () => agent(
   `You are checking a law review article draft for INTERNAL CONSISTENCY of usage. Draft:
-"${DRAFT_NAME}" (~${COUNTS.words || '?'} words, ${COUNTS.footnotes || '?'} footnotes).
+"${DRAFT_NAME}" (~${COUNTS.words || '?'} words, ${COUNTS.footnotes ?? '?'} footnotes${COUNTS.endnotes ? `, ${COUNTS.endnotes} endnotes` : ''}).
 
 Read ${FULLTEXT} (the whole draft, flattened; body paragraphs are prefixed [¶n], footnotes
-[n.n], headings with #, table-of-contents lines with [TOC]). Also Read ${PROOF_JSON} and use
+[n.n], endnotes [en.n], headings with #, table-of-contents lines with [TOC]). Also Read ${PROOF_JSON} and use
 its "consistency" block — deterministic variant counts computed over the exact text
 (hyphenation_variants, spelling_variants, defined_terms, stats).
 
@@ -256,14 +268,14 @@ Your job — adjudicate, with the whole document in view:
    counts; individual findings only when instances are few enough to list.
 Findings = specific fixable deviations (severity "likely" for judgment calls, "error" only
 when objectively wrong). Conventions = the global calls with your recommendation. Locations
-in findings use the ¶n / n.n labels.`,
+in findings use the ¶n / n.n / en.n labels.`,
   { label: 'consistency:usage', phase: 'Consistency', schema: CONS_SCHEMA, ...RO }))
 
 const consStructP = lane('consistency:structure', () => agent(
   `You are checking the STRUCTURE and CROSS-REFERENCES of a law review article draft:
 "${DRAFT_NAME}". Read ${PROOF_JSON} first — use "headings" (computed labels I / I.A / I.B.1…),
 "toc_entries", and "part_refs" (every "supra/infra Part/Section X" with context). Then Read
-${FULLTEXT} for the actual text (body paragraphs prefixed [¶n], footnotes [n.n], headings #).
+${FULLTEXT} for the actual text (body paragraphs prefixed [¶n], footnotes [n.n], endnotes [en.n], headings #).
 
 ${GROUND_RULES}
 
@@ -297,7 +309,7 @@ const consTypeP = FMT_OK ? lane('consistency:typeface', () => agent(
 
 Read ${FULLTEXT_FMT}: the whole draft with formatting marked up as <i>italic</i>,
 <sc>small caps</sc>, and <caps>prints in all caps</caps>. Line structure is the same as the
-plain text — body paragraphs prefixed [¶n], footnotes [n.n], headings with #. Also Read
+plain text — body paragraphs prefixed [¶n], footnotes [n.n], endnotes [en.n], headings with #. Also Read
 ${PROOF_JSON} and use its "formatting" block: "case_name_counts" (how the draft actually
 sets case names in each position) and "case_name_candidates" (every case name whose
 observed typeface departs from the Bluebook expectation for its position — the script's
@@ -347,7 +359,7 @@ c. Report document-wide patterns as conventions with counts, not as dozens of fi
 CRITICAL — find strings: the markup tags are NOT in the author's document. Every "find"
 string you report must be the text with all <i>/<sc>/<caps> tags REMOVED, so it can be
 found with Cmd+F in Word. Say which words should change typeface in the "problem"/"fix"
-instead. Location labels are the ¶n / n.n prefixes. Category: "typeface".`,
+instead. Location labels are the ¶n / n.n / en.n prefixes. Category: "typeface".`,
   { label: 'consistency:typeface', phase: 'Consistency', schema: CONS_SCHEMA, ...RO })) : null
 
 // ---- Phase: Proof (chunk fan-out) ------------------------------------------------
@@ -357,15 +369,16 @@ const proofResults = await parallel(CHUNK_FILES.map((cf, i) => () =>
   lane(`proof:chunk-${i}`, () => agent(
     `You are proofreading chunk ${i + 1}/${CHUNK_FILES.length} of a law review article draft
 ("${DRAFT_NAME}"). Read ${cf} — JSON with "paragraphs" (body text, [FN#n] marks footnote
-calls; "heading" non-null means the line is a section heading) and "footnotes" (the notes
-called in these paragraphs, keyed by their real numbers). Additional chunks contain
+calls; [EN#n] marks endnote calls; "heading" non-null means a section heading), "footnotes",
+and "endnotes" (separate series of notes called in these paragraphs). Read EVERY endnote,
+using its exact location_label and rendered number. Additional chunks contain
 "headers_footers": read EVERY record's text and use its exact location_label, including
 all sections/types when the text occurs more than once. An empty paragraphs array does
 not make a header/footer chunk empty.
 
 ${GROUND_RULES}
 
-Read every sentence slowly, the way a professional proofreader does — including footnote
+Read every sentence slowly, the way a professional proofreader does — including footnote and endnote
 prose. You are hunting:
 - typos and misspellings (including real-word typos: "casual"/"causal", "trail"/"trial",
   "form"/"from", "public"/"pubic", "now"/"not");
@@ -401,6 +414,7 @@ prose. You are hunting:
   as likely and let the verifier decide;
 - body-text capitalization errors.
 Location = the paragraph's "¶<id>" (use the "id" field), "n.<number>" for footnote prose,
+the exact endnote location_label (en.i, en.1, or a disambiguated label),
 or the complete location_label for a header/footer record.
 Report location + verbatim find + problem + minimal fix + severity + category.`,
     { label: `proof:chunk-${i}`, phase: 'Proof', schema: PROOF_SCHEMA, model: PROOF_MODEL, ...RO }))
@@ -461,7 +475,8 @@ const storyLabel = (loc) => (loc.occurrences || []).map((o) =>
 ).join('; ')
 for (const l of LINT) {
   const loc = ['header', 'footer'].includes(l.location?.where) ? storyLabel(l.location)
-    : l.location?.where === 'footnote' ? `n.${l.location.note}` : `¶${l.location?.para}`
+    : l.location?.where === 'footnote' ? `n.${l.location.note}`
+    : l.location?.where === 'endnote' ? (l.location.location_label || `en.${l.location.note}`) : `¶${l.location?.para}`
   addCandidate({
     location: loc, find: l.find, problem: l.problem, fix: l.fix,
     severity: l.severity === 'error' ? 'error' : 'likely',
@@ -515,7 +530,7 @@ a wrong rejection hides a real error, so actually re-read the text; never rule f
 finding alone.
 
 METHOD: the full draft is at ${FULLTEXT}. Each body paragraph is one line prefixed "[¶n]",
-each footnote one line prefixed "[n.n]". For each finding, Grep that file for its location
+each footnote one line prefixed "[n.n]", and each endnote one line prefixed "[en.n]" (copy any @ suffix). For each finding, Grep that file for its location
 label (e.g. pattern "^\\[¶123\\]" or "^\\[n\\.45\\]") to pull the full passage, then re-read the
 ENTIRE passage around the flagged text.
 Header/footer lines use their complete location_label in brackets. Find that exact
@@ -544,7 +559,7 @@ CATEGORY-SPECIFIC RULES:
 ${FMT_OK ? `- TYPEFACE findings (category "typeface", or a category starting "fmt-") are about italics
   and small caps, and they are IN SCOPE — the general "you cannot see formatting" rule does
   not apply to them, because this draft has a real formatting layer. Verify them against
-  ${FULLTEXT_FMT}, NOT fulltext.txt: same [¶n] / [n.n] line structure, with <i>italic</i>,
+  ${FULLTEXT_FMT}, NOT fulltext.txt: same [¶n] / [n.n] / [en.n] line structure, with <i>italic</i>,
   <sc>small caps</sc> and <caps>prints all caps</caps> marked. Grep the location label
   there and read the tags. Reject a typeface finding when the tags show the text is already
   correct, or when the flagged case name sits in a textual sentence (italic is right there)
@@ -664,13 +679,14 @@ log(`verify: ${confirmed.length} confirmed, ${rejected.length} rejected, ${unvet
 const locKey = (f) => {
   const m = /^¶(\d+)/.exec(f.location) ; if (m) return [1, +m[1]]
   const n = /^n\.(\d+)/.exec(f.location); if (n) return [2, +n[1]]
+  if (f.location.startsWith('en.')) return [3, ENDNOTE_LOCS.get(f.location)?.order ?? 1e9]
   const stories = [...f.location.matchAll(/(First-page|Default|Even-page) (header|footer), section (\d+), paragraph (\d+), segment (\d+)/g)]
   if (stories.length) {
     const first = stories.find(s => s[1] === 'First-page')
     const s = first || stories[0]
-    return [first ? 0 : 3, +s[3], s[2] === 'header' ? 0 : 1, +s[4], +s[5]]
+    return [first ? 0 : 4, +s[3], s[2] === 'header' ? 0 : 1, +s[4], +s[5]]
   }
-  return [4, 0]
+  return [5, 0]
 }
 const locationOrder = (a, b) => {
   const x = locKey(a), y = locKey(b)
@@ -689,6 +705,11 @@ unvetted.sort(locationOrder)
 // and footnotes by their visible number. The verbatim find string is the primary locator;
 // ¶ ids stay internal (grep anchors, dedup, sort keys) and never reach the report.
 function locLabel(loc) {
+  if (loc.startsWith('en.')) {
+    const record = ENDNOTE_LOCS.get(loc)
+    if (record) return `endnote ${record.number}${loc.includes('@') ? ` (section ${record.section}, reference ${record.order})` : ''}`
+    return `endnote ${loc.slice(3)}`
+  }
   const n = /^n\.(\d+)/.exec(loc)
   if (n) return `note ${n[1]}`
   const m = /^¶(\d+)/.exec(loc)
@@ -737,7 +758,7 @@ const coverageGapText = [
 const reportAgent = () => agent(
   `Write the final PROOFREAD REPORT for the law review draft "${DRAFT_NAME}"
 (~${COUNTS.words || '?'} words, ${COUNTS.paragraphs || '?'} body paragraphs,
-${COUNTS.footnotes || '?'} footnotes). Audience: the authors (law professors) — direct,
+${COUNTS.footnotes ?? '?'} footnotes${COUNTS.endnotes ? `, ${COUNTS.endnotes} endnotes` : ''}). Audience: the authors (law professors) — direct,
 no filler, no praise padding. Your ENTIRE final message must be the report markdown, nothing else.
 
 PROVENANCE (put this under the title as a one-line blockquote):
@@ -747,7 +768,8 @@ CONFIRMED PROSE FINDINGS (every one re-verified in context; already sorted into 
 order; "location" is the reader-facing label — containing Part/Section and/or approximate
 position through the document, or "note N" for footnotes. Use these labels exactly as
 given. Header/footer labels name the type, section and paragraph at every occurrence;
-keep all of them. First-page stories sort before body findings, other stories after notes.
+keep all of them. First-page stories sort before body findings, then footnotes, then endnotes
+as a separate listing, then other running stories. Preserve this series order within every category.
 NEVER refer to body findings by paragraph numbers (¶n) anywhere in the report, including
 the TL;DR — the authors edit in Word and cannot see paragraph numbers; the verbatim find
 string is their locator):
@@ -793,7 +815,7 @@ pass is incomplete.
 prose severity "error", in draft order. For each: **location** — \`verbatim find string\` —
 the problem — the fix. Keep the find string EXACTLY verbatim — it is the authors' Cmd+F
 handle and their ONLY way to find the passage (the draft shows no paragraph numbers). Use
-the location labels exactly as given ("note N" = footnote N; body labels name the
+the location labels exactly as given ("note N" = footnote N; "endnote N" = endnote N; body labels name the
 Part/Section and approximate position); never write ¶ numbers.
 ## Judgment calls (probably fix)
 prose severity "likely", same format, one line each where possible.
@@ -826,6 +848,7 @@ ${unvetted.length ? '## Unvetted\nthe unvetted list, clearly labeled as not re-v
     ? 'italics and small caps WERE checked, against the document\'s own run formatting; indentation and block-quote layout were not.'
     : 'formatting was NOT checked — this draft came in as plain text, so italics, small caps and layout were invisible to every stage.'}
 - ${rejected.length} candidate findings were rejected on re-verification (false-positive control).
+${EXTRACTION_LIMITATIONS.map(s => `- ${s}`).join('\n')}
 ${degradation.length ? `- degradation this run: ${degradation.join('; ')}` : ''}
 
 Do not invent findings, merge findings, or drop any confirmed finding. Plain sentences, not
@@ -846,6 +869,7 @@ if (!report) {
     unvetted.length ? `\n## Unvetted (${unvetted.length})` : '',
     ...unvetted.map(line),
     conventions.length ? `\n## Document-wide conventions\n${conventions.map((c) => `- ${c.issue}: ${c.recommendation}`).join('\n')}` : '',
+    EXTRACTION_LIMITATIONS.length ? `\n## Extraction limitations\n${EXTRACTION_LIMITATIONS.map(s => `- ${s}`).join('\n')}` : '',
     `\n## Degradation\n${degradation.map((d) => `- ${d}`).join('\n')}`,
   ].filter(Boolean).join('\n')
 }

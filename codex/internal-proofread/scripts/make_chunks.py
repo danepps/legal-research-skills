@@ -7,7 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
-from common import read_json, read_jsonl, write_jsonl
+from common import read_json, read_jsonl, write_jsonl, linked_note_ids
 from replacements import instructions, without_replacements
 
 
@@ -126,12 +126,12 @@ def semantic_note_references(blocks: list[dict], notes: list[dict], symbols: dic
     """Attach the prose needed to test note cross-references semantically."""
     all_by_id = {str(row.get("block_id")): row for row in blocks + notes}
     note_by_block = {str(row.get("block_id")): row for row in notes}
-    raw_by_block = {str(row.get("block_id")): str(row.get("note_id")) for row in notes}
+    raw_by_block = {str(row.get("block_id")): str(row.get("block_id")) for row in notes}
     note_order = [str(row.get("block_id")) for row in notes]
     note_index = {block_id: index for index, block_id in enumerate(note_order)}
     call_sites: dict[str, list[dict]] = {}
     for block in blocks:
-        for raw_id in map(str, block.get("footnote_ids", [])):
+        for raw_id in linked_note_ids(block):
             call_sites.setdefault(raw_id, []).append({
                 "block_id": block.get("block_id"),
                 "heading_path": block.get("heading_path", []),
@@ -155,7 +155,9 @@ def semantic_note_references(blocks: list[dict], notes: list[dict], symbols: dic
         target_position = note_index.get(target_id, -1)
         neighborhood = []
         if target_position >= 0:
-            for neighbor_id in note_order[max(0, target_position - 2): target_position + 3]:
+            series_order = [ident for ident in note_order if note_by_block[ident].get('story') == target.get('story')]
+            series_position = series_order.index(target_id)
+            for neighbor_id in series_order[max(0, series_position - 2):series_position + 3]:
                 neighbor = note_by_block[neighbor_id]
                 neighborhood.append({
                     "block_id": neighbor_id,
@@ -199,7 +201,11 @@ def write_chunk_packet(path: Path, chunk: dict, core: list[dict], before: list[d
     ]
     lines += render_blocks("Context before (not owned)", before)
     lines += render_blocks("CORE blocks (owned)", core)
-    lines += render_blocks("Owned footnotes", owned_notes)
+    lines += render_blocks("Owned footnotes", [n for n in owned_notes if n.get('story') != 'endnote'])
+    endnotes = [n for n in owned_notes if n.get('story') == 'endnote']
+    if endnotes:
+        lines += ['Endnotes form a separate series. EN IDs are raw OOXML IDs; use display_number and section, never the ID, for cross-references. [EN#n] marks a call, not prose. Read every owned endnote.', '']
+        lines += render_blocks('Owned endnotes', endnotes)
     if static_findings:
         lines.extend(["## Static candidates to confirm, reject, or refine", "", "```json"])
         lines.extend(json.dumps(row if replacements else without_replacements(row), ensure_ascii=False, sort_keys=True) for row in static_findings)
@@ -259,6 +265,10 @@ def write_lane_packets(run_dir: Path, chunks: list[dict], blocks: list[dict], no
                        "toc_entries": symbols.get("toc_entries", []),
                        "bookmarks": symbols.get("bookmarks", []), "fields": symbols.get("fields", [])}),
     }
+    if any(n.get('story') == 'endnote' for n in notes):
+        instruction, payload = packets['xref']
+        payload['display_endnote_to_block'] = symbols.get('display_endnote_to_block', {})
+        packets['xref'] = (instruction + ' Endnotes use display_endnote_to_block and form a separate series. Suppress ambiguous body references when both series exist and references to repeated endnote labels.', payload)
     for name, (instruction, payload) in packets.items():
         text = [f"# {name.title()} lane", "", f"Source SHA-256: `{source_hash}`", "", instruction,
                 f"Return `lane-results/{name}.json` using the lane-result schema.", "", "```json", json.dumps(payload, indent=2, ensure_ascii=False), "```", ""]
@@ -339,11 +349,11 @@ def main() -> int:
     # A short running title must not prevent splitting before a long author note.
     raw_chunks += choose_chunks(stories, 1, args.target_words, args.max_words)
     block_index = {block["block_id"]: index for index, block in enumerate(blocks)}
-    note_by_id = {str(note.get("note_id")): note for note in notes}
+    note_by_id = {str(note.get("block_id")): note for note in notes}
     note_owner: dict[str, int] = {}
     for chunk_no, core in enumerate(raw_chunks):
         for block in core:
-            for note_id in block.get("footnote_ids", []):
+            for note_id in linked_note_ids(block):
                 if str(note_id) in note_by_id:
                     note_owner.setdefault(str(note_id), chunk_no)
     if raw_chunks:
@@ -366,7 +376,9 @@ def main() -> int:
             after = context(body, end + 1, 1, args.context_words)
         owned_note_ids = sorted(
             (note_id for note_id, owner in note_owner.items() if owner == chunk_no),
-            key=lambda value: (0, int(value)) if value.isdigit() else (1, value),
+            key=lambda value: (1, note_by_id[value]['order']) if note_by_id[value].get('story') == 'endnote' else
+                              (0, 0, int(note_by_id[value]['note_id'])) if str(note_by_id[value]['note_id']).isdigit() else
+                              (0, 1, str(note_by_id[value]['note_id'])),
         )
         owned_notes = [note_by_id[note_id] for note_id in owned_note_ids]
         core_ids = [block["block_id"] for block in core]

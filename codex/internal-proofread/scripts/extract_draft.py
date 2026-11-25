@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 
 from common import SCHEMA_VERSION, file_sha256, normalize_space, utc_now, word_count, write_json
 from header_footer import collect as collect_headers_footers
+from endnotes import index as endnote_index, reference_copy, visible
 
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -143,13 +144,23 @@ def extract_docx(path: Path) -> tuple[list[dict], list[dict], list[dict], list[d
         "Effective italics, small caps, and capitalization inherited through Word styles are not resolved; no typeface review is claimed.",
     ]
     with zipfile.ZipFile(path) as archive:
+        def optional_xml(member):
+            try:
+                return ET.fromstring(archive.read(member))
+            except KeyError:
+                return None
+        end_records, end_limits = endnote_index(optional_xml)
+        end_numbers = {r['note_id']: r['number'] for r in end_records}
+        limitations.extend(end_limits)
         styles = load_styles(archive)
         heading_stack: list[str] = []
         counter = 0
 
         def add_paragraph(paragraph: ET.Element, story: str, kind_override: str | None, locator: str) -> None:
             nonlocal counter, heading_stack
-            text, note_ids, fields, bookmarks = visible_text(paragraph)
+            end_ids = [n.get(W + 'id') for n in visible(paragraph)
+                       if n.tag == W + 'endnoteReference' and n.get(W + 'id') in end_numbers]
+            text, note_ids, fields, bookmarks = visible_text(reference_copy(paragraph, end_numbers), exclude_moves=bool(end_records))
             if not text and not fields and not bookmarks and not note_ids:
                 return
             counter += 1
@@ -161,6 +172,8 @@ def extract_docx(path: Path) -> tuple[list[dict], list[dict], list[dict], list[d
                 heading_stack.append(text)
             block_id = f"B{counter:06d}"
             block = make_block(block_id, story, kind, counter, text, heading_stack, locator, meta, note_ids, fields, bookmarks)
+            if end_ids:
+                block['endnote_ids'] = end_ids
             blocks.append(block)
             for instruction in fields:
                 fields_index.append({"block_id": block_id, "instruction": instruction})
@@ -171,10 +184,18 @@ def extract_docx(path: Path) -> tuple[list[dict], list[dict], list[dict], list[d
         body = document.find(wtag("body"))
         if body is not None:
             body_index = 0
-            for child in body:
+            parents = {child: parent for parent in body.iter() for child in parent}
+            children = (n for n in visible(body) if n.tag == W + 'p') if end_records else body
+            for child in children:
                 if child.tag == wtag("p"):
                     body_index += 1
-                    add_paragraph(child, "body", None, f"word/document.xml/body/p[{body_index}]")
+                    ancestor = parents.get(child)
+                    in_table = False
+                    while ancestor is not None:
+                        in_table |= ancestor.tag == W + 'tbl'
+                        ancestor = parents.get(ancestor)
+                    add_paragraph(child, "table" if in_table else "body", "table_cell" if in_table else None,
+                                  f"word/document.xml/body/p[{body_index}]")
                 elif child.tag == wtag("tbl"):
                     for row_no, row in enumerate(child.findall(wtag("tr")), 1):
                         for cell_no, cell in enumerate(row.findall(wtag("tc")), 1):
@@ -238,6 +259,30 @@ def extract_docx(path: Path) -> tuple[list[dict], list[dict], list[dict], list[d
                         bookmarks=bookmarks,
                     )
                 )
+        if end_records:
+            by_id = {n.get(W + 'id'): n for n in optional_xml('word/endnotes.xml').findall(W + 'endnote')}
+            for record in end_records:
+                texts, fields, bookmarks = [], [], []
+                for paragraph in (n for n in visible(by_id[record['note_id']]) if n.tag == W + 'p'):
+                    text, _, codes, names = visible_text(reference_copy(paragraph, end_numbers), exclude_moves=True)
+                    if text:
+                        texts.append(text)
+                    fields.extend(codes)
+                    bookmarks.extend(names)
+                metadata = dict(record)
+                metadata['display_number'] = metadata.pop('number')
+                # Human report labels are distinct from the short machine anchors.
+                metadata['location_label'] = 'Endnote ' + record['number']
+                if '@' in record['location_label']:
+                    metadata['location_label'] += ' (section %s, reference %s)' % (record['section'], record['order'])
+                block_id = 'EN' + record['note_id']
+                notes.append(make_block(block_id, 'endnote', 'endnote', record['order'], '\n'.join(texts), [],
+                    "word/endnotes.xml/endnote[@w:id='%s']" % record['note_id'], metadata,
+                    fields=fields, bookmarks=bookmarks))
+                fields_index.extend(dict(block_id=block_id, instruction=code) for code in fields)
+                bookmarks_index.extend(dict(block_id=block_id, name=name) for name in bookmarks)
+            if any(n['story'] == 'footnote' for n in notes):
+                limitations.append('Body/header/footer note references are ambiguous in a draft with both series; those references are suppressed. References inside a note resolve only within its own series.')
     return blocks, notes, fields_index, bookmarks_index, limitations
 
 
