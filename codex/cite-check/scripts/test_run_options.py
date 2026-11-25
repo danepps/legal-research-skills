@@ -2,6 +2,8 @@
 """Picker scope, opt-in boundaries, source counts and initialization handoff."""
 import copy
 import json
+import os
+from unittest.mock import patch
 from pathlib import Path
 import subprocess
 import sys
@@ -25,6 +27,8 @@ class OptionsTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        home = patch.dict(os.environ, {"HOME": str(self.root)})
+        home.start(); self.addCleanup(home.stop)
         self.draft = self.root/'draft.md'
         self.draft.write_text(' '.join(f'A claim.[^{i}]' for i in range(1, 37))+'\n\n'+
                               '\n'.join(f'[^{i}]: A v. B, 1 U.S. 2, 3 (1900).' for i in range(1, 37)))

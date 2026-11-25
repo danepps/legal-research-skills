@@ -112,8 +112,12 @@ only from matching source/claim coverage.
 
 Before source retrieval, cite-check resolves which connected Zotero library to
 use, offers available libraries by name when a choice is needed, and reports
-configured connections it cannot use. Supplied local PDFs remain usable without
-Zotero; automatic matching across a PDF folder is not yet implemented.
+configured connections it cannot use. The fourth run question covers your own copies: a named Zotero library, a PDF
+folder, both, or neither. A Folder choice can create `Sources` beside the draft
+without path entry, and offers to remember the project choice. Setup can also
+save one default PDF folder shared by both plugins, with no Zotero needed. It checks
+the text for title and author, leaves ambiguous matches unresolved, and names
+the copy and its version in the report.
 
 ## Requirements
 
@@ -127,7 +131,8 @@ Zotero; automatic matching across a PDF folder is not yet implemented.
 Installing the plugin adds instructions and helper scripts. It does not supply
 database subscriptions, external accounts, or model access. Markdown is the
 canonical memo format; requested derivatives have their own requirements in the
-relevant skill. Authenticated source files must be supplied by the user.
+relevant skill. For sources behind a login, supply your own authorized copies in that folder;
+scans without readable text are reported as unreadable.
 
 ## Updates and removal
 

@@ -11,8 +11,8 @@ def normalize_libraries(value: list[dict] | None) -> list[dict] | None:
         raise ValueError("libraries must be an array of public library records")
     result, ids = [], set()
     for row in value:
-        if not isinstance(row, dict) or set(row) - {"id", "name", "status", "reason"}:
-            raise ValueError("library records accept only id, name, status and reason; omit credentials/config")
+        if not isinstance(row, dict) or set(row) - {"id", "name", "status", "reason", "description"}:
+            raise ValueError("library records accept only id, name, status, reason and description; omit credentials/config")
         if any(not isinstance(row.get(k), str) or not row[k].strip() for k in ("id", "name", "status")):
             raise ValueError("library id, name and status must be nonempty strings")
         clean = {k: row[k].strip() for k in ("id", "name", "status")}
@@ -25,6 +25,10 @@ def normalize_libraries(value: list[dict] | None) -> list[dict] | None:
             raise ValueError("an unavailable library needs a nonempty reason and access remedy")
         if reason.strip():
             clean["reason"] = reason.strip()
+        if "description" in row:
+            if not isinstance(row["description"], str):
+                raise ValueError("library description must be a string")
+            clean["description"] = row["description"].strip()
         ids.add(clean["id"])
         result.append(clean)
     return result
@@ -42,7 +46,7 @@ def match_library(value: str, libraries: list[dict]) -> dict:
     if not exact:
         exact = [row for row in libraries if row["name"].casefold() == value.strip().casefold()]
     tokens = words(value)
-    matches = exact or [row for row in libraries if tokens and tokens.issubset(words(row["name"]))]
+    matches = exact or [row for row in libraries if tokens and tokens.issubset(words(row["name"] + " " + row.get("description", "")))]
     if len(matches) != 1:
         raise ValueError("library description is ambiguous or unmatched; use an observed library id")
     if matches[0]["status"] != "available":

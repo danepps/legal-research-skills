@@ -214,7 +214,7 @@ with tempfile.TemporaryDirectory() as td:
     sup = [p for p in r["prompts"] if p["label"].startswith("support:")][0]
     check(sup["textOnDisk"] == doe_txt and not sup["hasCostOpt"] and sup["toolCap"] == 8, "the support agent for the matched source is told its text is on disk and gets the tighter tool cap; the cost kind never reaches agent() (%s)" % {k: sup[k] for k in ("textOnDisk", "hasCostOpt", "toolCap")})
     tail = [p for p in r["prompts"] if p["label"].startswith("support-tail")][0]
-    check(tail["saysNotInZotero"], "unmatched sources are told they are not in Zotero")
+    check(tail["saysNotInZotero"], "unmatched sources are told no match was found in the selected libraries")
     check(not any(p["mentionsZoteroTool"] for p in r["prompts"]), "no agent prompt names a Zotero MCP tool")
     check(r["spend"]["byPhase"]["Support"]["projected"] == r["spend"]["costModel"]["supportZotero"] + r["spend"]["costModel"]["supportTail"], "support projection uses the Zotero rate for the matched source (%s)" % r["spend"]["byPhase"]["Support"])
     check(r["support"]["unitsChecked"] == 6, "all six in-scope units still read")

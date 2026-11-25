@@ -16,7 +16,7 @@ it", and never call a Zotero tool.
 Usage:
     python3 zotero_lookup.py OUT.json --server zotero [--server zotero-group ...]
         [--secondary ledger_args.json] [--support support_args.json] [--cites list.json]
-        [--cache-dir DIR] [--no-download] [--max-downloads N] [--timeout S]
+        [--cache-dir DIR] [--local-lookup REPORT] [--no-download] [--max-downloads N] [--timeout S]
     python3 zotero_lookup.py OUT.json --compact          # print the compact map for workflow args
     python3 zotero_lookup.py OUT.json --get KEY          # one source's full record (for agents)
 
@@ -510,15 +510,19 @@ def load_sources(args: dict) -> list[dict]:
         out.append({"key": key, "kind": kind, "cite": cite})
 
     for p in args.get("secondary") or []:
-        data = json.load(open(p))
+        with open(p, encoding="utf-8") as stream:
+            data = json.load(stream)
         for s in data.get("secondary", data) if isinstance(data, dict) else data:
             add(s.get("key"), s.get("kind"), s.get("cite"))
     for p in args.get("support") or []:
-        data = json.load(open(p))
+        with open(p, encoding="utf-8") as stream:
+            data = json.load(stream)
         for u in data.get("units", data) if isinstance(data, dict) else data:
             add(u.get("key"), u.get("k") or u.get("kind"), u.get("src") or u.get("source"))
     for p in args.get("cites") or []:
-        for s in json.load(open(p)):
+        with open(p, encoding="utf-8") as stream:
+            data = json.load(stream)
+        for s in data:
             add(s.get("key"), s.get("kind"), s.get("cite"))
     return out
 
@@ -535,7 +539,7 @@ def record_for(it: dict, lib: dict, server: dict) -> dict:
 def run(sources: list[dict], servers: list[dict], cache_dir: str, allow_download: bool = True,
         max_downloads: int = MAX_DOWNLOADS, opener=None, log=print) -> dict:
     os.makedirs(cache_dir, exist_ok=True)
-    libs = [(s, dump_library(s, cache_dir, opener=opener, log=log)) for s in servers]
+    libs = [(s, dump_library(s, cache_dir, opener=opener, log=log)) for s in servers] if sources else []
     report = {"libraries": [{"server": s["name"], "items": len(l["items"])} for s, l in libs], "sources": {}, "unmatched": []}
     downloads = 0
     for src in sources:
@@ -588,6 +592,20 @@ def compact(report: dict) -> dict:
     return out
 
 
+def hit_matches_citation(hit, cite, kind=""):
+    """Do not let a colliding ledger key attach another work's cached text."""
+    title = parse_cite(cite, kind).get("title", "")
+    return bool(title and tokens(title) == tokens(hit.get("title", "")))
+
+
+def without_local_hits(sources, local):
+    return [s for s in sources if not (
+        local.get("sources", {}).get(s["key"], {}).get("matched") and
+        local["sources"][s["key"]].get("origin") == "local" and
+        hit_matches_citation(local["sources"][s["key"]], s["cite"], s["kind"]) and
+        local["sources"][s["key"]].get("identityReview", {}).get("status") != "rejected")]
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or argv[1] in ("-h", "--help"):
         print(__doc__)
@@ -606,6 +624,7 @@ def main(argv: list[str]) -> int:
     global TIMEOUT
     cache_dir, allow_download, max_downloads, timeout = "", True, MAX_DOWNLOADS, TIMEOUT
     project = os.getcwd()
+    local_lookup = None
     i = 0
     while i < len(rest):
         a = rest[i]
@@ -615,6 +634,8 @@ def main(argv: list[str]) -> int:
             cache_dir = rest[i + 1]; i += 2
         elif a == "--project" and i + 1 < len(rest):
             project = rest[i + 1]; i += 2
+        elif a == "--local-lookup" and i + 1 < len(rest):
+            local_lookup = rest[i + 1]; i += 2
         elif a == "--no-download":
             allow_download = False; i += 1
         elif a == "--max-downloads" and i + 1 < len(rest):
@@ -628,12 +649,16 @@ def main(argv: list[str]) -> int:
     if not args["server"]:
         print("usage: at least one --server NAME (a Zotero MCP server in ~/.claude.json, or 'env')", file=sys.stderr)
         return 2
+    sources = load_sources(args)
+    if local_lookup:
+        with open(local_lookup, encoding="utf-8") as f:
+            local = json.load(f)
+        sources = without_local_hits(sources, local)
     try:
-        servers = [resolve_server(n, project=project) for n in args["server"]]
+        servers = [resolve_server(n, project=project) for n in args["server"]] if sources else []
     except ConfigError as e:
         print(f"zotero_lookup: {e}", file=sys.stderr)
         return 2
-    sources = load_sources(args)
     cache_dir = cache_dir or os.path.join(os.path.dirname(os.path.abspath(out_path)) or ".", "zotero-cache")
     log = lambda m: print(m, file=sys.stderr)  # noqa: E731
     report = run(sources, servers, cache_dir, allow_download, max_downloads, log=log)

@@ -1,5 +1,42 @@
 # Up-front dialog for /cite-check and /proofread — design note
 
+## Amendments 1 and 2, 2026-11-25: source copies and independent choices
+
+This supersedes the source-choice design below; the older note remains history.
+Both public plugins use at most four question slots: coverage, depth, support,
+and sources. Setup can save a shared default PDF folder; Sources beside the draft,
+project lines and explicit request folders take precedence over that default.
+Neither is a normal answer. No folder path depends on free text being returned.
+
+Folder and Zotero choices settle separately. Ask about only the unsettled halves:
+a settled folder with several unchosen libraries gets the library question;
+a saved library with no folder choice gets Folder/No folder. A sole library is
+used automatically alongside an already settled folder. Headless runs use settled
+choices and disclose any skip without creating or saving an unreturned choice.
+
+Use a single-select question with no or one library: Folder/Neither or the named
+library/Folder/Both/Neither. Use multi-select only when multiple libraries must
+be offered; accept at most one library plus optional Folder. There are at most
+four options. Overflow library names and IDs appear in a separate list only when
+they cannot all fit. Typed-description matching remains available. The question
+is one sentence, with a one-sentence offer to remember the choice and a this-run-only
+opt-out. Preserve one interaction: if the host cannot display the whole batch,
+present all choices together in ordinary text. Missing/ambiguous answers remain
+pending; a preselection is not an answer.
+
+The preview is read-only. An answered Folder choice can create Sources beside
+the original draft on apply. Remember only an accepted save offer, preserving
+unrelated instructions. Save only offered or explicitly answered halves. Choosing
+a folder must not erase a saved Zotero library unless Zotero was offered in that
+same question and declined. When both halves were offered, Neither saves both
+as none; folder-only then saves Zotero none and library-only saves folder none.
+Codex freezes the resolved choices into its preview/manifest; Claude passes the
+resolved source plan to lookup. Native project files take precedence over the
+other runtime's file for each setting.
+
+Synthetic regressions cover these branches, option limits, overflow selection,
+creation, persistence and the handoff. Live host dialogs remain untested.
+
 *Drafted 2026-10-27 after a live test in the Claude desktop app. Built the same day: cite-check
 SKILL.md step 1b, proofread SKILL.md step 1b, `legal-research/zotero_servers.py` (the group-name
 lookup and the description matching, as a script rather than ad-hoc requests), README, CHANGELOG.

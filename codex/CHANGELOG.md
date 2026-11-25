@@ -1,5 +1,76 @@
 # Codex plugin changes
 
+## 1.7.7 — 2026-11-25
+
+`cite-check` can use the user's own copies of sources from a folder, with no Zotero library needed. Companion Claude Code version **1.6.14**.
+
+- Cite-check proposes secondary-source copies from explicit folders, project
+  settings, Sources beside the draft, then the shared setup default. PDF/TXT/MD
+  indexing is offline, read-only and uses optional existing pdftotext; no OCR.
+- Folder and Zotero choices settle independently in the fourth question. Offer
+  only unsettled halves; use single selection with zero/one library, multi-select
+  with several, at most four options, a short prompt/save offer and overflow names
+  only when necessary. Folder-only answers preserve saved libraries not offered
+  for change. No path typing; accepted saves persist only answered settings.
+- Require the work's own head title/byline and reject conflicting book editions
+  or years. A script match is only a proposal: record first-page identity/edition
+  inspection with `--review-source`. Rejection clears active local text evidence
+  and falls through to selected Zotero then web. Bundles carry the review field.
+- A database cover sheet that states the file's own citation identifies the copy: HeinOnline (three
+  layouts), JSTOR, and a repository's recommended citation. A HeinOnline or JSTOR copy is the published
+  version; a repository copy is not assumed to be. A cover that cites another work ends the search for
+  that file; a cover year that differs from the draft's is reported, not fatal. On a journal's own first
+  page the byline may sit above or below the title, run over several lines, and carry a middle initial
+  or a footnote mark; an unlisted co-author or a different given name is still a miss.
+- Measured on three disjoint samples of 150 journal articles from one real Zotero library (2026-11-25),
+  the third never used for tuning: 129, 121 and 119 matched (82 percent overall), 93, 85 and 94 of them
+  as the published version. The first version of this matcher found 12 of 150. No wrong match in 450
+  shuffled citation-and-file pairs; the only same-surname matches were duplicate records of one article.
+  The files are not in this repository; `test_local_layouts.py` reproduces the layouts with invented works.
+- Two independent adversarial reviews of the matcher (2026-11-25) each found wrong documents and wrong
+  versions it accepted; every case is now a test in `test_local_layouts.py` (classes Adversarial and
+  SecondReview). What the matcher now requires: a cover page is recognised by the provider's page
+  furniture, never by a provider's name or a quoted citation in ordinary text; a cover's volume, journal,
+  page, year, title and authors come from one citation, the title comma-delimited directly before the
+  volume; journal names agree word for word (abbreviations and acronyms allowed, initials alone not);
+  names are compared person by person, each given name with its own surname, compound surnames and
+  suffixes intact; only journal, date, production and banner lines may stand above a title, and a name
+  the citation does not list after the byline refuses the match; the citation-line cover layout also
+  needs the title and author at the head of the content page; a one-word or stock title needs the page
+  to show the cited journal, volume and first page; a title or page that carries another script is never
+  matched. For the version: notices of a draft, proof, reprint, early view or accepted manuscript are
+  read on the cover, across the first forty lines of the first page and the head of later pages, and the
+  work's own title is never taken for one; publication labels must agree on the article's own first
+  page; a running citation line counts only beside a standalone page label; a database copy whose page
+  labels run from another number, or that has no content page, is not treated as published.
+- Known limits. A citation that gives only an initial matches any given name with that initial. A
+  database copy that shows no page numbers in its text is still treated as the published scan (43 percent
+  of the real HeinOnline and JSTOR copies measured show no first-page number), so the agent that judges
+  a pincite must find the printed page itself. OCR spelling in a title is tolerated only on the
+  citation-line cover layout, beside the author's surname. A script cannot settle identity for every
+  layout, which is why its match is a proposal that the reading agent confirms from the first page.
+- Deduplicate identical content. Prefer exactly one strong established published
+  copy over drafts and disclose alternatives; otherwise ambiguity remains. Pins
+  require affirmative publication evidence and standalone labels for every type.
+  Manuscript/repository markers are distinguished from body/footnote mentions.
+- The full readiness validator permits a verified_quote with a separate explicit
+  not_judged/false/reason pincite record. It still requires the actual quotation
+  match, confirmed identity, report disclosure and complete_with_limits; it rejects
+  page corrections or confirmed pins from an unfit local copy. Candidate/copy
+  disclosures use filenames or relative names, never absolute paths.
+- Preview only three pages; fully extract selected copies. Bound work to 500 files,
+  60 MiB/file, 256 KiB/preview, 16 MiB/full extraction and 400 pages. Report skipped
+  inputs and progress; skip hidden/run/cache directories even inside source folders.
+  Expand tilde draft/project paths. Cache by content hash and reuse extraction.
+- Synthetic tests cover each shared Amendment 2 behavior, CLI review/rejection,
+  current-schema full readiness with an unjudged pin, nested runs, tilde CLI paths,
+  cache/provenance and dialog handoff. run_tests.py rejects shared-helper divergence
+  except PROJECT_FILE. Validation command: `python3 run_tests.py`.
+- Untested: live model/host dialogs, books against real files, live Zotero/web,
+  installation/update, realistic large-folder performance and irregular/scanned
+  title pages. No private skills or app changes. Pre-existing Claude ledger-key
+  collisions and the broader quotation-attribution problem are not redesigned.
+
 ## 1.7.6 — 2026-11-25
 
 - `internal-proofread`: read referenced endnotes as a separate series after footnotes.
@@ -35,6 +106,7 @@
   source location for a downstream writer.
 - Checked by hand after the tests (2026-11-25), on the snapshot of the live Dubitante run that exposed the gap: both extractors now return the first-page footer's author note, with the run-together word that was missed; in the Claude Code extractor the draft's 16 existing chunks are byte-for-byte unchanged and a 17th carries the header and footer text; the redline writer placed a correction for that word as a tracked insertion inside the footer part and anchored a comment-type finding at the start of the body, beginning with its location. Inspected as XML, not in Word. One nit left: a footer's rule line of underscores is extracted as text.
 - Endnotes, checked by hand after the tests (2026-11-25): the snapshot of the live run's draft was converted so that its 351 footnotes became decimal-numbered endnotes. The Claude Code extractor returns all 351 with their numbers, marks their references `[EN#n]`, and every deterministic lint rule fires exactly as often as on the footnote version (13 missing final periods among them); the redline writer applied the same 41 changes, 12 of them periods appended in the endnotes part, none opening inside a field. The unconverted draft extracts byte-for-byte as before. A converted file is not a document Word produced, and nothing was opened in Word.
+
 
 ## 1.7.5 — 2026-11-23
 

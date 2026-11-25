@@ -13,6 +13,7 @@ from pathlib import Path
 from extract_cites import extract_document, sha256
 from prepare_units import build_prepared_units
 from prepare_run_options import parse_footnotes, resolved_selection
+from source_options import materialize
 
 
 LEDGERS = (
@@ -41,6 +42,7 @@ def main() -> int:
     parser.add_argument("--min-quote-words", type=int)
     parser.add_argument("--footnotes", nargs="+", help="Focused footnote numbers or inclusive ranges")
     args = parser.parse_args()
+    args.draft = args.draft.expanduser()
     if not args.draft.is_file():
         parser.error(f"draft not found: {args.draft}")
     options = None
@@ -63,6 +65,11 @@ def main() -> int:
     if args.min_quote_words < 1:
         parser.error("quotation threshold must be positive")
     args.run_dir.mkdir(parents=True, exist_ok=False)
+    if options and "source_access" in options:
+        try:
+            materialize(options["source_access"], remember=options["remember_sources"])
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
     snapshot = args.run_dir / f"source-snapshot{args.draft.suffix}"
     shutil.copyfile(args.draft, snapshot)
     snapshot.chmod(0o444)
@@ -127,6 +134,8 @@ def main() -> int:
         manifest["run_options_sha256"] = sha256(options_path)
         if "library_access" in options:
             manifest["library_access"] = options["library_access"]
+        if "source_access" in options:
+            manifest["source_access"] = options["source_access"]
     (args.run_dir / "run-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

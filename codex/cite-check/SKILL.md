@@ -141,7 +141,18 @@ unresolved mismatches. A raw text batch alone does not supply draft metadata.
 
 Retrieve the opinion itself for quotes, holdings, propositions, and pins. Before calling a lookup miss unconfirmed, run both caption and quoted citation-string fallbacks with `check_cite.py 'CITATION' --name 'A v. B'`; inspect candidate identities and citing passages, and record all routes tried or unavailable. A citing passage is corroboration, not conclusive identity proof. Use `too_recent_for_free_index` only with a basis for that explanation, never merely because a citation is unfamiliar. Recommend a direct official-record or database spot-check when unresolved.
 
-Write one row per unique source to `source-ledger.jsonl` and one row per citation unit to `verdicts.jsonl`. For scholarship, inspect the selected library before the web and compare cited and current versions of manuscripts. Honor a Zotero skip choice; report whether library access was skipped, absent, unassessed or unavailable. For an absent quote, search sibling sources named in the same footnote; use `misattributed` if the passage appears in a different cited source.
+Write one row per unique source to `source-ledger.jsonl` and one row per citation unit to `verdicts.jsonl`. For scholarship, run the [local folder pass](references/run-picker.md#local-copies-and-the-fourth-question) before other retrieval, treating its matches as proposals; for unmatched sources inspect the selected library before the web and compare cited and current versions of manuscripts. Honor a Zotero skip choice; report whether library access was skipped, absent, unassessed or unavailable. For an absent quote, search sibling sources named in the same footnote; use `misattributed` if the passage appears in a different cited source.
+
+Before relying on a local proposal, inspect its first content page to confirm the
+cited work and edition. Record `local_identity_review` (`status`, `locator`,
+`reason`) using `local_lookup.py --review-source` as described in the run picker.
+A mismatch is no local copy: record rejected, then try selected Zotero and the web.
+For an unfit copy, a deterministic quotation match may use `verified_quote` with
+`status: verified` only when `pincite_verification` explicitly records
+`status: not_judged`, `confirmed: false` and a reason. Report the copy/version and
+unjudged pin separately; no page correction may come from that copy. If a sweep
+finds several cited sources containing the passage, retain them all and leave
+attribution unresolved.
 
 Store each retrieved or extracted full-text source under the hidden run directory, preserving form feeds or explicit page markers when available. For each source bundle, create a JSON array whose rows contain `prepared_unit_id`, `unit_id`, `source_id`, `quote`, and any resolved `pincite`, then run:
 

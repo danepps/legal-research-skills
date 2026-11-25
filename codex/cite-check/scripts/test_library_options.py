@@ -2,6 +2,8 @@
 """Offline library selection, disclosure, and run-handoff regressions."""
 import copy
 import json
+import os
+from unittest.mock import patch
 from pathlib import Path
 import subprocess
 import sys
@@ -98,6 +100,8 @@ class HandoffTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        home = patch.dict(os.environ, {"HOME": str(self.root)})
+        home.start(); self.addCleanup(home.stop)
         self.draft = self.root / "draft.md"
         self.draft.write_text("A claim.[^1]\n\n[^1]: Doe, Article (1900).\n")
         self.extraction = extract_document(self.draft)
@@ -133,7 +137,7 @@ class HandoffTests(unittest.TestCase):
         preview = self.root / "preview.json"
         run = self.root / "run"
         proc = subprocess.run([sys.executable, str(HERE / "prepare_run_options.py"), str(self.draft),
-                               "--output", str(preview), "--libraries", str(inventory), "--library", "5A"],
+                               "--output", str(preview), "--libraries", str(inventory), "--library", "5A", "--source-choice", "web"],
                               capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         plan = json.loads(preview.read_text())

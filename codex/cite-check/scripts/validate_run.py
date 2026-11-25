@@ -273,6 +273,8 @@ def main() -> int:
                 errors.append("run manifest differs from the resolved scope/depth/support choices")
             if manifest.get("library_access") != options.get("library_access"):
                 errors.append("run manifest differs from the resolved library choice")
+            if manifest.get("source_access") != options.get("source_access"):
+                errors.append("run manifest differs from the resolved source-folder choice")
         except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append(f"cannot validate run options: {exc}")
     prepared = load_jsonl(args.run_dir / "prepared-units.jsonl", errors)
@@ -780,7 +782,15 @@ def main() -> int:
                         f"verified quotation unit {unit_id} lacks a deterministic match"
                     )
                 unit_pin = unit_by_id.get(unit_id, {}).get("pincite")
-                if unit_pin and verdict.get("status") == "verified":
+                from local_lookup import quote_without_pin
+                local_source = source_by_id.get(unit_by_id.get(unit_id, {}).get("source_id"), {})
+                pin_not_judged = quote_without_pin(verdict, local_source)
+                if unit_pin and pin_not_judged:
+                    if final_status != "complete_with_limits":
+                        errors.append(f"unjudged local pincite requires complete_with_limits: {unit_id}")
+                    if not (args.run_dir / "report.md").is_file() or verdict["pincite_verification"]["reason"] not in (args.run_dir / "report.md").read_text(encoding="utf-8"):
+                        errors.append(f"report.md omits reason for unjudged local pincite: {unit_id}")
+                if unit_pin and verdict.get("status") == "verified" and not pin_not_judged:
                     pin_checks = [
                         check
                         for check in adequate_matches
@@ -883,6 +893,10 @@ def main() -> int:
                 unlock = str(row.get("unlock_path", "")).strip()
                 if unlock and unlock not in limit_section:
                     errors.append(f"report.md Couldn't check section omits unlock_path for: {item_id}")
+
+        from local_lookup import validate_local_sources
+        errors.extend(validate_local_sources(args.run_dir, manifest, sources, units, verdicts,
+                      report.read_text(encoding="utf-8") if report.is_file() else ""))
 
         identity_path = args.run_dir / "case-identity-checks.jsonl"
         if (schema_version >= 6 and manifest.get("case_identity_version") == 1) or identity_path.exists():

@@ -2,6 +2,81 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.14 (2026-11-25)
+
+`cite-check` can use the user's own copies of sources from a folder, with no Zotero library needed. Companion Codex version **1.7.7**. Public plugin only; the change is not in the author's private skills.
+
+- Cite-check can use PDFs, TXT and MD from an explicit folder, a project Source
+  folder line, Sources beside the draft, or a shared default saved by setup.
+  Local copies precede selected Zotero and the web; no Zotero is required.
+- Setup asks Zotero/folder/both/neither. The fourth run question resolves folder
+  and Zotero choices independently and offers only unsettled halves. Zero/one
+  library uses single selection; multiple libraries use a bounded multi-select.
+  Prompts and save offers are short; overflow names appear only when needed.
+  Folder selection needs no typed path and cannot erase an unoffered saved library.
+- Identity uses the document's own head title and byline, rejecting review,
+  response and reference layouts and conflicting book editions/years. Scripts
+  propose; first-page model inspection and its recorded outcome precede reliance.
+  Mismatches fall through to selected Zotero/web. Hits are checked against each
+  unit's cited title; the wider pre-existing ledger-key collision issue remains.
+- A database cover sheet that states the file's own citation identifies the copy: HeinOnline (three
+  layouts), JSTOR, and a repository's recommended citation. A HeinOnline or JSTOR copy is the published
+  version; a repository copy is not assumed to be. A cover that cites another work ends the search for
+  that file; a cover year that differs from the draft's is reported, not fatal. On a journal's own first
+  page the byline may sit above or below the title, run over several lines, and carry a middle initial
+  or a footnote mark; an unlisted co-author or a different given name is still a miss.
+- Measured on three disjoint samples of 150 journal articles from one real Zotero library (2026-11-25),
+  the third never used for tuning: 129, 121 and 119 matched (82 percent overall), 93, 85 and 94 of them
+  as the published version. The first version of this matcher found 12 of 150. No wrong match in 450
+  shuffled citation-and-file pairs; the only same-surname matches were duplicate records of one article.
+  The files are not in this repository; `test_local_layouts.py` reproduces the layouts with invented works.
+- Two independent adversarial reviews of the matcher (2026-11-25) each found wrong documents and wrong
+  versions it accepted; every case is now a test in `test_local_layouts.py` (classes Adversarial and
+  SecondReview). What the matcher now requires: a cover page is recognised by the provider's page
+  furniture, never by a provider's name or a quoted citation in ordinary text; a cover's volume, journal,
+  page, year, title and authors come from one citation, the title comma-delimited directly before the
+  volume; journal names agree word for word (abbreviations and acronyms allowed, initials alone not);
+  names are compared person by person, each given name with its own surname, compound surnames and
+  suffixes intact; only journal, date, production and banner lines may stand above a title, and a name
+  the citation does not list after the byline refuses the match; the citation-line cover layout also
+  needs the title and author at the head of the content page; a one-word or stock title needs the page
+  to show the cited journal, volume and first page; a title or page that carries another script is never
+  matched. For the version: notices of a draft, proof, reprint, early view or accepted manuscript are
+  read on the cover, across the first forty lines of the first page and the head of later pages, and the
+  work's own title is never taken for one; publication labels must agree on the article's own first
+  page; a running citation line counts only beside a standalone page label; a database copy whose page
+  labels run from another number, or that has no content page, is not treated as published.
+- Known limits. A citation that gives only an initial matches any given name with that initial. A
+  database copy that shows no page numbers in its text is still treated as the published scan (43 percent
+  of the real HeinOnline and JSTOR copies measured show no first-page number), so the agent that judges
+  a pincite must find the printed page itself. OCR spelling in a title is tolerated only on the
+  citation-line cover layout, beside the author's surname. A script cannot settle identity for every
+  layout, which is why its match is a proposal that the reading agent confirms from the first page.
+- Identical bytes are one copy. Exactly one strong published candidate can win
+  over drafts, with alternatives disclosed. Every source type needs affirmative
+  publication evidence and standalone printed labels for pincites. Accepted and
+  repository manuscripts remain unfit; body/footnote mentions are not version
+  statements. Quotation results survive while page corrections are refused across
+  quote/support report fields. Bibliographic confirm entries are retained.
+- The local/Zotero sweep runs with Zotero disabled and returns every source
+  containing a quotation, leaving multiple matches unattributed. It cannot decide
+  which source the author intended; the wider attribution problem remains.
+  Reports name copies and candidates without absolute paths and disclose limits.
+- Index only first-page previews, then extract selected copies in full. Caps:
+  500 files, 60 MiB/file, 256 KiB/preview, 16 MiB/full extraction, 400 pages.
+  Skip hidden/run/cache folders, including runs inside source folders; expand
+  tilde paths, report skipped/unreadable inputs, and print progress to stderr.
+  Original files stay read-only; extraction is offline, content-hashed and reused.
+- Synthetic regressions cover all Amendment 2 items, including generated PDFs,
+  missing pdftotext, limits, edition conflicts, duplicate/version selection,
+  dialog persistence, workflow report fields and a nonzero-id sweep whose harness
+  executes the emitted command. Shared-helper divergence is a run_tests.py gate.
+  Validation command: `python3 run_tests.py`; model responses are stubbed.
+- Untested: live model/host dialogs, Zotero/web retrieval, installation/update,
+  books and book chapters against real files (only journal articles were measured),
+  realistic large-folder performance and irregular/scanned layouts. No OCR or installation; cases/statutes, private skills and the app are
+  outside this change. Versions are 1.6.14 and 1.7.7.
+
 ## 1.6.13 (2026-11-25)
 
 `proofread` now reads referenced DOCX headers, footers and endnotes, including first-page
@@ -52,6 +127,7 @@ no added story prose retain their existing output; Markdown is unchanged.
 - The terminal-punctuation guard follows the existing lint exactly: it strips closing quotes, but not closing parentheses. This differs from the ticket's description of the lint; a note ending in `.)` therefore still receives a period after the parenthesis. The lint itself is unchanged.
 - Tested with standard-library Python on synthetic OOXML: the ticket's eleven cases, nested and incomplete fields, malformed field markers, moved-from ranges, conflicting edits, extractor whitespace parity, direct CLI input, and verification failure on changed field formatting. Full repository checks are run with `python3 run_tests.py`. **Not tested:** opening any output in Microsoft Word, Word's accept/reject UI, Zotero refresh, or a live proofread/Dubitante session. No real draft was used by the tests.
 - Checked by hand after the tests (2026-11-25): the writer was re-run on the snapshot and findings of a live Dubitante proofread of a Zotero-linked article draft (134 findings, 12 of them `cite-terminal-punct` without a replacement). All 12 became appended periods (applied 29 to 41, commented 100 to 88); six sit directly after a citation field's end marker and six after plain text; none opens inside a field and none carries character formatting; the writer's own accept/reject verification passed. The output was inspected as XML, not in Word.
+
 
 ## 1.6.11 (2026-11-23)
 

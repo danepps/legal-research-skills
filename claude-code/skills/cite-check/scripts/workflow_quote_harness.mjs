@@ -16,12 +16,14 @@
 //   exist-flaky   the case-existence agent dies once, then answers
 //   exist-dead    the case-existence agent dies twice
 import fs from 'node:fs'
+import { execFileSync } from 'node:child_process'
 const [,, wfPath, argsPath, scenario = 'baseline'] = process.argv
 const src = fs.readFileSync(wfPath, 'utf8').replace(/^export const meta/m, 'const meta')
 const fn = new Function('args', 'budget', 'agent', 'parallel', 'phase', 'log', 'pipeline', `return (async () => { ${src} })()`)
 const args = JSON.parse(fs.readFileSync(argsPath, 'utf8'))
 const budget = { spent: () => 0, total: 0, remaining: () => 1e9 }
 const labels = []
+const sweepCommands = []
 const prompts = []
 const logs = []
 let reportPrompt = ''
@@ -34,7 +36,10 @@ async function agent(prompt, opts) {
   const L = opts.label || ''
   labels.push(L || opts.phase)
   prompts.push({ label: L, prompt })
+  if (L.startsWith('local-identity:')) return { status: scenario === 'local-rejected' ? 'rejected' : 'confirmed', locator: 'first content page', reason: 'Synthetic identity inspection.' }
   if (L.startsWith('segment')) {
+    if (args.testResolutions) return { resolutions: args.testResolutions }
+    if (scenario === 'local-only') return { resolutions: [{ id: args.testId ?? 0, footnote: (args.testId ?? 0) + 1, quote: args.testQuote, source: args.secondaryCites[0].cite, ledgerKey: args.secondaryCites[0].key, kind: 'article', pincite: '42' }] }
     const m = prompt.match(/--ids (\d+) (\d+)/)
     const units = Array.from({ length: +m[2] - +m[1] }, (_, i) => +m[1] + i)
     return { resolutions: units.map((id) => ({ id, footnote: id + 1, quote: `quote ${id}`, source: `Case${id} v. Other, ${100 + id} U.S. ${200 + id}, ${205 + id} (19${50 + id})`, kind: 'case', pincite: String(205 + id) })) }
@@ -47,17 +52,28 @@ async function agent(prompt, opts) {
     const cmd = prompt.split('\n').find((l) => l.includes('check_cite.py')) || ''
     return { results: [...cmd.matchAll(/"(\d+ [A-Za-z. ]+ \d+)"/g)].map((m) => ({ citation: m[1], exists: true, basis: 'courtlistener-api' })) }
   }
+  if (L.startsWith('zotero-sweep')) {
+    const line = prompt.split('\n').find((line) => line.trim().startsWith('python3 ') && line.includes('zotero_sweep.py'))
+    const command = line && line.match(/^\s*python3 "([^"]+)" "([^"]+)" "([^"]+)" --ids ([0-9 ]+)$/)
+    if (!command) throw new Error('Malformed emitted sweep command')
+    const argv = [...command.slice(1, 4), '--ids', ...command[4].trim().split(/\s+/)]
+    sweepCommands.push(argv)
+    const result = execFileSync(args.python, argv, { encoding: 'utf8' })
+    return JSON.parse(result)
+  }
   if (L.startsWith('verify')) {
     const key = prompt.match(/SOURCE-BUNDLE KEY \(echo it back exactly\): (.+)/)[1].trim()
     const qids = ids(prompt, /\[id (\d+)\]/)
     const verdicts = qids.flatMap((id) => {
+      if (scenario === 'local-pin') return [{ id, verdict: 'pincite_off', sourceText: args.testQuote, severity: 'medium', pinciteFinding: 'WRONG_PAGE_CORRECTION', note: 'WRONG_PAGE_CORRECTION', versionDrift: 'WRONG_PAGE_CORRECTION' }]
+      if (scenario === 'local-only') return [{ id, verdict: 'unverifiable', severity: 'low', note: 'stub miss for sweep regression' }]
       if (['corrected', 'withdrawn', 'wrong-echo'].includes(scenario) && id === 0) return [mismatch(id)]
       if (scenario === 'all-high') return [mismatch(id)]
       if (scenario === 'foreign-id' && id === 0) return [verbatim(0), { ...verbatim(1), note: 'returned by the agent for another source' }]
       if (scenario === 'foreign-id' && id === 1) return [{ id, verdict: 'mismatch', severity: 'medium', sourceText: 'a real difference', basis: 'authoritative-reproduction' }]
       return [verbatim(id)]
     })
-    return { sourceKey: key, sourceIdentified: 'stub source', fetchBasis: 'authoritative-reproduction', verdicts }
+    return { sourceKey: key, sourceIdentified: 'PUBLISHED_SOURCE_LABEL', fetchBasis: 'authoritative-reproduction', metadataFindings: scenario === 'local-pin' ? ['WRONG_PAGE_CORRECTION'] : [], verdicts, supportVerdicts: scenario === 'local-pin' ? [{id:2, verdict:'supported', sourceText:args.testQuote, locator:'WRONG_PAGE_CORRECTION', reason:'WRONG_PAGE_CORRECTION', posture:'WRONG_PAGE_CORRECTION', searched:'WRONG_PAGE_CORRECTION', basis:'authoritative-reproduction'}] : [] }
   }
   if (L.startsWith('re-verify')) {
     const id = Number(L.split('#')[1])
@@ -74,7 +90,13 @@ const out = await fn(args, budget, agent, parallel, () => {}, (m) => logs.push(m
 const section = (from, to) => { const i = reportPrompt.indexOf(from); return i < 0 ? '' : reportPrompt.slice(i, reportPrompt.indexOf(to, i + 1)).trim() }
 console.log(JSON.stringify({
   scenario,
+  prompts: scenario.startsWith('local-') ? prompts : [],
+  reportPrompt: scenario.startsWith('local-') ? reportPrompt : '',
+  localIdentityChecks: out.localIdentityChecks,
+  secondaryExistence: out.secondaryExistence,
+  support: out.support,
   agents: labels,
+  sweepCommands,
   exitState: out.exitState,
   degradation: out.degradation,
   counts: {

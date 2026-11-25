@@ -62,6 +62,7 @@ def env(**values):
 
 tmp = tempfile.mkdtemp()
 old_umask = os.umask(0o022)      # the default umask the review tested under
+setup.SOURCE_FOLDER_FILE = os.path.join(tmp, "config", "legal-research", "source-folder")
 setup.TOKEN_FILE = os.path.join(tmp, "config", "courtlistener", "token")
 setup.SETTINGS = os.path.join(tmp, "claude", "settings.json")
 setup.CLAUDE_JSON = os.path.join(tmp, "claude.json")

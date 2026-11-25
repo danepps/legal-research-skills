@@ -39,7 +39,7 @@ find ~/.claude/plugins -path '*legal-research*/skills/setup/setup.py' 2>/dev/nul
 
 If it lists more than one (older versions can linger in the cache), use the most recently modified.
 
-Then read the `SKILL.md` beside it and follow it from step 1 to the end, using that path wherever it says `${CLAUDE_PLUGIN_ROOT}/skills/setup/setup.py`. It covers Python, the CourtListener token, web access, dynamic workflows, Zotero (optional), and automatic updates (optional).
+Then read the `SKILL.md` beside it and follow it from step 1 to the end, using that path wherever it says `${CLAUDE_PLUGIN_ROOT}/skills/setup/setup.py`. It covers Python, the CourtListener token, web access, dynamic workflows, optional own source copies (Zotero and/or a PDF folder), and automatic updates (optional).
 
 ## 3. Codex
 
@@ -68,13 +68,31 @@ Run `python3 <that file> status`. If `courtlistener.works` is true, move on. Oth
 
 Then run `python3 <that file> courtlistener "<token>"`. It tests the token with a live lookup before saving it to `~/.config/courtlistener/token`, readable only by the person. On HTTP 401, ask them to copy it again. If the output says `"effective": false`, an environment variable holds a different token; tell them which one. Do not echo the token back. Tell them once that the pasted copy also sits in this conversation's history and that they can generate a new token on the same page at any time. Do not run the helper's `allow-web`, `enable-workflows`, `auto-update`, or `zotero` commands under Codex; they configure Claude Code.
 
-**Zotero (optional).** Say that it is optional and that every skill except build-zotero-library works without it. Ask whether they keep their sources in Zotero; treat anything but a clear yes as skip. If yes, the Codex scripts read `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` (`user` or `group`) from the environment, and on macOS a Keychain generic-password entry under the service name `codex-zotero-mcp` (accounts `api-key` and `library-id`). Have them create a key at https://www.zotero.org/settings/keys, and ask before storing it.
+**Your own copies of sources (optional).** Ask whether they keep sources in
+Zotero, a folder of PDFs, both, or neither. Neither is normal; only
+build-zotero-library requires Zotero. For a folder, ask whether all PDFs live
+in one place or with each project. If one place, resolve the existing folder
+from their ordinary description and run the same downloaded helper:
+
+```bash
+python3 <that file> source-folder "<existing folder>"
+```
+
+It saves only an absolute path in `~/.config/legal-research/source-folder`,
+shared by both plugins. The source-folder command does not read or write Claude
+configuration, scan PDFs, use the network, or install anything. For project-local
+PDFs, say cite-check will ask per project and can create `Sources` beside the
+draft; do not save a default. Existing defaults appear in `setup.py status`.
+The Codex named setup skill still handles updates only; this is the shared
+research-account/source setup step.
+
+For Zotero or both, the Codex scripts read `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID`, and `ZOTERO_LIBRARY_TYPE` (`user` or `group`) from the environment, and on macOS a Keychain generic-password entry under the service name `codex-zotero-mcp` (accounts `api-key` and `library-id`). Have them create a key at https://www.zotero.org/settings/keys, and ask before storing it.
 
 **Automatic updates (optional, command-line install only).** After a new session, the plugin's `$legal-research:setup` skill can turn on daily updates. Mention it; do not set it up unasked.
 
 ## 4. Finish
 
-Summarize what is in place as a short checklist (Python, plugin installed, CourtListener working, plus web access and workflows for Claude Code, and Zotero and automatic updates marked optional). Then tell the person:
+Summarize what is in place as a short checklist (Python, plugin installed, CourtListener working, plus web access and workflows for Claude Code, and own source copies and automatic updates marked optional). Then tell the person:
 
 - Start a new conversation (the app calls it a session) so the new tools load. In Claude, use the **Code** tab.
 - To try it, choose the folder that holds a short draft with footnotes and type, replacing the filename with theirs: Cite-check "My Article.docx" in this folder. Leave the draft unchanged.

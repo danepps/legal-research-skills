@@ -63,6 +63,32 @@ For a Zotero source, keep `zotero_item_key` together with `library_id` in
 Local full text uses `source_path` and `source_sha256`. Preserve the supplied
 PDF and record the cached extracted text separately with its pagination basis.
 
+New picker previews carry a frozen `source_access` plan: resolved folder paths,
+origin, library choice and whether an answered Folder choice needs `Sources`
+created. Initialization copies it to the manifest and applies an accepted
+`remember_sources` save offer. The validator rejects changed selections. The
+lookup uses the frozen paths rather than re-reading project/default settings.
+
+The folder helper uses `source_origin: local_folder`, `verification_basis:
+local_library_full_text`, and the cached text's `source_path`/`source_sha256`.
+`local_copy` retains `path`, `sha256`, `filename`, `text_pages`, first-page
+`identity` evidence, and `version` (`kind`, `note`, `markers`, `journalHeadings`,
+`printedPages`, `pinciteEligible`, `pinciteReason`). These are observed copy
+indicia, not a quotation verdict or an automatic page mapping. Start with
+`pagination_convention: unknown`; inspect and calibrate before changing it.
+A Zotero skip does not skip these files. Source bundles retain `local_copy` and
+`local_identity_review` (pending, confirmed or rejected, plus inspected locator
+and reason; the review command also binds the copy hash). Rejected proposals
+clear the active source path and fall through to selected Zotero then the web.
+A verified_quote can retain verified status with a separate pincite_verification
+record: status not_judged, confirmed false and a nonempty reason. Page corrections
+and confirmed pins remain forbidden for an unfit copy.
+The applied `local-lookup.json` hash is `local_lookup_sha256` in the manifest,
+with `local_source_version: 1`. Readiness checks provenance, original/text hashes,
+report disclosures and pinned-unit version limits. Preserve ambiguous candidates
+and unreadable-file names in that report; the helper's exact disclosure lines
+belong in the final method/limitations section.
+
 `verdicts.jsonl` requires `verdict_id`, `unit_id`, `status`, `severity`, `category`,
 `verification_basis`, `evidence`, and `suggested_action` (use `none` if appropriate).
 Use the protocol's status, severity, and basis values. Positive categories are
