@@ -18,6 +18,7 @@ SOURCE_FIELDS = (
     "url", "doi", "zotero_item_key", "source_path", "source_sha256", "retrieval_notes",
     "reason", "unlock_path", "pagination_convention", "first_page", "versions",
     "identifiers", "retrieval_attempts", "library_id", "library_lookup",
+    "source_origin", "local_copy", "local_identity_review",
 )
 SIBLING_FIELDS = (
     "unit_id", "source_id", "draft_citation_text", "resolved_source_label", "pincite",

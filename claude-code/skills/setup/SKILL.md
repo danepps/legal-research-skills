@@ -1,6 +1,6 @@
 ---
 name: setup
-description: One-time, conversational setup for the legal-research plugin — checks Python, saves and tests the user's CourtListener token, pre-allows web tools, offers automatic plugin updates, and (optionally) registers a Zotero library, all from inside Claude Code so the user never edits a configuration file. Trigger on /legal-research:setup, on a request to set up the legal research tools, to find out where a CourtListener token goes, to turn automatic updates of this plugin on or off, or to connect a Zotero library, or when another skill in this plugin finds the CourtListener token missing.
+description: One-time, conversational setup for the legal-research plugin — checks Python, saves and tests the user's CourtListener token, pre-allows web tools, offers automatic plugin updates, and (optionally) connects Zotero or saves a default source folder, all from inside Claude Code so the user never edits a configuration file. Trigger on /legal-research:setup, on a request to set up the legal research tools, to find out where a CourtListener token goes, to turn automatic updates of this plugin on or off, or to connect a Zotero library, or when another skill in this plugin finds the CourtListener token missing.
 ---
 
 # Setup
@@ -27,7 +27,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/setup/setup.py" status
   app, and run setup again.
 - If `python.ok` is false (older than 3.11): same advice, with the current python.org installer.
 - Do not paste the raw JSON at the user. Summarize it as a short checklist with a tick or cross
-  per line: Python, CourtListener, web access, automatic updates, Zotero (marked optional), git.
+  per line: Python, CourtListener, web access, automatic updates, own source copies (Zotero and/or a PDF folder, both optional), git.
 
 ## 2. CourtListener token (required for case checking)
 
@@ -84,18 +84,34 @@ One sentence to the user: this lets the bigger skills split the work among sever
 it takes effect the next time they start a session. (It is the same switch as the **Dynamic
 workflows** row in `/config`; docs: https://code.claude.com/docs/en/workflows.)
 
-## 5. Zotero (optional; many users do not have it, and nothing else depends on it)
+## 5. Your own copies of sources (optional)
 
-Say first that this step is optional and that every skill except build-library works without
-Zotero, checking articles against the open web instead. Then ask whether they keep their
-sources in Zotero, and say that if so you can connect the library so cite-check and find-cite
-search it before the web, and that they can answer skip now and run setup again later.
-Treat anything but a clear yes as skip, and never present a missing Zotero as a problem in
-the final checklist; show it as not connected (optional).
+Ask whether they keep source copies in **Zotero**, **a folder of PDFs**, **both**,
+or **neither**. Neither is a normal answer: cite-check can use the web, and only
+build-library requires Zotero. If the request or this setup conversation already
+settles the answer, use it. A configured source folder or Zotero connection is
+reported as already set up, not reconfigured without a request.
 
-If yes and `zotero.servers` already lists a server, say so and move on.
+**Folder or both:** explain that cite-check can read their own article and book
+copies without Zotero. Ask whether the PDFs live in one place or with each
+project. If they live with each project, say that cite-check will ask in the
+project and can make a `Sources` folder beside the draft; no default is saved.
+If they keep everything in one place, let them identify that existing folder in
+their own words (resolve it locally; they need not type a technical path), then:
 
-Otherwise:
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/skills/setup/setup.py" source-folder "<existing folder>"
+```
+
+This writes only its absolute path to `~/.config/legal-research/source-folder`,
+shared by Claude and Codex on this computer. It reads no source contents and
+changes no Claude settings. `status` reports `source_folder.path`, `configured`
+and `exists`. Use an existing saved default without asking again unless the
+user wants to change it. If its folder has moved, disclose that and resolve the
+new location. Neither and per-project folders need no default file.
+
+**Zotero or both:** follow the unchanged connection branch below. If
+`zotero.servers` already lists a server, say it is connected. Otherwise:
 
 1. If `zotero.uvx_installed` is false, the Zotero connector needs a small helper program
    called `uv`. Tell the user you are installing it, then run
@@ -177,5 +193,5 @@ workflows, automatic updates, or Zotero, say that those take effect in a new ses
 should start one first. Mention that the first cite-check asks for approval before it launches its
 workflow, and that choosing Always avoids the question next time.
 
-Do not install anything else, do not touch files other than the three the script writes, and
+Do not install anything else, do not touch files beyond the settings handled by this helper, and
 do not read or echo the token or key back after saving them.

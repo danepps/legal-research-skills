@@ -171,12 +171,28 @@ def check_codex_ui_metadata() -> list[str]:
     return failures
 
 
+def check_local_source_parity(root: Path = ROOT) -> list[str]:
+    failures = []
+    for name in ("local_sources.py", "source_options.py"):
+        paths = [root / base / name for base in ("claude-code/skills/cite-check/scripts", "codex/cite-check/scripts")]
+        try:
+            texts = [re.sub(r'^PROJECT_FILE = "(?:CLAUDE|AGENTS)\.md"$', 'PROJECT_FILE = "PROJECT.md"',
+                            p.read_text(encoding="utf-8"), flags=re.M) for p in paths]
+            if texts[0] != texts[1]:
+                failures.append(f"{name}: public plugin copies diverge beyond PROJECT_FILE")
+        except OSError as exc:
+            failures.append(f"{name}: cannot compare public plugin copies: {exc}")
+    print(f"  2 shared local-source helpers checked, {len(failures)} diverged")
+    return failures
+
+
 def main() -> int:
     print(f"legal-research-skills checks (Python {sys.version.split()[0]})")
     all_failures: list[str] = []
     for title, fn in (
         ("Test programs", run_test_programs),
         ("Python compile", compile_python),
+        ("Local-source helper parity", check_local_source_parity),
         ("Markdown links", check_markdown_links),
         ("SKILL.md frontmatter", check_frontmatter),
         ("Codex UI metadata", check_codex_ui_metadata),

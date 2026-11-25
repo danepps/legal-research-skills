@@ -17,6 +17,11 @@ The model runs this so the user never edits a configuration file by hand.
         holds a different token, the scripts will keep using that one; the JSON
         then carries "effective": false and a "warning" naming the variable.
 
+    python3 setup.py source-folder <directory>
+        Save one absolute path in ~/.config/legal-research/source-folder, shared
+        by both public plugins. Checks the directory exists; never reads its
+        contents. No Claude configuration, network, or installation is involved.
+
     python3 setup.py allow-web
         Add "WebFetch" and "WebSearch" to permissions.allow in
         ~/.claude/settings.json, merging with whatever is there. Prints JSON.
@@ -66,6 +71,7 @@ import urllib.request
 
 HOME = os.path.expanduser("~")
 TOKEN_FILE = os.path.join(HOME, ".config", "courtlistener", "token")
+SOURCE_FOLDER_FILE = os.path.join(HOME, ".config", "legal-research", "source-folder")
 SETTINGS = os.path.join(HOME, ".claude", "settings.json")
 CLAUDE_JSON = os.path.join(HOME, ".claude.json")
 KNOWN_MARKETPLACES = os.path.join(HOME, ".claude", "plugins", "known_marketplaces.json")
@@ -319,14 +325,55 @@ def cmd_status(_args):
         "web_permissions": web_allowed(settings),
         "enableWorkflows": workflows_enabled(settings),
         "zotero": {"uvx_installed": on_path("uvx"), "servers": zotero_servers(cfg)},
+        "source_folder": source_folder_status(),
         "auto_update": auto_update_state(settings, known, installed),
         "git_installed": on_path("git"),
         "pdftotext_installed": on_path("pdftotext"),
         "files": {"settings": SETTINGS, "claude_json": CLAUDE_JSON, "token_file": TOKEN_FILE,
+                  "source_folder_file": SOURCE_FOLDER_FILE,
                   "known_marketplaces": KNOWN_MARKETPLACES, "installed_plugins": INSTALLED_PLUGINS},
         "errors": [e for e in (s_err, c_err, k_err, i_err) if e],
     }
     print(json.dumps(report, indent=2))
+    return 0
+
+
+def source_folder_status():
+    result = {"configured": False, "setting_file": SOURCE_FOLDER_FILE, "path": None, "exists": False}
+    try:
+        with open(SOURCE_FOLDER_FILE, encoding="utf-8") as stream:
+            value = stream.read().strip()
+        if not value or len(value.splitlines()) != 1 or not os.path.isabs(os.path.expanduser(value)):
+            raise ValueError("setting must hold one absolute folder path")
+        result.update(configured=True, path=value, exists=os.path.isdir(os.path.expanduser(value)))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as exc:
+        result["error"] = str(exc)
+    return result
+
+
+def cmd_source_folder(args):
+    if len(args) != 1 or not args[0].strip() or "\n" in args[0] or "\r" in args[0]:
+        print("usage: setup.py source-folder <directory>", file=sys.stderr)
+        return 2
+    path = os.path.abspath(os.path.expanduser(args[0]))
+    if not os.path.isdir(path):
+        print("source folder is not an existing directory", file=sys.stderr)
+        return 2
+    if os.path.islink(SOURCE_FOLDER_FILE):
+        print("refusing a symlink source-folder setting", file=sys.stderr)
+        return 2
+    try:
+        backup = None
+        if os.path.exists(SOURCE_FOLDER_FILE):
+            backup = f"{SOURCE_FOLDER_FILE}.bak-{time.time_ns()}"
+            shutil.copy2(SOURCE_FOLDER_FILE, backup)
+        atomic_write(SOURCE_FOLDER_FILE, path + "\n", private=True)
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps({"ok": True, "source_folder": source_folder_status(), "backup": backup}))
     return 0
 
 
@@ -497,6 +544,7 @@ def cmd_zotero(args):
 COMMANDS = {
     "status": cmd_status,
     "courtlistener": cmd_courtlistener,
+    "source-folder": cmd_source_folder,
     "allow-web": cmd_allow_web,
     "enable-workflows": cmd_enable_workflows,
     "auto-update": cmd_auto_update,

@@ -45,7 +45,8 @@ def source_state(run, source, selection):
     """Use observed files before lookup claims; never infer absence from no item key."""
     state = {"source_id": source["source_id"], "library_id": source.get("library_id"),
              "zotero_item_key": source.get("zotero_item_key")}
-    is_library = bool(state["library_id"] or state["zotero_item_key"] or source.get("verification_basis") == "local_library_full_text")
+    is_library = source.get("source_origin") != "local_folder" and bool(
+        state["library_id"] or state["zotero_item_key"] or source.get("verification_basis") == "local_library_full_text")
     if (selection or {}).get("status") == "skipped" and is_library:
         return dict(state, status="skipped")
     if (selection or {}).get("status") == "selected" and is_library and state["library_id"] != selection.get("id"):

@@ -140,7 +140,7 @@ const result = {
     label: p.label,
     hasCostOpt: 'cost' in p.opts,
     mentionsZoteroTool: /zotero_search_items|zotero_item_fulltext|zotero_item_metadata/.test(p.prompt),
-    saysNotInZotero: /NOT in any of the user's Zotero libraries/.test(p.prompt),
+    saysNotInZotero: /ZOTERO: no match in the libraries selected for this run/.test(p.prompt),
     textOnDisk: (p.prompt.match(/FULL TEXT is already on disk at (\S+)/) || [])[1] || '',
     toolCap: Number((p.prompt.match(/at most (\d+) tool calls/) || [])[1] || 0),
   })),

@@ -29,12 +29,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import citation_ledger as cl  # noqa: E402
 import prepare_units as pu  # noqa: E402
+from zotero_lookup import hit_matches_citation
 
 XREF = ("id", "supra", "case-short")
 FOUND = ("verbatim", "normalized", "altered")
 
 
-def chain_keys(instances, note):
+def chain_sources(instances, note):
     """Ledger keys of every source the footnote cites or cross-refers to, in note order."""
     keys = []
     for x in instances:
@@ -49,9 +50,13 @@ def chain_keys(instances, note):
             x = instances[f]
         if x["kind"] in ("case", "statute") or x["kind"] in XREF:
             continue
-        if x["key"] not in keys:
-            keys.append(x["key"])
+        if x not in keys:
+            keys.append(x)
     return keys
+
+
+def chain_keys(instances, note):
+    return list(dict.fromkeys(x["key"] for x in chain_sources(instances, note)))
 
 
 def run_verify(text_path, items):
@@ -83,29 +88,40 @@ def sweep(extract, lookup, ids):
             tried[uid] = []
             continue
         tried[uid] = []
-        for k in chain_keys(inst, u["footnote"]):
+        for cited in chain_sources(inst, u["footnote"]):
+            k = cited["key"]
             e = sources.get(k) or {}
+            if not hit_matches_citation(e, cited["text"], cited["kind"]):
+                continue
+            if e.get("identityReview", {}).get("status") == "rejected":
+                continue
             path = e.get("textPath")
             if not (e.get("matched") and path and os.path.exists(path)):
                 continue
-            plan.setdefault(path, (k, e, []))[2].append(uid)
-            tried[uid].append(path)
+            record = plan.setdefault(path, {})
+            record.setdefault(k, (e, []))[1].append(uid)
+            if path not in tried[uid]: tried[uid].append(path)
     hits = {}
-    for path, (k, e, uids) in plan.items():
+    for path, records in plan.items():
+        uids = set(i for e, ids in records.values() for i in ids)
         res = run_verify(path, [{"id": i, "quote": units[i]["quote"]} for i in uids])
-        for i in uids:
-            r = res.get(i) or {}
-            if r.get("status") in FOUND and i not in hits:
-                hits[i] = {"status": r["status"], "file": path, "key": k, "item": e.get("itemKey", ""),
-                           "library": e.get("library", ""), "title": e.get("title", ""),
-                           "page_in_file": r.get("page"), "matched": (r.get("match_excerpt") or "")[:300]}
+        for k, (e, matched_ids) in records.items():
+            for i in set(matched_ids):
+                r = res.get(i) or {}
+                if r.get("status") in FOUND:
+                    hits.setdefault(i, []).append({"status": r["status"], "file": path, "key": k, "item": e.get("itemKey", ""),
+                               "library": e.get("library", ""), "title": e.get("title", ""),
+                               "origin": e.get("origin", "zotero"), "fileName": e.get("fileName", ""),
+                               "versionNote": e.get("versionNote", ""),
+                               "page_in_file": r.get("page"), "matched": (r.get("match_excerpt") or "")[:300]})
     out = []
     for uid in ids:
         u = units.get(uid) or {}
         h = hits.get(uid)
         row = {"id": uid, "footnote": u.get("footnote"), "found": bool(h), "tried": tried.get(uid, [])}
-        if h:
-            row.update(h)
+        row.update(matches=h or [], attributionUnresolved=len(h or []) > 1)
+        if h and len(h) == 1:
+            row.update(h[0])
         out.append(row)
     return {"results": out}
 

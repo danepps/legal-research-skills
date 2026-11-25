@@ -15,6 +15,7 @@ from extract_cites import extract_document, sha256
 from prepare_units import build_prepared_units
 from prepare_support_units import build_support_units
 from library_options import library_options, validate_library_access
+from source_options import plan_sources, validate_plan
 
 SAMPLE_NOTES = 10
 FULL_TEXT = {"primary_full_text", "authoritative_reproduction", "repository_full_text", "local_library_full_text"}
@@ -110,7 +111,8 @@ def prepare_options(extraction: dict, *, coverage: str | None = None, depth: str
                     support: str | None = None, footnotes: list[str] | None = None,
                     ask: bool = False, defaults: bool = False, inventory: Path | None = None,
                     min_quote_words: int = 8, libraries: list[dict] | None = None,
-                    library: str | None = None, no_zotero: bool = False) -> dict:
+                    library: str | None = None, no_zotero: bool = False,
+                    source_plan: dict | None = None, remember_sources: bool = False) -> dict:
     numbers = sorted(n["number"] for n in extraction.get("footnotes", [])
                      if isinstance(n.get("number"), int))
     if coverage not in {None, "all", "sample"} or depth not in {None, "standard", "deep"} or support not in {None, "off", "pincited", "all"}:
@@ -150,7 +152,14 @@ def prepare_options(extraction: dict, *, coverage: str | None = None, depth: str
                               "options": [{"label": "Off", "value": "off", "description": "Keep the dedicated proposition-support pass off."},
                                           {"label": "Pincited citations", "value": "pincited", "description": "Read unquoted cites with a page, section, URL or relevant parenthetical; adds source work."},
                                           {"label": "All citations", "value": "all", "description": "Also read bare whole-work citations; the broadest and most costly coverage."}]})
-    access, library_question = library_options(libraries, library=library, no_zotero=no_zotero, defaults=defaults)
+    if source_plan is None:  # Legacy programmatic callers and saved library-only previews.
+        access, library_question = library_options(libraries, library=library, no_zotero=no_zotero, defaults=defaults)
+    else:
+        access, _ = library_options(libraries, library=source_plan["library_id"],
+                                    no_zotero=source_plan["skip_zotero"], defaults=True)
+        library_question = source_plan["question"]
+        if remember_sources and (source_plan["status"] != "ready" or not source_plan["inputs"]["choices"]):
+            raise ValueError("remembering sources requires an answered source choice")
     if library_question:
         questions.append(library_question)
     blockers = extraction.get("blocking_issues", [])
@@ -162,6 +171,7 @@ def prepare_options(extraction: dict, *, coverage: str | None = None, depth: str
             "resolution": "defaults" if defaults else "choices_or_small_run_defaults",
             "min_quote_words": min_quote_words, "counts": counts, "sources": estimate,
             "library_access": access,
+            **({"source_access": source_plan, "remember_sources": remember_sources} if source_plan is not None else {}),
             "questions": questions, "blocking_issues": blockers,
             "budget_basis": "Coverage and source-work counts, not a dollar estimate or a hard token cap. Deep review adds audits; support is enabled only by an explicit choice."}
 
@@ -175,6 +185,15 @@ def resolved_selection(plan: dict, draft_hash: str) -> dict:
         raise ValueError("draft changed since the options preview; regenerate the preview")
     if "library_access" in plan:
         validate_library_access(plan["library_access"])
+    if "source_access" in plan:
+        sources = plan["source_access"]
+        validate_plan(sources)
+        expected, _ = library_options(sources["inputs"]["libraries"], library=sources["library_id"],
+                                      no_zotero=sources["skip_zotero"], defaults=True)
+        if plan.get("library_access") != expected:
+            raise ValueError("source choices disagree with library access")
+        if type(plan.get("remember_sources")) is not bool or (plan["remember_sources"] and not sources["inputs"]["choices"]):
+            raise ValueError("invalid permission to remember source choices")
     value = plan.get("selection") or {}
     if not isinstance(value, dict):
         raise ValueError("run selection must be a JSON object")
@@ -210,6 +229,10 @@ def main() -> int:
     parser.add_argument("--footnotes", nargs="+")
     parser.add_argument("--inventory", type=Path, help="optional reconciled run for this exact draft")
     parser.add_argument("--libraries", type=Path, help="public library inventory from the current runtime; never raw config")
+    parser.add_argument("--project", type=Path)
+    parser.add_argument("--folder", action="append", default=[])
+    parser.add_argument("--source-choice", action="append", help="folder, web, or library:ID; repeat for both")
+    parser.add_argument("--remember-sources", action="store_true", help="accepted project-save offer; applied by init_run")
     library_choice = parser.add_mutually_exclusive_group()
     library_choice.add_argument("--library", help="observed library id, name or unambiguous description")
     library_choice.add_argument("--no-zotero", action="store_true", help="use supplied files and web sources this run")
@@ -218,6 +241,7 @@ def main() -> int:
     choice.add_argument("--defaults", action="store_true", help="resolve unspecified choices to whole draft, standard, support off")
     parser.add_argument("--min-quote-words", type=int, default=8)
     args = parser.parse_args()
+    args.draft = args.draft.expanduser()
     try:
         if args.output.resolve() == args.draft.resolve():
             raise ValueError("output must not overwrite the draft")
@@ -226,11 +250,15 @@ def main() -> int:
         if args.min_quote_words < 1:
             raise ValueError("quotation threshold must be positive")
         data = extract_document(args.draft, args.min_quote_words)
+        libraries = json.loads(args.libraries.read_text(encoding="utf-8")) if args.libraries else None
+        sources = plan_sources(args.draft, project=args.project, folders=args.folder, libraries=libraries,
+                               library=args.library, no_zotero=args.no_zotero, choices=args.source_choice,
+                               headless=args.defaults)
         plan = prepare_options(data, coverage=args.coverage, depth=args.depth, support=args.support,
                                footnotes=args.footnotes, ask=args.ask, defaults=args.defaults,
                                inventory=args.inventory, min_quote_words=args.min_quote_words,
-                               libraries=json.loads(args.libraries.read_text(encoding="utf-8")) if args.libraries else None,
-                               library=args.library, no_zotero=args.no_zotero)
+                               libraries=libraries, library=args.library, no_zotero=args.no_zotero,
+                               source_plan=sources, remember_sources=args.remember_sources)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     except (OSError, ValueError, KeyError, TypeError) as exc:
