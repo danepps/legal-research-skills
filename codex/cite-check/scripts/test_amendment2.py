@@ -12,6 +12,7 @@ import source_options as so
 
 ROOT = next(p for p in Path(__file__).resolve().parents if (p / 'run_tests.py').is_file())
 SCRATCH = ROOT / '.codex-memo/amendment2-tests'
+SCRATCH.mkdir(parents=True, exist_ok=True)   # a fresh checkout has no scratch folder
 TITLE = 'Copper Lanterns and Silent Rivers'
 FIELDS = dict(title=TITLE, authors='Mina Vale', lastNames=['Vale'], journal='Imaginary L. Rev.', volume='12', first='41', year='2024', pattern='article')
 PUBLISHED = 'Imaginary Law Review\nVolume 12 (2024)\n'+TITLE+'\nMina Vale\nAbstract\nInvented body text.\n41\fImaginary Law Review\nInvented continuation.\n42\f'

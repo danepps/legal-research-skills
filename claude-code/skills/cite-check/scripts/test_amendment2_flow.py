@@ -16,6 +16,7 @@ from local_lookup import run, summary
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parents[3]
 SCRATCH=ROOT/'.codex-memo/amendment2-tests'
+SCRATCH.mkdir(parents=True, exist_ok=True)   # a fresh checkout has no scratch folder
 TITLE='Copper Lanterns and Silent Rivers'
 CITE='Mina Vale, '+TITLE+', 12 Imaginary L. Rev. 41, 42 (2024).'
 QUOTE='The copper lantern illuminates every silent river beneath the invented bridge.'
