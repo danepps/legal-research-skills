@@ -47,6 +47,9 @@ import re
 import sys
 import zipfile
 from xml.etree import ElementTree as ET
+# Isolated (-I) hosts omit the script directory from the normal import path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from header_footer import collect as collect_headers_footers
 
 # Shared citation-FORM library (typeface + short forms + the .docx run-formatting
 # reader) lives with the other cross-skill machinery in legal-research/, so
@@ -133,20 +136,31 @@ def to_roman(n):
     return ROMAN_NUM[n] if 0 < n < len(ROMAN_NUM) else str(n)
 
 
-def parse_docx(src):
+def parse_docx(src, headers_footers=None):
     if src.lower().endswith(".docx"):
         zf = zipfile.ZipFile(src)
-        fn_root = _load_xml(zf, "word/footnotes.xml")
         body_root = _load_xml(zf, "word/document.xml")
         styles_src = zf
     else:
-        fn_root = _load_xml(src, "word/footnotes.xml")
         body_root = _load_xml(src, "word/document.xml")
         styles_src = src
+    try:
+        fn_root = _load_xml(styles_src, 'word/footnotes.xml')
+    except (KeyError, FileNotFoundError):
+        fn_root = ET.Element(W + 'footnotes')
     try:
         styles = parse_styles(_load_xml(styles_src, "word/styles.xml"))
     except (KeyError, OSError, ET.ParseError):
         styles = {}
+
+    if headers_footers is not None:
+        def optional_xml(member):
+            try:
+                return _load_xml(styles_src, member)
+            except (KeyError, FileNotFoundError):
+                return None
+        headers_footers.extend(collect_headers_footers(
+            optional_xml, lambda p: runs_spans(p, styles, _para_style(p)), clean_spans))
 
     notes_by_id = {}
     for fn in fn_root.findall(W + "footnote"):
@@ -173,6 +187,14 @@ def parse_docx(src):
             order.append(ref.get(W + "id"))
         if t:
             paras.append({"text": t, "style": style, "spans": sp})
+    if headers_footers:
+        for record in headers_footers:
+            for occurrence in record['location']['occurrences']:
+                root = optional_xml(occurrence['part'])
+                has_ins |= root.find('.//' + W + 'ins') is not None
+                has_del |= root.find('.//' + W + 'del') is not None
+    if isinstance(styles_src, zipfile.ZipFile):
+        styles_src.close()
     return notes_by_id, paras, order, has_ins, has_del, True
 
 
@@ -743,10 +765,11 @@ def main(argv):
         chunk_words = int(argv[argv.index("--chunk-words") + 1])
     os.makedirs(os.path.join(outdir, "chunks"), exist_ok=True)
 
+    headers_footers = []
     if src.lower().endswith((".md", ".markdown", ".txt")):
         notes_by_id, raw_paras, order, has_ins, has_del, fmt_ok = parse_markdown(src)
     else:
-        notes_by_id, raw_paras, order, has_ins, has_del, fmt_ok = parse_docx(src)
+        notes_by_id, raw_paras, order, has_ins, has_del, fmt_ok = parse_docx(src, headers_footers)
     id2num = build_number_map(order)
     footnote_count = len(id2num)
 
@@ -842,6 +865,16 @@ def main(argv):
     lint += missing_year_lint(notes)
     lint += duplicate_passage_lint(paras)
     lint += short_form_lint(notes)
+    for record in headers_footers:
+        text, loc = record['text'], record['location']
+        lint += lint_text(text, loc)
+        lint += note_ref_findings(text, loc, None, footnote_count)
+        part_refs += collect_part_refs(text, loc)
+        # Local citation typography applies to author notes, but note sequencing,
+        # short-form distance, terminal punctuation and footnote typeface do not.
+        lint += cite_mechanics_lint(text, loc)
+        lint += pincite_lint(text, loc)
+        lint += us_volume_year_lint(text, loc)
 
     # ---- typeface (only when the formatting layer is real) ----
     fmt_conventions, case_inventory, case_counts = [], [], {}
@@ -912,6 +945,8 @@ def main(argv):
     lines.append("===== FOOTNOTES =====")
     for num in sorted(notes):
         lines.append("[n.%d] %s" % (num, notes[num]))
+    for record in headers_footers:
+        lines.append('[%s] %s' % (record['location_label'], record['text']))
     fulltext = "\n\n".join(lines)
     with open(os.path.join(outdir, "fulltext.txt"), "w", encoding="utf-8") as f:
         f.write(fulltext)
@@ -936,6 +971,9 @@ def main(argv):
         for num in sorted(notes):
             flines.append("[n.%d] %s"
                           % (num, render_marked(notes[num], note_spans.get(num, []))))
+        for record in headers_footers:
+            flines.append('[%s] %s' % (record['location_label'],
+                          render_marked(record['text'], record['spans'])))
         with open(os.path.join(outdir, "fulltext_fmt.txt"), "w", encoding="utf-8") as f:
             f.write("\n\n".join(flines))
 
@@ -953,6 +991,11 @@ def main(argv):
                 hits.append("n.%d" % num)
             if len(hits) >= 6:
                 break
+        for record in headers_footers:
+            if len(hits) >= 6:
+                break
+            if pat.search(record['text']):
+                hits.append(record['location_label'])
         return hits
     cons = consistency_data(fulltext.lower(), fulltext, locate)
 
@@ -989,6 +1032,25 @@ def main(argv):
             json.dump(payload, f, ensure_ascii=False, indent=1)
         chunk_files.append(path)
 
+    # Append bounded story chunks; existing body/note chunks retain their bytes.
+    groups, group, words = [], [], 0
+    for record in headers_footers:
+        if group and words + record['words'] > chunk_words:
+            groups.append(group)
+            group, words = [], 0
+        group.append(record)
+        words += record['words']
+    if group:
+        groups.append(group)
+    for group in groups:
+        ci = len(chunk_files)
+        path = os.path.join(outdir, 'chunks', 'chunk-%02d.json' % ci)
+        payload = {'chunk_id': ci, 'paragraphs': [], 'footnotes': [],
+                   'headers_footers': group, 'word_count': sum(r['words'] for r in group)}
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+        chunk_files.append(path)
+
     try:
         with open(src, "rb") as f:
             sha256 = hashlib.sha256(f.read()).hexdigest()
@@ -1002,7 +1064,8 @@ def main(argv):
         "paragraph_count": len(paras),
         "footnote_count": footnote_count,
         "word_count": sum(p["words"] for p in paras)
-                      + sum(len(t.split()) for t in notes.values()),
+                      + sum(len(t.split()) for t in notes.values())
+                      + sum(r['words'] for r in headers_footers),
         "tracked_insertions": has_ins,
         "tracked_deletions": has_del,
         "headings": labeled_headings,
@@ -1027,6 +1090,8 @@ def main(argv):
                                    for s in sp if "smallCaps" in s[2]),
         },
     }
+    if headers_footers:
+        data['headers_footers'] = headers_footers
     with open(os.path.join(outdir, "proof.json"), "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=1)
 

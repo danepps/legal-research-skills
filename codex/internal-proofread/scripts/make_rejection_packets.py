@@ -14,7 +14,7 @@ from replacements import instructions, without_replacements
 
 PACKET_SIZE = 8
 AUDIT_CATEGORIES = {"possible_omission", "duplication", "xref", "numbering"}
-BLOCK_ID_PATTERN = re.compile(r"\b(?:B\d{6}|FN\d+)\b")
+BLOCK_ID_PATTERN = re.compile(r"\b(?:B\d{6}|HF\d{6}|FN\d+)\b")
 CLAUSE_MARKER_PATTERN = re.compile(r"\b(?:whether|if)\b", flags=re.IGNORECASE)
 
 

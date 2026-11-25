@@ -71,6 +71,13 @@ def validate_finding_location(row: dict, blocks: dict[str, dict]) -> None:
     block = blocks.get(location.get("block_id"))
     if block is None:
         raise ValueError(f"finding references unknown block {location.get('block_id')!r}")
+    if block.get('story') in {'header', 'footer'}:
+        # Fill omitted routing metadata from the frozen source, never from an
+        # agent's guess. Explicitly conflicting metadata is an invalid anchor.
+        for key, value in {**block.get('location', {}), 'story': block['story']}.items():
+            if key in location and location[key] is not None and location[key] != value:
+                raise ValueError(f'header/footer location {key} differs from its source block')
+            location[key] = value
     text = str(block.get("text", ""))
     start, end = location.get("char_start"), location.get("char_end")
     if (type(start) is not int or type(end) is not int
@@ -83,6 +90,20 @@ def validate_finding_location(row: dict, blocks: dict[str, dict]) -> None:
 
 def word_count(text: str) -> int:
     return len(re.findall(r"\b[\w’'-]+\b", text, flags=re.UNICODE))
+
+
+def report_order(blocks: list[dict], notes: list[dict]) -> dict[str, int]:
+    """First-page stories, body/tables, notes, then other running stories."""
+    stories = [b for b in blocks if b.get('story') in {'header', 'footer'}]
+    first = [b for b in stories if any(o.get('type') == 'first' for o in b.get('location', {}).get('occurrences', []))]
+    def story_key(block):
+        uses = block.get('location', {}).get('occurrences', [])
+        preferred = [o for o in uses if o.get('type') == 'first'] or uses
+        return min((o['section'], 0 if block['story'] == 'header' else 1, o['para'], o.get('segment', 1))
+                   for o in preferred) if preferred else (10**9, 0, 0, 0)
+    ordered = sorted(first, key=story_key) + [b for b in blocks if b not in stories] + notes + sorted(
+        [b for b in stories if b not in first], key=story_key)
+    return {b['block_id']: i for i, b in enumerate(ordered)}
 
 
 def stable_id(*parts: object, prefix: str = "F") -> str:

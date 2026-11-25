@@ -74,6 +74,7 @@ def finding(document: dict, rule_id: str, category: str, block: dict, start: int
         "confidence": confidence,
         "detection": detection,
         "location": {
+            **block.get('location', {}),
             "story": block.get("story"),
             "block_id": block.get("block_id"),
             "char_start": start,

@@ -2,6 +2,33 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.13 (2026-11-25)
+
+`proofread` now reads referenced DOCX headers and footers, including first-page author
+notes. It resolves section relationships and inheritance, excludes unused parts and
+generated page furniture, and reviews repeated prose once with every occurrence named.
+Separate prose segments prevent find strings from crossing omitted field results.
+Additional chunks, both full-text views, prose/citation typography lint, verification
+prompts and report locations carry the new coverage. Body chunks and extraction with
+no header/footer prose retain their existing output; Markdown is unchanged.
+
+- First-page story findings sort before the body, other running stories after footnotes.
+  Citation typography applies to author notes; footnote terminal punctuation, note-order,
+  short-form-distance and footnote typeface rules do not. Explicit first/even references
+  are inspected even when their display switch is off; no pagination is inferred.
+- The redline writer applies a clear correction to all physical copies, or none if any
+  is unsafe. It verifies accepted/rejected text and exact header/footer field bytes.
+  Comments share a body-start anchor and name all locations. This follows the conservative
+  ticket fallback; support for Word anchors inside headers/footers was not established.
+  Unplaceable findings remain reported with reasons. Appended periods remain footnote-only.
+- Tested with synthetic OOXML and standard-library Python, plus the existing local Node
+  workflow-stub pattern: all six story types, shared/identical parts, inheritance, fields,
+  tracked text, comments, rejection/acceptance, corruption failures, isolated CLI imports,
+  report ordering and extraction compatibility. Repository validation uses
+  `python3 run_tests.py`. No real draft, live model proofreading, Word opening/accept-reject
+  UI, pagination, Zotero refresh, live Claude/Codex host or fresh installation was tested.
+- Checked by hand after the tests (2026-11-25), on the snapshot of the live Dubitante run that exposed the gap: both extractors now return the first-page footer's author note, with the run-together word that was missed; in the Claude Code extractor the draft's 16 existing chunks are byte-for-byte unchanged and a 17th carries the header and footer text; the redline writer placed a correction for that word as a tracked insertion inside the footer part and anchored a comment-type finding at the start of the body, beginning with its location. Inspected as XML, not in Word. One nit left: a footer's rule line of underscores is extracted as text.
+
 ## 1.6.12 (2026-11-25)
 
 `proofread` redlines can append a missing final period for a `cite-terminal-punct` finding without a replacement, including a footnote ending in a Zotero citation. The period is a plain tracked insertion after every field; field instructions and results stay unchanged, and trailing whitespace outside the field stays after the period. The excerpt must match the extractor's footnote-end text, terminal punctuation must be absent, and existing deletions, move sources, uncertain field boundaries and conflicting edits prevent application. Two findings at one end produce one period; declined edits remain comments on the footnote's body reference.

@@ -7,6 +7,20 @@ description: Proofread long legal, scholarly, academic, policy, or professional 
 
 Compile the draft into stable text blocks, check its global structure deterministically, distribute owned chunks to bounded readers, and synthesize every candidate through a proof ledger. Preserve the source draft and distinguish genuine errors from stylistic preferences.
 
+DOCX headers and footers are read through section relationships, including first-page
+author notes and inherited references; unused parts and generated page furniture are
+excluded. Repeated prose is reviewed once, with all occurrences named, in additional
+primary and recall chunks that preserve the body chunk boundaries.
+
+Header/footer blocks have `HF` IDs, `story: header` or `footer`, a `location` object
+(`where` and `occurrences`), and a human `location_label`. Copy the source location
+metadata and add the usual block ID and character offsets to findings, including
+optional exact corrections. Each occurrence records the part, type, one-based section,
+physical paragraph (`para`) and prose segment; never join segments across an excluded
+field. General prose and local citation-mechanics lints apply, but footnote terminal
+punctuation and note-direction rules do not. Read explicit first/even references even
+when their display switch is off; extraction does not infer actual pagination.
+
 ## Non-negotiable rules
 
 - Preserve the original draft. Keep all snapshots, packets, ledgers, audits, and intermediate reports inside the hidden run directory.
@@ -137,6 +151,11 @@ python3 <skill-dir>/scripts/build_report.py <run-dir>
 Put confirmed errors first, followed by likely errors, author queries, pre-publication checks, an optional style-consistency section, and limitations. Use `prepublication` for correct-for-now slip-opinion pagination placeholders and similar publication-stage tasks; do not call them confirmed errors. For every visible item, include a `Find in draft` anchor copied exactly from the frozen source: normally 14 words and expanded up to 24 when needed for uniqueness. When a short repeated footnote cannot yield a unique anchor, use a unique anchor from its body-text call site and label it. Keep the shorter `Draft` field focused on the defect. Use the `style` disposition for accepted spelling, hyphenation, capitalization, or house-style alternatives that are not textual errors. Summarize the rejected-candidate count; keep full rejection details in the ledgers. Add `--include-rejected` only when the user wants an audit appendix. Report findings in document order, using section names, visible note numbers, and approximate progress through the draft as human locations. Keep internal block IDs in the audit artifacts; the exact search anchor is the primary user locator.
 
 Default to report-only output. Treat `report.md` inside the hidden run directory as canonical but internal. Do not ask the user to browse the run directory and do not copy any other artifact into a visible folder.
+
+Within each report section, first-page header/footer findings precede body findings,
+then come footnotes, then other header/footer findings. Keep every occurrence in the
+header/footer label; a repeated record with any first-page use sorts with that group.
+Its exact search anchor remains in the header/footer prose, without a body fallback.
 
 After the readiness gate passes, publish the only visible report with exact provenance values:
 

@@ -107,7 +107,7 @@ const FINDING_ITEM = {
   type: 'object',
   required: ['location', 'find', 'problem', 'fix', 'severity', 'category'],
   properties: {
-    location: { type: 'string', description: 'e.g. "¶123" (body paragraph) or "n.45" (footnote)' },
+    location: { type: 'string', description: '¶123 (body), n.45 (footnote), or the exact location_label supplied for a header/footer segment, including every occurrence' },
     find: { type: 'string', description: 'VERBATIM text copied from the draft, long enough to be unique for Cmd+F' },
     problem: { type: 'string' },
     fix: { type: 'string', description: 'the minimal correction' },
@@ -204,6 +204,10 @@ const GROUND_RULES = `GROUND RULES — read carefully; violations produce false 
   "(holding that the the statute applies)".
 - [FN#n] markers are footnote-call positions, not text. [¶n] / [n.n] prefixes are location
   labels, not text.
+- Header/footer records are prose too, including author notes and run-together words
+  across Word runs. Copy their entire location_label unchanged. Generated page furniture
+  is excluded; separate segments must never be joined into a find string. Apply no
+  footnote-only terminal-period, note-order, short-form-distance or typeface rule to them.
 - Legal terms of art, Latin phrases, party names, and the authors' defined shorthand are not
   errors. American legal-scholarship conventions apply (this is a US law review article).
 - This is PROOFREADING, not editing${STYLE ? '' : `: do NOT flag style, wordiness, passive voice,
@@ -354,7 +358,10 @@ const proofResults = await parallel(CHUNK_FILES.map((cf, i) => () =>
     `You are proofreading chunk ${i + 1}/${CHUNK_FILES.length} of a law review article draft
 ("${DRAFT_NAME}"). Read ${cf} — JSON with "paragraphs" (body text, [FN#n] marks footnote
 calls; "heading" non-null means the line is a section heading) and "footnotes" (the notes
-called in these paragraphs, keyed by their real numbers).
+called in these paragraphs, keyed by their real numbers). Additional chunks contain
+"headers_footers": read EVERY record's text and use its exact location_label, including
+all sections/types when the text occurs more than once. An empty paragraphs array does
+not make a header/footer chunk empty.
 
 ${GROUND_RULES}
 
@@ -393,7 +400,8 @@ prose. You are hunting:
   Fabulous Pharmacy" beside a cite whose caption is "Webb's Fabulous Pharmacies") — flag
   as likely and let the verifier decide;
 - body-text capitalization errors.
-Location = the paragraph's "¶<id>" (use the "id" field) or "n.<number>" for footnote prose.
+Location = the paragraph's "¶<id>" (use the "id" field), "n.<number>" for footnote prose,
+or the complete location_label for a header/footer record.
 Report location + verbatim find + problem + minimal fix + severity + category.`,
     { label: `proof:chunk-${i}`, phase: 'Proof', schema: PROOF_SCHEMA, model: PROOF_MODEL, ...RO }))
 ))
@@ -448,8 +456,12 @@ function addCandidate(f, source) {
   pool.push({ id: pool.length, source, ...f })
 }
 // deterministic lint findings join the pool (verify kills e.g. legit "had had")
+const storyLabel = (loc) => (loc.occurrences || []).map((o) =>
+  `${({first:'First-page', even:'Even-page', default:'Default'})[o.type]} ${loc.where}, section ${o.section}, paragraph ${o.para}, segment ${o.segment}`
+).join('; ')
 for (const l of LINT) {
-  const loc = l.location?.where === 'footnote' ? `n.${l.location.note}` : `¶${l.location?.para}`
+  const loc = ['header', 'footer'].includes(l.location?.where) ? storyLabel(l.location)
+    : l.location?.where === 'footnote' ? `n.${l.location.note}` : `¶${l.location?.para}`
   addCandidate({
     location: loc, find: l.find, problem: l.problem, fix: l.fix,
     severity: l.severity === 'error' ? 'error' : 'likely',
@@ -506,6 +518,9 @@ METHOD: the full draft is at ${FULLTEXT}. Each body paragraph is one line prefix
 each footnote one line prefixed "[n.n]". For each finding, Grep that file for its location
 label (e.g. pattern "^\\[¶123\\]" or "^\\[n\\.45\\]") to pull the full passage, then re-read the
 ENTIRE passage around the flagged text.
+Header/footer lines use their complete location_label in brackets. Find that exact
+label in the file and read its segment; repeated locations are separated by semicolons.
+Do not infer paragraph IDs or join text across an excluded page field.
 
 Reject when: the flagged text is actually correct as written (grammatical "had had",
 subjunctive, legal term of art, intentional usage); the finding depends on formatting that
@@ -645,14 +660,28 @@ Return one result per id.`,
 }
 log(`verify: ${confirmed.length} confirmed, ${rejected.length} rejected, ${unvetted.length} unvetted`)
 
-// sort by location: body ¶ ascending, then footnotes ascending
+// First-page stories precede body and footnotes; other running stories follow.
 const locKey = (f) => {
-  const m = /^¶(\d+)/.exec(f.location) ; if (m) return [0, +m[1]]
-  const n = /^n\.(\d+)/.exec(f.location); if (n) return [1, +n[1]]
-  return [2, 0]
+  const m = /^¶(\d+)/.exec(f.location) ; if (m) return [1, +m[1]]
+  const n = /^n\.(\d+)/.exec(f.location); if (n) return [2, +n[1]]
+  const stories = [...f.location.matchAll(/(First-page|Default|Even-page) (header|footer), section (\d+), paragraph (\d+), segment (\d+)/g)]
+  if (stories.length) {
+    const first = stories.find(s => s[1] === 'First-page')
+    const s = first || stories[0]
+    return [first ? 0 : 3, +s[3], s[2] === 'header' ? 0 : 1, +s[4], +s[5]]
+  }
+  return [4, 0]
 }
-confirmed.sort((a, b) => { const [x, y] = locKey(a), [p, q] = locKey(b); return x - p || y - q })
-unvetted.sort((a, b) => { const [x, y] = locKey(a), [p, q] = locKey(b); return x - p || y - q })
+const locationOrder = (a, b) => {
+  const x = locKey(a), y = locKey(b)
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const delta = (x[i] || 0) - (y[i] || 0)
+    if (delta) return delta
+  }
+  return 0
+}
+confirmed.sort(locationOrder)
+unvetted.sort(locationOrder)
 
 // Reader-facing location labels (author, 2026-08-23): internal ¶ ids mean nothing to an
 // author editing in Word — there are no visible paragraph numbers — so the report locates
@@ -717,7 +746,9 @@ snapshot ${SNAPTIME || 'time unknown'}${SHA256 ? `, SHA-256 ${SHA256}` : ''}; pl
 CONFIRMED PROSE FINDINGS (every one re-verified in context; already sorted into draft
 order; "location" is the reader-facing label — containing Part/Section and/or approximate
 position through the document, or "note N" for footnotes. Use these labels exactly as
-given. NEVER refer to findings by paragraph numbers (¶n) anywhere in the report, including
+given. Header/footer labels name the type, section and paragraph at every occurrence;
+keep all of them. First-page stories sort before body findings, other stories after notes.
+NEVER refer to body findings by paragraph numbers (¶n) anywhere in the report, including
 the TL;DR — the authors edit in Word and cannot see paragraph numbers; the verbatim find
 string is their locator):
 ${JSON.stringify(confirmed.filter(f => !CITE_MECH(f) && !TYPEFACE(f) && f.severity !== 'query').map(({ locationPath, location, find, problem, fix, severity, category, verifierNote }) =>

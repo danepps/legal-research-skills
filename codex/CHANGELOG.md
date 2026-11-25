@@ -1,5 +1,27 @@
 # Codex plugin changes
 
+## 1.7.6 — 2026-11-25
+
+- `internal-proofread`: replace the filename-based header/footer scan with section
+  relationship resolution and inheritance. Ignore unused parts and generated furniture;
+  deduplicate prose while preserving every section, type, part, paragraph and segment.
+  Header/footer insertions are included; deletions and move sources are excluded.
+- Separate primary and recall chunks preserve body boundaries. Prose and local citation
+  mechanics run on author notes, without footnote terminal-punctuation or note-direction
+  rules. Packets, challenger mapping, validation, merging, exact replacements and reports
+  retain header/footer locations; first-page stories sort before the body, other running
+  stories after notes. No header/footer prose adds no empty extraction field. Markdown
+  output is unchanged. Each plugin bundles its own helper; neither imports the other.
+- Tested offline using standard-library Python and synthetic documents: extraction and
+  compatibility fixtures, all six types, duplicate parts, fields, tracked text, primary
+  and recall/audit packet context, challenger mapping, location validation and exact
+  replacement survival through merge/report. Repository validation uses
+  `python3 run_tests.py`. No real draft, live model proofreading, Word opening/rendering,
+  Word accept/reject UI, Zotero refresh, live host or fresh installation was tested.
+  Codex still has no bundled redline writer; its optional exact corrections retain the
+  source location for a downstream writer.
+- Checked by hand after the tests (2026-11-25), on the snapshot of the live Dubitante run that exposed the gap: both extractors now return the first-page footer's author note, with the run-together word that was missed; in the Claude Code extractor the draft's 16 existing chunks are byte-for-byte unchanged and a 17th carries the header and footer text; the redline writer placed a correction for that word as a tracked insertion inside the footer part and anchored a comment-type finding at the start of the body, beginning with its location. Inspected as XML, not in Word. One nit left: a footer's rule line of underscores is extracted as text.
+
 ## 1.7.5 — 2026-11-23
 
 - `cite-check`: deterministically compare a draft's printed case caption and year

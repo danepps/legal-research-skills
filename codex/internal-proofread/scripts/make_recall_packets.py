@@ -184,7 +184,11 @@ def render_material(title: str, items: list[dict]) -> list[str]:
         metadata = [str(item.get("block_id")), str(item.get("story")), str(item.get("kind"))]
         if heading:
             metadata.append(heading)
+        if item.get('location_label'):
+            metadata.append(item['location_label'])
         lines.extend([f"[{' | '.join(metadata)}]", str(item.get("text", "")), ""])
+        if item.get('location'):
+            lines.extend(['Source location: ' + json.dumps(item['location'], ensure_ascii=False), ''])
     return lines
 
 
@@ -293,7 +297,10 @@ def main() -> int:
     notes = [item for item in document.get("notes", []) if item.get("reviewable")]
     validate_unique(body, "body")
     validate_unique(notes, "note")
-    body_packets = bounded_body_packets(body, args.body_min_words, args.body_target_words, args.body_max_words)
+    prose = [b for b in body if b.get('story') not in {'header', 'footer'}]
+    stories = [b for b in body if b.get('story') in {'header', 'footer'}]
+    body_packets = bounded_body_packets(prose, args.body_min_words, args.body_target_words, args.body_max_words)
+    body_packets += bounded_body_packets(stories, args.body_min_words, args.body_target_words, args.body_max_words)
     note_packets = bounded_note_packets(notes, args.note_target_words, args.note_max_words, args.note_max_count)
 
     packets_dir = run_dir / "recall-packets"

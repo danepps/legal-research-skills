@@ -21,6 +21,12 @@ import uuid
 import zipfile
 from xml.parsers import expat
 from xml.sax.saxutils import escape, quoteattr
+from xml.etree import ElementTree as ET
+
+# The host invokes this script with -I; import only its bundled sibling helper,
+# not the working directory or an installed skill tree.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from header_footer import collect as collect_headers_footers, referenced_parts
 
 W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 REL = 'http://schemas.openxmlformats.org/package/2006/relationships'
@@ -231,6 +237,28 @@ class Document:
                 if number is not None:
                     self.locations['n.%d' % number] = ('word/footnotes.xml', fn)
                 self.search.append(('word/footnotes.xml', fn))
+        def read_xml(name):
+            return ET.fromstring(parts[name]) if name in parts else None
+        def read_spans(paragraph):
+            node = parse(ET.tostring(paragraph, encoding='utf-8'))
+            return [(''.join(a.char for a in text_view(node, self.numbers)), frozenset())]
+        def clean_spans(spans):
+            return re.sub(r'\s+', ' ', ''.join(t for t, _ in spans)).strip(), []
+        self.story_parts = {part for _, part in referenced_parts(read_xml)} & set(self.roots)
+        self.header_locations = {}
+        self.story_paragraphs = {}
+        for name in sorted(self.story_parts):
+            for i, node in enumerate(n for n in self.roots[name].walk() if n.tag == w('p')):
+                self.units[(name, 'p', i)] = node
+                self.story_paragraphs[(name, i + 1)] = node
+        for record in collect_headers_footers(read_xml, read_spans, clean_spans):
+            targets = []
+            for occurrence in record['location']['occurrences']:
+                part, para = occurrence['part'], occurrence['para']
+                target = (part, self.story_paragraphs[(part, para)])
+                if target not in targets:
+                    targets.append(target)
+            self.header_locations[record['location_label']] = targets
 
 
 def occurrences(text, find):
@@ -518,6 +546,8 @@ class Writer:
         self.period_fields = set()
         self.period_text = {}  # expected text only; never patch a field's text node
         self.period_patches = {}
+        self.body_comment_patches = []
+        self.story_comments = {}
 
     def ident(self, revision=False):
         value = str(self.next_id); self.next_id += 1
@@ -664,6 +694,28 @@ class Writer:
                          self.element('r', self.element('commentReference', attrs={'id': cid})))
         return index
 
+    def story_comment(self, location, find, note):
+        # No evidence of Word accepting header/footer anchors is assumed. Put a
+        # point comment in the first actual body paragraph, after its properties.
+        key = (location, find, note)
+        if key in self.story_comments:
+            return self.story_comments[key]
+        body = next((n for n in self.doc.body.children if n.tag == w('body')), None)
+        paragraph = next((n for n in body.walk() if n.tag == w('p')), None) if body else None
+        if paragraph is None or paragraph.closing == paragraph.opening:
+            return None
+        point = paragraph.opening
+        if paragraph.children and paragraph.children[0].tag == w('pPr'):
+            point = paragraph.children[0].end
+        cid = self.ident(); index = len(self.comments)
+        self.comments.append([cid, '%s, at “%s”: %s' % (location, find, note)])
+        anchor = (self.element('commentRangeStart', attrs={'id': cid}) +
+                  self.element('commentRangeEnd', attrs={'id': cid}) +
+                  self.element('r', self.element('commentReference', attrs={'id': cid})))
+        self.body_comment_patches.append((point, point, anchor))
+        self.story_comments[key] = index
+        return index
+
     def period_plan(self, part, unit, find):
         """Locate a plain insertion without changing any fields or existing revisions."""
         atoms = text_view(unit, self.doc.numbers)
@@ -803,6 +855,41 @@ class Writer:
         return dict(id=edit['id'], status='applied', kind='append-period')
 
     def place(self, edit):
+        location = edit['location']
+        if location not in self.doc.header_locations:
+            if re.search(r'\b(?:header|footer)\b', location, re.I):
+                return dict(id=edit['id'], status='unplaced', reason='Unknown header/footer location; no body fallback attempted.')
+            return self._place(edit)
+        if edit['kind'] == 'append-period':
+            result = self.place(dict(edit, kind='comment'))
+            if result['status'] == 'commented':
+                result['status'] = 'commented_instead'
+            return dict(result, kind='append-period', reason='The location is not a known footnote.')
+        # A deduplicated finding may represent several physical parts. Plan all
+        # copies on an isolated writer; never apply only some of a repeated text.
+        # Source nodes/fields are immutable identities used by verification and
+        # existing edit maps. Clone only the mutable plan, retaining those keys.
+        memo = {id(self.doc): self.doc}
+        memo.update({id(n): n for root in self.doc.roots.values() for n in root.walk()})
+        memo.update({id(f): f for fields in self.fields.values() for f in fields})
+        trial = copy.deepcopy(self, memo)
+        outcomes = [trial._place(dict(edit, _candidate=target))
+                    for target in trial.doc.header_locations[location]]
+        statuses = {r['status'] for r in outcomes}
+        if statuses <= {'applied', 'commented'}:
+            self.__dict__.update(trial.__dict__)
+            return dict(id=edit['id'], status='applied' if 'applied' in statuses else 'commented')
+        reason = '; '.join(dict.fromkeys(r.get('reason', r['status']) for r in outcomes if r['status'] not in {'applied', 'commented'}))
+        # No matched/anchorable copy means unplaced, rather than a guessed comment.
+        if 'unplaced' in statuses:
+            return dict(id=edit['id'], status='unplaced', reason=reason)
+        commented = [self._place(dict(edit, kind='comment', note=edit['note'] +
+                      '\nProposed replacement: ' + edit.get('replacement', '') + '\nNot applied: ' + reason,
+                      _candidate=target)) for target in self.doc.header_locations[location]]
+        status = 'commented_instead' if all(r['status'] == 'commented' for r in commented) else 'unplaced'
+        return dict(id=edit['id'], status=status, reason=reason)
+
+    def _place(self, edit):
         if edit['kind'] == 'append-period':
             return self.place_period(edit)
         # The deterministic lint reports an excerpt with an ellipsis at either end
@@ -822,7 +909,8 @@ class Writer:
                 excerpt = True
         if not find:
             return dict(id=edit['id'], status='unplaced', reason='No matching span')
-        candidates = [self.doc.locations[edit['location']]] if edit['location'] in self.doc.locations else self.doc.search
+        candidates = ([edit['_candidate']] if '_candidate' in edit else
+                      [self.doc.locations[edit['location']]] if edit['location'] in self.doc.locations else self.doc.search)
         matches = []
         for part, node in candidates:
             atoms = text_view(node, self.doc.numbers)
@@ -875,7 +963,9 @@ class Writer:
             if excerpt:
                 reason = 'The find text is an excerpt, not the exact text to replace.'
             if reason is None and touched:
-                if not any(f.zotero for f in touched):
+                if part in self.doc.story_parts:
+                    reason = 'The header/footer span touches a Word field; fields in these parts are preserved.'
+                elif not any(f.zotero for f in touched):
                     reason = 'The span touches a Word field; change the field at its source.'
                 elif self.zotero_fields == 'comment':
                     reason = 'The citation is generated by Zotero and must be changed there.'
@@ -897,7 +987,11 @@ class Writer:
             note += '\nProposed replacement: ' + edit['replacement'] + '\nNot applied: ' + reason
         elif field_plan:
             note += '\n' + ZOTERO_NOTICE
-        if part == 'word/footnotes.xml':
+        if part in self.doc.story_parts:
+            index = self.story_comment(edit['location'], find, note)
+            if index is None:
+                return dict(id=edit['id'], status='unplaced', reason='No body paragraph can carry the header/footer comment.')
+        elif part == 'word/footnotes.xml':
             # Word has no comments inside footnotes and drops any it finds there when it
             # opens the file. A footnote finding's comment hangs on the footnote's reference
             # mark in the text instead: one comment per footnote, naming the words it is about.
@@ -961,6 +1055,8 @@ class Writer:
         result = dict(self.doc.parts)
         runs = {node.ancestor(w('r')) for node in set(self.events) | set(self.replacements)} | set(self.around)
         edits = {part: list(changes) for part, changes in self.period_patches.items()}
+        if self.body_comment_patches:
+            edits.setdefault('word/document.xml', []).extend(self.body_comment_patches)
         for part, fields in self.fields.items():
             for field in fields:
                 if field in self.field_changes:
@@ -1076,6 +1172,8 @@ def verify_fields(document, original, writer):
         if len(old_fields) != len(new_fields):
             raise ValueError('Verification failed: Word field structure changed')
         for before, after in zip(old_fields, new_fields):
+            if part in original.story_parts and original.parts[part][before.start:before.end] != document.parts[part][after.start:after.end]:
+                raise ValueError('Verification failed: header/footer field bytes changed')
             if before in writer.period_fields and original.parts[part][before.start:before.end] != document.parts[part][after.start:after.end]:
                 raise ValueError('Verification failed: unedited field bytes changed while appending a period')
             if not (before.zotero or after.zotero):

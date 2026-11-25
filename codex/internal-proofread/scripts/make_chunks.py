@@ -60,8 +60,12 @@ def render_blocks(title: str, blocks: list[dict]) -> list[str]:
         meta = f"[{block.get('block_id')} | {block.get('story')} | {block.get('kind')}"
         if heading:
             meta += f" | {heading}"
+        if block.get('location_label'):
+            meta += ' | ' + block['location_label']
         meta += "]"
         lines.extend([meta, str(block.get("text", "")), ""])
+        if block.get('location'):
+            lines.extend(['Source location: ' + json.dumps(block['location'], ensure_ascii=False), ''])
     return lines
 
 
@@ -220,6 +224,9 @@ def write_lane_packets(run_dir: Path, chunks: list[dict], blocks: list[dict], no
         "",
     ]
     for left, right in zip(chunks, chunks[1:]):
+        if any(block_by_id[item].get('story') in {'header', 'footer'}
+               for chunk in (left, right) for item in chunk['core_block_ids']):
+            continue  # Running stories are not continuations of body prose.
         left_blocks = [block_by_id[item] for item in left["core_block_ids"][-2:]]
         right_blocks = [block_by_id[item] for item in right["core_block_ids"][:2]]
         boundary.extend([f"## {left['chunk_id']} → {right['chunk_id']}", ""])
@@ -325,7 +332,12 @@ def main() -> int:
     source_hash = str(document.get("input_sha256"))
     blocks = [block for block in document.get("blocks", []) if block.get("reviewable")]
     notes = [note for note in document.get("notes", []) if note.get("reviewable")]
-    raw_chunks = choose_chunks(blocks, args.min_words, args.target_words, args.max_words)
+    body = [b for b in blocks if b.get('story') not in {'header', 'footer'}]
+    stories = [b for b in blocks if b.get('story') in {'header', 'footer'}]
+    raw_chunks = choose_chunks(body, args.min_words, args.target_words, args.max_words)
+    body_chunk_count = len(raw_chunks)
+    # A short running title must not prevent splitting before a long author note.
+    raw_chunks += choose_chunks(stories, 1, args.target_words, args.max_words)
     block_index = {block["block_id"]: index for index, block in enumerate(blocks)}
     note_by_id = {str(note.get("note_id")): note for note in notes}
     note_owner: dict[str, int] = {}
@@ -336,7 +348,7 @@ def main() -> int:
                     note_owner.setdefault(str(note_id), chunk_no)
     if raw_chunks:
         for note_id in note_by_id:
-            note_owner.setdefault(note_id, len(raw_chunks) - 1)
+            note_owner.setdefault(note_id, max(0, body_chunk_count - 1))
 
     chunks: list[dict] = []
     packets = args.run_dir / "packets"
@@ -347,8 +359,11 @@ def main() -> int:
         chunk_id = f"C{chunk_no + 1:04d}"
         start = block_index[core[0]["block_id"]]
         end = block_index[core[-1]["block_id"]]
-        before = context(blocks, start - 1, -1, args.context_words)
-        after = context(blocks, end + 1, 1, args.context_words)
+        if core[0].get('story') in {'header', 'footer'}:
+            before, after = [], []
+        else:
+            before = context(body, start - 1, -1, args.context_words)
+            after = context(body, end + 1, 1, args.context_words)
         owned_note_ids = sorted(
             (note_id for note_id, owner in note_owner.items() if owner == chunk_no),
             key=lambda value: (0, int(value)) if value.isdigit() else (1, value),

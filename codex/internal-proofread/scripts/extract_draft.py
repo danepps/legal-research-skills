@@ -11,6 +11,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from common import SCHEMA_VERSION, file_sha256, normalize_space, utc_now, word_count, write_json
+from header_footer import collect as collect_headers_footers
 
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -27,14 +28,14 @@ def attr(element: ET.Element | None, name: str, default: str = "") -> str:
     return element.attrib.get(wtag(name), default)
 
 
-def visible_text(element: ET.Element) -> tuple[str, list[str], list[str], list[str]]:
+def visible_text(element: ET.Element, exclude_moves: bool = False) -> tuple[str, list[str], list[str], list[str]]:
     parts: list[str] = []
     note_ids: list[str] = []
     fields: list[str] = []
     bookmarks: list[str] = []
 
     def walk(node: ET.Element, deleted: bool = False) -> None:
-        deleted = deleted or node.tag == wtag("del")
+        deleted = deleted or node.tag == wtag("del") or (exclude_moves and node.tag == wtag("moveFrom"))
         if deleted:
             return
         if node.tag == wtag("t"):
@@ -185,11 +186,24 @@ def extract_docx(path: Path) -> tuple[list[dict], list[dict], list[dict], list[d
                                     f"word/document.xml/table[{body_index + 1}]/row[{row_no}]/cell[{cell_no}]/p[{para_no}]",
                                 )
 
-        for member in sorted(name for name in archive.namelist() if re.fullmatch(r"word/(header|footer)\d+\.xml", name)):
-            story = "header" if "header" in member else "footer"
-            root = ET.fromstring(archive.read(member))
-            for para_no, paragraph in enumerate(root.findall(f".//{wtag('p')}"), 1):
-                add_paragraph(paragraph, story, story, f"{member}/p[{para_no}]")
+        def optional_xml(member):
+            try:
+                return ET.fromstring(archive.read(member))
+            except KeyError:
+                return None
+
+        stories = collect_headers_footers(
+            optional_xml,
+            lambda p: [(visible_text(p, exclude_moves=True)[0], frozenset())],
+            lambda spans: (normalize_space(''.join(t for t, _ in spans)), []))
+        for index, record in enumerate(stories, 1):
+            story = record['location']['where']
+            occurrence = record['location']['occurrences'][0]
+            block = make_block(
+                f'HF{index:06d}', story, story, counter + index, record['text'], [],
+                f"{occurrence['part']}/p[{occurrence['para']}]/segment[{occurrence['segment']}]",
+                {'location': record['location'], 'location_label': record['location_label']})
+            blocks.append(block)
 
         if "word/footnotes.xml" in archive.namelist():
             root = ET.fromstring(archive.read("word/footnotes.xml"))

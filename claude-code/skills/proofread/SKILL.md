@@ -14,6 +14,23 @@ agents read every sentence chunk-by-chunk, two whole-document agents adjudicate 
 structure), and a **mandatory skeptical re-verification of every candidate finding** keeps
 false positives out of the report (the cite-check lesson: no finding ships unvetted).
 
+DOCX headers and footers are now read, including first-page author notes; generated
+page furniture is excluded. Repeated prose is reviewed once with every section/type
+listed, in additional chunks that leave the body chunks unchanged.
+
+Header/footer records in `proof.json` and chunks use `headers_footers`, with a
+`location` object (`where` plus `occurrences`: part, type, section, paragraph `para`,
+and segment) and an exact `location_label`. Copy the complete label into findings.
+Sections, physical paragraphs and prose segments are one-based; segments on opposite
+sides of an excluded field are separate, so never join them into a find string. The
+full-text files use the same bracketed labels. First-page header/footer findings sort
+before the body; other header/footer findings sort after the footnotes, within each
+report category. A shared record with any first-page occurrence sorts with first-page
+stories. Local citation typography and pincite checks apply to this prose; footnote
+terminal punctuation, note-order and short-form-distance rules do not. Explicit
+first/even references are reviewed even when their display switch is off; later
+sections inherit references until replaced. No pagination is inferred.
+
 **Scope of the citation side** (recalibrated 2026-07-14 after the Codex-memo comparisons):
 the deterministic layer DOES check mechanical citation typography and internal citation
 consistency — unfilled `_`/`__` placeholders, `Id..`, `§`-spacing, `U. S.`, signal commas,
@@ -274,6 +291,13 @@ is what it was before the option existed.
   and outside trailing whitespace; otherwise it keeps a comment. This is `kind: append-period`
   in `--edits` input (omit `replacement`) and the result, counts in `applied`, and does not count
   in `applied_in_zotero_fields`.
+  Header/footer corrections use the same tracked-change verification, including all
+  physical copies represented by a repeated-text location; if one copy cannot be
+  corrected safely, none is changed. Fields in these parts stay byte-identical.
+  Header/footer comments are anchored at the start of the body and begin with the
+  complete location and the affected words. This is a conservative fallback, not a
+  claim that Word accepts comments anchored inside headers or footers. An unplaceable
+  finding stays `unplaced` with a reason. The appended-period exception is footnote-only.
   `--zotero-fields comment` turns field editing off. Tell the user how many changes went
   into Zotero fields (`applied_in_zotero_fields` in the result). Before writing anything it checks
   that the copy with its changes rejected equals the snapshot exactly, and with them accepted

@@ -21,7 +21,7 @@ ITEM_RE = re.compile(
     r"^\s*(?:[-*+]\s+)?"
     r"(?:"
     r"(?:\*\*(?P<bold_location>[^*\n]+)\*\*|"
-    r"(?P<plain_location>(?:¶\s*\d+|n\.\s*\d+|note\s+\d+|B\d{6}|FN\S+)))"
+    r"(?P<plain_location>(?:¶\s*\d+|n\.\s*\d+|note\s+\d+|B\d{6}|HF\d{6}|FN\S+)))"
     r"\s*(?:—|–|:|-)\s*"
     r")?"
     r"`(?P<excerpt>(?:\\`|[^`])+)`"
@@ -159,11 +159,15 @@ def infer_impact(section: str, category: str, message: str) -> str:
 
 def candidate_blocks(location: str, blocks: list[dict], notes: list[dict], symbols: dict) -> tuple[list[dict], str | None]:
     label = normalize_space(location)
-    direct = re.fullmatch(r"(B\d{6}|FN\S+)", label, flags=re.IGNORECASE)
+    direct = re.fullmatch(r"(B\d{6}|HF\d{6}|FN\S+)", label, flags=re.IGNORECASE)
     if direct:
         block_id = direct.group(1).upper()
         selected = [row for row in blocks + notes if str(row.get("block_id", "")).upper() == block_id]
         return selected, None if selected else f"reported block {block_id} is absent from document.json"
+
+    if re.search(r'\b(?:header|footer)\b', label, re.I):
+        selected = [row for row in blocks if row.get('location_label', '').casefold() == label.casefold()]
+        return selected, None if selected else 'reported header/footer location is absent from document.json'
 
     note = re.fullmatch(r"(?:n\.|note)\s*(\d+)", label, flags=re.IGNORECASE)
     if note:
@@ -304,6 +308,7 @@ def main() -> int:
                     "confidence": 0.75,
                     "detection": "semantic",
                     "location": {
+                        **block.get('location', {}),
                         "story": block.get("story"),
                         "block_id": block.get("block_id"),
                         "char_start": match["char_start"],
