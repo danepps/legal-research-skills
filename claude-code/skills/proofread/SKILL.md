@@ -258,8 +258,8 @@ is what it was before the option existed.
   cp -n "<scratch>/redline.docx" "<draft's directory>/<draftName> — Proofread redline.docx"
   ```
   `cp -n` never replaces an existing file; if one is there, add ` 2`, ` 3` to the name. The
-  script applies a tracked change only for a confirmed finding of severity `error` that
-  carries a `replacement`; every other finding becomes a comment, and so does a change that
+  script normally applies a tracked change only for a confirmed finding of severity `error` that
+  carries a `replacement`; other findings become comments, and so does a change that
   would touch a footnote mark, an existing tracked deletion, or a Word field other than a
   Zotero citation. Inside a Zotero citation it follows the rule that a fix is never typed
   into the displayed text alone: when the changed characters belong to one item's pincite
@@ -268,6 +268,12 @@ is what it was before the option existed.
   comment warns that rejecting the change in Word does not undo it, because a Zotero refresh
   will show the new text. Anything from the library item or the citation style (author,
   title, volume, page, year) stays a comment that says to change it in Zotero.
+  The one exception is `cite-terminal-punct` without a replacement: when the excerpt matches
+  the footnote's end and punctuation, revision, field-boundary and conflicting-edit checks
+  pass, the writer appends a plain tracked period outside every field, preserving field bytes
+  and outside trailing whitespace; otherwise it keeps a comment. This is `kind: append-period`
+  in `--edits` input (omit `replacement`) and the result, counts in `applied`, and does not count
+  in `applied_in_zotero_fields`.
   `--zotero-fields comment` turns field editing off. Tell the user how many changes went
   into Zotero fields (`applied_in_zotero_fields` in the result). Before writing anything it checks
   that the copy with its changes rejected equals the snapshot exactly, and with them accepted
