@@ -514,6 +514,10 @@ class Writer:
         self.fields = field_inventory(document)
         self.zotero_fields = zotero_fields
         self.field_changes = {}
+        self.period_ends = set()
+        self.period_fields = set()
+        self.period_text = {}  # expected text only; never patch a field's text node
+        self.period_patches = {}
 
     def ident(self, revision=False):
         value = str(self.next_id); self.next_id += 1
@@ -640,7 +644,167 @@ class Writer:
             raise ValueError('The Zotero instruction shares a Word run with the displayed text.')
         return field, plan
 
+    def footnote_comment(self, unit, find, note):
+        note_node = unit if unit.tag == w('footnote') else unit.ancestor(w('footnote'))
+        ident = note_node.attrs.get(w('id')) if note_node is not None else None
+        ref = self.doc.note_refs.get(ident)
+        if ref is None or ref.parent is None or ref.parent.tag != w('r'):
+            return None
+        labelled = 'Footnote %s, at \u201c%s\u201d: %s' % (self.doc.numbers.get(ident, '?'), find, note)
+        if ident in self.note_comments:
+            index = self.note_comments[ident]
+            self.comments[index][1] += '\n' + labelled
+        else:
+            cid = self.ident(); index = len(self.comments)
+            self.comments.append([cid, labelled]); self.note_comments[ident] = index
+            # Keep custom reference marks in their original, unsplit run.
+            before, after = self.around.setdefault(ref.parent, ([], []))
+            before.append(self.element('commentRangeStart', attrs={'id': cid}))
+            after.append(self.element('commentRangeEnd', attrs={'id': cid}) +
+                         self.element('r', self.element('commentReference', attrs={'id': cid})))
+        return index
+
+    def period_plan(self, part, unit, find):
+        """Locate a plain insertion without changing any fields or existing revisions."""
+        atoms = text_view(unit, self.doc.numbers)
+        text, spans = cleaned(atoms)
+        if not find or not text or not text.endswith(find):
+            raise ValueError('The excerpt does not match the footnote end.')
+        terminal = text.rstrip()
+        # Match extract_proof.terminal_punct_finding exactly: closing quotes are
+        # stripped, but a closing parenthesis is not.
+        while terminal and terminal[-1] in '\u201d"\'\u2019':
+            terminal = terminal[:-1].rstrip()
+        if not terminal or terminal[-1] in '.?!':
+            raise ValueError('The footnote already has terminal punctuation.')
+        end = spans[-1][1]
+        last = atoms[end - 1]
+        if last.node is None or last.node.tag != w('t') or last.node.parent.tag != w('r'):
+            raise ValueError('The footnote end is not ordinary Word text.')
+        if any(n.tag in (w('del'), w('moveFrom')) and n.end > last.node.end for n in unit.walk()):
+            raise ValueError('The footnote end touches an existing tracked deletion or move source.')
+        # Move ranges are paired markers, not ancestors of the affected text.
+        active = set()
+        for node in self.doc.roots[part].walk():
+            if node.start > unit.end:
+                break
+            if node is last.node and active:
+                raise ValueError('The footnote end is inside a moved-from range.')
+            if node.tag in (w('moveFromRangeStart'), w('moveFromRangeEnd')):
+                if last.node.start <= node.start < unit.end:
+                    raise ValueError('A moved-from range touches the footnote end.')
+                ident = node.attrs.get(w('id'))
+                if node.tag == w('moveFromRangeStart'):
+                    active.add(ident)
+                else:
+                    active.discard(ident)
+        if unit in self.period_ends:
+            raise ValueError('Another edit already adds a period at this footnote end.')
+        for node, changes in self.replacements.items():
+            if self.part_for(node) != part or not (unit.start <= node.start < unit.end):
+                continue
+            if any(node.start > last.node.start or
+                   (node is last.node and b >= last.offset + 1) for a, b, _ in changes):
+                raise ValueError('Another applied edit touches the footnote end.')
+
+        fields = [f for f in self.fields[part] if f.start <= last.node.start < f.end]
+        stack = []
+        for node in unit.walk():
+            if node.tag != w('fldChar'):
+                continue
+            kind = node.attrs.get(w('fldCharType'))
+            if kind == 'begin':
+                stack.append(False)
+            elif kind == 'separate' and stack and not stack[-1]:
+                stack[-1] = True
+            elif kind == 'end' and stack:
+                stack.pop()
+            else:
+                raise ValueError('The footnote has malformed field boundaries.')
+        if stack:
+            raise ValueError('The footnote has an incomplete field.')
+        for field in fields:
+            if (field.end > unit.end or (field.simple is None and
+                    (field.separate is None or field.finish is None or
+                     not (field.separate.end <= last.node.start < field.finish.start)))):
+                raise ValueError('The terminal field is incomplete or its result is uncertain.')
+            if any(f.start < field.end and field.start < f.end for f in self.field_changes):
+                raise ValueError('Another applied edit touches the terminal field.')
+        target = last.node.parent
+        if fields:
+            outer = max(fields, key=lambda f: f.end)
+            target = outer.simple or outer.finish
+        paragraph = last.node.ancestor(w('p'))
+        while target.parent is not None and target.parent is not paragraph:
+            target = target.parent
+        if target.parent is not paragraph:
+            raise ValueError('The terminal field or text crosses a paragraph boundary.')
+        # A paragraph-level insertion leaves a whole field (including the end
+        # marker's run), or an existing insertion, byte-for-byte intact.
+        boundary = max(i + 1 for i, a in enumerate(atoms) if a.node and a.node.end <= target.end)
+        outside_space = [a for a in atoms[end:boundary] if a.node and
+                         not any(f.start <= a.node.start < f.end for f in fields)]
+        point = target.end
+        if outside_space:
+            if fields:
+                raise ValueError('Trailing whitespace shares the terminal field container; placement is uncertain.')
+            # Splitting ordinary text is already supported by the writer. The
+            # new run has no rPr, so it uses the paragraph's ordinary formatting.
+            parent = last.node.parent.parent
+            while parent is not paragraph and parent is not None and parent.tag == w('ins'):
+                parent = parent.parent
+            if parent is not paragraph:
+                raise ValueError('Trailing whitespace has an unsupported text container.')
+            boundary = end; point = None
+        if point is not None and any(f.start < point < f.end for f in self.fields[part]):
+            raise ValueError('The insertion point is still inside a Word field.')
+        anchor = atoms[boundary - 1]
+        if anchor.node is None:
+            raise ValueError('The footnote end has no anchorable text.')
+        return atoms, text, boundary, anchor, point
+
+    def place_period(self, edit):
+        find = edit['find'].strip()
+        if find.startswith('\u2026'):
+            find = find[1:].lstrip()
+        location = self.doc.locations.get(edit['location'])
+        if not location or not re.fullmatch(r'n\.[1-9][0-9]*', edit['location']) or location[1].tag != w('footnote'):
+            result = self.place(dict(edit, kind='comment'))
+            if result['status'] == 'commented':
+                result['status'] = 'commented_instead'
+            return dict(result, kind='append-period', reason='The location is not a known footnote.')
+        part, unit = location
+        reason = None
+        try:
+            atoms, text, boundary, anchor, point = self.period_plan(part, unit, find)
+        except ValueError as error:
+            reason = str(error)
+        note = edit['note'] + ('\nNot applied: ' + reason if reason else '')
+        index = self.footnote_comment(unit, find, note)
+        if reason:
+            return dict(id=edit['id'], kind='append-period',
+                        status='commented_instead' if index is not None else 'unplaced', reason=reason)
+        attrs = {'id': self.ident(True), 'author': self.author, 'date': self.date}
+        inserted = self.element('ins', self.element('r', self.text('.')), attrs)
+        if point is None:
+            self.event(anchor.node, anchor.offset + 1, inserted)
+        else:
+            self.period_patches.setdefault(part, []).append((point, point, inserted))
+        self.period_text.setdefault(anchor.node, []).append((anchor.offset + 1, anchor.offset + 1, '.'))
+        self.period_ends.add(unit)
+        self.period_fields.update(f for f in self.fields[part]
+                                  if unit.start <= f.start < f.end <= unit.end and not any(
+                                      changed.start < f.end and f.start < changed.end
+                                      for changed in self.field_changes))
+        # Independent requested-text check, including whitespace retained inside
+        # an unedited field before the period. Outside whitespace stays after it.
+        suffix = ' .' if atoms[boundary - 1].char.isspace() else '.'
+        self.requests.setdefault(unit, []).append((len(text), len(text), suffix))
+        return dict(id=edit['id'], status='applied', kind='append-period')
+
     def place(self, edit):
+        if edit['kind'] == 'append-period':
+            return self.place_period(edit)
         # The deterministic lint reports an excerpt with an ellipsis at either end
         # ("…concerns the the relationship…"). The words between are verbatim, so
         # anchor a comment on them; an excerpt is never applied as a change.
@@ -737,27 +901,10 @@ class Writer:
             # Word has no comments inside footnotes and drops any it finds there when it
             # opens the file. A footnote finding's comment hangs on the footnote's reference
             # mark in the text instead: one comment per footnote, naming the words it is about.
-            note_node = unit if unit.tag == w('footnote') else unit.ancestor(w('footnote'))
-            ident = note_node.attrs.get(w('id')) if note_node is not None else None
-            ref = self.doc.note_refs.get(ident)
-            if ref is None or ref.parent is None or ref.parent.tag != w('r'):
+            index = self.footnote_comment(unit, find, note)
+            if index is None:
                 if status != 'applied' or field_plan:
                     return dict(id=edit['id'], status='unplaced', reason='The footnote has no reference mark in the text to carry a comment.')
-                index = None
-            else:
-                labelled = 'Footnote %s, at \u201c%s\u201d: %s' % (self.doc.numbers.get(ident, '?'), find, note)
-                if ident in self.note_comments:
-                    index = self.note_comments[ident]
-                    self.comments[index][1] += '\n' + labelled
-                else:
-                    cid = self.ident(); index = len(self.comments)
-                    self.comments.append([cid, labelled]); self.note_comments[ident] = index
-                    # Around the whole run, which stays intact: a custom footnote mark keeps
-                    # its mark text in the same run as the reference.
-                    before, after = self.around.setdefault(ref.parent, ([], []))
-                    before.append(self.element('commentRangeStart', attrs={'id': cid}))
-                    after.append(self.element('commentRangeEnd', attrs={'id': cid}) +
-                                 self.element('r', self.element('commentReference', attrs={'id': cid})))
         else:
             cid = self.ident(); index = len(self.comments)
             self.comments.append([cid, note])
@@ -798,7 +945,7 @@ class Writer:
     def expected(self, atoms):
         output = []
         for i, atom in enumerate(atoms):
-            changes = self.replacements.get(atom.node, [])
+            changes = self.replacements.get(atom.node, []) + self.period_text.get(atom.node, [])
             for a, b, replacement in changes:
                 if atom.offset == a:
                     output.append(replacement)
@@ -813,7 +960,7 @@ class Writer:
     def edited_parts(self):
         result = dict(self.doc.parts)
         runs = {node.ancestor(w('r')) for node in set(self.events) | set(self.replacements)} | set(self.around)
-        edits = {}
+        edits = {part: list(changes) for part, changes in self.period_patches.items()}
         for part, fields in self.fields.items():
             for field in fields:
                 if field in self.field_changes:
@@ -929,6 +1076,8 @@ def verify_fields(document, original, writer):
         if len(old_fields) != len(new_fields):
             raise ValueError('Verification failed: Word field structure changed')
         for before, after in zip(old_fields, new_fields):
+            if before in writer.period_fields and original.parts[part][before.start:before.end] != document.parts[part][after.start:after.end]:
+                raise ValueError('Verification failed: unedited field bytes changed while appending a period')
             if not (before.zotero or after.zotero):
                 continue
             plan = writer.field_changes.get(before)
@@ -974,10 +1123,12 @@ def validate_edits(edits):
     for edit in edits:
         if not isinstance(edit, dict) or any(not isinstance(edit.get(k), str) for k in ('id', 'location', 'find', 'kind', 'note')):
             raise ValueError('Invalid edit fields')
-        if not edit['id'] or edit['id'] in ids or not edit['find'] or edit['kind'] not in ('change', 'comment'):
+        if not edit['id'] or edit['id'] in ids or not edit['find'] or edit['kind'] not in ('change', 'comment', 'append-period'):
             raise ValueError('Invalid or duplicate edit id, empty find, or invalid kind')
         if edit['kind'] == 'change' and not isinstance(edit.get('replacement'), str):
             raise ValueError('A change requires a string replacement')
+        if edit['kind'] == 'append-period' and 'replacement' in edit:
+            raise ValueError('An append-period edit must not carry a replacement')
         ids.add(edit['id'])
 
 
@@ -1001,8 +1152,10 @@ def edits_from_findings(findings):
             raise ValueError('Malformed findings: invalid fields in finding %d' % index)
         replacement = finding.get('replacement')
         change = finding['severity'] == 'error' and bool(replacement) and replacement != finding['find']
+        period = finding['category'] == 'cite-terminal-punct' and not replacement
         edit = dict(id=str(index), location=finding['location'], find=finding['find'],
-                    kind='change' if change else 'comment', note=finding['problem'] + '\n' + finding['fix'])
+                    kind='append-period' if period else ('change' if change else 'comment'),
+                    note=finding['problem'] + '\n' + finding['fix'])
         if change:
             edit['replacement'] = replacement
         edits.append(edit)
@@ -1043,7 +1196,7 @@ def generate(draft, edits, output, result, author, date, fault_hook=None, stagin
             # Changes claim their spans first, so a comment on the same words never
             # displaces a correction; results are reported in the order given.
             placed = {}
-            for kind in ('change', 'comment'):
+            for kind in ('change', 'append-period', 'comment'):
                 for edit in edits:
                     if edit['kind'] == kind:
                         placed[edit['id']] = writer.place(edit)

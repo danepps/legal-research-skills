@@ -1,4 +1,5 @@
 """Synthetic OOXML only. Fixtures are kept in the system temporary folder, never deleted."""
+import ast
 import importlib.util
 import errno
 import json
@@ -642,6 +643,269 @@ class RedlineTests(unittest.TestCase):
             _, answer = self.generate(self.draft(paragraph(field)), [self.edit(find, replacement)])
             self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
             self.assertIn(reason, answer['edits'][0]['reason'])
+
+    def period_edit(self, find='…Synthetic citation', **changes):
+        finding = dict(location='n.1', find=find, problem='Missing terminal punctuation',
+                       fix='add the final period', severity='likely', category='cite-terminal-punct')
+        finding.update(changes)
+        edit = redline.edits_from_findings([finding])[0]
+        self.assertEqual(edit['kind'], 'append-period')
+        return edit
+
+    def period_draft(self, contents, tail=''):
+        return self.draft(paragraph(run('Body') + '<w:r><w:footnoteReference w:id="9"/></w:r>'),
+                          '<w:footnote w:id="9">' + paragraph('<w:r><w:footnoteRef/></w:r>' + contents) + tail + '</w:footnote>')
+
+    def document(self, path):
+        with zipfile.ZipFile(path) as z:
+            return redline.Document({n: z.read(n) for n in z.namelist()})
+
+    def assert_period_views(self, draft, output, expected):
+        before, after = self.document(draft), self.document(output)
+        old_ids = {n.attrs.get(redline.w('id')) for n in before.notes.walk() if n.tag == redline.w('ins')}
+        inserted = [n for n in after.notes.walk() if n.tag == redline.w('ins') and n.attrs.get(redline.w('id')) not in old_ids]
+        self.assertEqual(len(inserted), 1)
+        ins = inserted[0]
+        self.assertEqual(''.join(n.text for n in ins.walk() if n.tag == redline.w('t')), '.')
+        self.assertFalse(any(n.tag == redline.w('rPr') for n in ins.walk()))
+        self.assertEqual(ins.attrs[redline.w('author')], 'Dubitante test')
+        self.assertEqual(ins.attrs[redline.w('date')], DATE)
+        new_ids = {ins.attrs[redline.w('id')]}
+        original = ''.join(a.char for a in redline.text_view(before.locations['n.1'][1], before.numbers))
+        for accept, wanted in ((False, original), (True, expected)):
+            actual = ''.join(a.char for a in redline.text_view(after.locations['n.1'][1], after.numbers, new_ids, accept))
+            self.assertEqual(actual, wanted)
+        for field in redline.field_inventory(after)['word/footnotes.xml']:
+            self.assertFalse(field.start < ins.start < field.end)
+        with zipfile.ZipFile(output) as z:
+            self.assertNotIn(b'comment', z.read('word/footnotes.xml'))
+
+    def assert_period_applied(self, contents, text, find='…Synthetic citation', **options):
+        draft = self.period_draft(contents)
+        output, answer = self.generate(draft, [self.period_edit(find)], **options)
+        self.assertEqual(answer['edits'][0], dict(id='1', status='applied', kind='append-period'))
+        self.assertEqual(answer['totals']['applied'], 1)
+        self.assertEqual(answer['totals']['applied_in_zotero_fields'], 0)
+        self.assert_period_views(draft, output, text)
+        return draft, output
+
+    def assert_period_comment(self, contents, find='…Synthetic citation', reason=None, tail=''):
+        draft = self.period_draft(contents, tail)
+        output, answer = self.generate(draft, [self.period_edit(find)])
+        self.assertEqual(answer['edits'][0]['status'], 'commented_instead')
+        self.assertEqual(answer['totals']['applied'], 0)
+        if reason:
+            self.assertIn(reason, answer['edits'][0]['reason'])
+        with zipfile.ZipFile(draft) as before, zipfile.ZipFile(output) as after:
+            self.assertEqual(before.read('word/footnotes.xml'), after.read('word/footnotes.xml'))
+        self.assertEqual(len(self.xml(output, 'word/comments.xml').findall('{%s}comment' % W)), 1)
+
+    def test_period_zotero_terminal_field_is_byte_identical(self):
+        field = zotero(citation('Synthetic citation'), entities=True, splits=(20,))
+        for mode in ('edit', 'comment'):
+            with self.subTest(mode=mode):
+                _, output = self.assert_period_applied(field, 'Synthetic citation.', zotero_fields=mode)
+                with zipfile.ZipFile(output) as z:
+                    self.assertIn(field.encode(), z.read('word/footnotes.xml'))
+
+    def test_period_plain_text(self):
+        self.assert_period_applied(run('Synthetic citation'), 'Synthetic citation.')
+
+    def test_period_after_closing_quote_and_parenthesis(self):
+        text = 'Synthetic citation (“quoted words”)'
+        self.assert_period_applied(run(text), text + '.', '…' + text)
+
+    def test_period_does_not_inherit_italic_or_other_run_formatting(self):
+        for props in ('<w:i/>', '<w:smallCaps/><w:b/>', '<w:rStyle w:val="Emphasis"/>'):
+            with self.subTest(props=props):
+                styled = run('Synthetic citation', '<w:rPr>' + props + '</w:rPr>')
+                _, output = self.assert_period_applied(styled, 'Synthetic citation.')
+                with zipfile.ZipFile(output) as z:
+                    self.assertIn(styled.encode(), z.read('word/footnotes.xml'))
+
+    def test_period_trailing_whitespace_stays_after_period(self):
+        cases = [run('Synthetic citation  \t'), run('Synthetic citation') + run('  \t'),
+                 run('Synthetic citation') + '<w:r><w:tab/><w:br/></w:r>',
+                 zotero(citation('Synthetic citation')) + run('  \t')]
+        for contents, suffix in zip(cases, ('  \t', '  \t', '  ', '  \t')):
+            with self.subTest(contents=contents):
+                self.assert_period_applied(contents, 'Synthetic citation.' + suffix)
+
+    def test_period_non_zotero_complex_and_simple_fields(self):
+        fields = [zotero({}, display='Synthetic citation', code=' REF synthetic '),
+                  '<w:fldSimple w:instr="REF synthetic">' + run('Synthetic citation') + '</w:fldSimple>']
+        for field in fields:
+            with self.subTest(field=field):
+                _, output = self.assert_period_applied(field, 'Synthetic citation.')
+                with zipfile.ZipFile(output) as z:
+                    self.assertIn(field.encode(), z.read('word/footnotes.xml'))
+
+    def test_period_existing_terminal_punctuation_is_commented(self):
+        for suffix in ('.', '?', '!', '.”', '?"', "!’", ". ' ”"):
+            text = 'Synthetic citation' + suffix
+            with self.subTest(suffix=suffix):
+                self.assert_period_comment(run(text), '…' + text, 'terminal punctuation')
+
+    def test_period_parenthesis_follows_the_actual_lint(self):
+        # Execute the actual standalone lint function, without importing the
+        # extractor's installed-skill search paths or duplicating its rule.
+        tree = ast.parse(TOOL.with_name('extract_proof.py').read_text())
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'terminal_punct_finding')
+        namespace = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), 'extract_proof.py', 'exec'), namespace)
+        for suffix in ('.)', '.”)', '?)', '!")'):
+            text = 'Synthetic citation' + suffix
+            with self.subTest(suffix=suffix):
+                findings = namespace['terminal_punct_finding'](text, {'where': 'footnote', 'note': 1})
+                self.assertEqual(len(findings), 1)
+                self.assert_period_applied(run(text), text + '.', findings[0]['find'])
+
+    def test_period_existing_tracked_insertion_is_preserved(self):
+        old = '<w:ins w:id="88" w:author="Old">' + run('Synthetic citation') + '</w:ins>'
+        _, output = self.assert_period_applied(old, 'Synthetic citation.')
+        with zipfile.ZipFile(output) as z:
+            self.assertIn(old.encode(), z.read('word/footnotes.xml'))
+        self.assertEqual(len(self.xml(output, 'word/footnotes.xml').findall('.//{%s}p/{%s}ins' % (W, W))), 2)
+
+    def test_period_existing_tracked_deletion_at_end_is_commented(self):
+        deleted = '<w:del w:id="89"><w:r><w:delText>deleted ending</w:delText></w:r></w:del>'
+        self.assert_period_comment(run('Synthetic citation') + deleted, reason='deletion')
+        self.assert_period_comment(deleted, '…deleted ending', 'end')
+
+    def test_period_duplicate_findings_add_only_one_period(self):
+        draft = self.period_draft(run('Synthetic citation'))
+        edit = self.period_edit()
+        output, answer = self.generate(draft, [edit, dict(edit, id='2')])
+        self.assertEqual([e['status'] for e in answer['edits']], ['applied', 'commented_instead'])
+        self.assertEqual(answer['totals']['applied'], 1)
+        self.assert_period_views(draft, output, 'Synthetic citation.')
+
+    def test_period_excerpt_must_match_the_end(self):
+        self.assert_period_comment(run('Synthetic citation followed by other words'), reason='end')
+        self.assert_period_comment(run('Different text entirely'), reason='end')
+
+    def test_period_move_source_and_open_move_range_are_commented(self):
+        moved = '<w:moveFrom w:id="90">' + run('old ending') + '</w:moveFrom>'
+        self.assert_period_comment(run('Synthetic citation') + moved, reason='move')
+        start, end = '<w:moveFromRangeStart w:id="90" w:name="m"/>', '<w:moveFromRangeEnd w:id="90"/>'
+        for contents in (start + run('Synthetic citation') + end, start + run('Synthetic citation')):
+            self.assert_period_comment(contents, reason='move')
+
+    def test_period_other_edit_touching_the_end_wins_regardless_of_input_order(self):
+        draft = self.period_draft(run('Synthetic citation'))
+        period = self.period_edit()
+        change = self.edit('citation', 'citation.', 'n.1', ident='replacement')
+        for edits in ([period, change], [change, period]):
+            _, answer = self.generate(draft, edits)
+            by_id = {e['id']: e for e in answer['edits']}
+            self.assertEqual(by_id['replacement']['status'], 'applied')
+            self.assertEqual(by_id['1']['status'], 'commented_instead')
+            self.assertIn('edit', by_id['1']['reason'])
+            self.assertEqual(answer['totals']['applied'], 1)
+
+    def test_period_earlier_edit_and_repeated_excerpt_do_not_block_end(self):
+        draft = self.period_draft(run('Typoo citation; Synthetic citation'))
+        edits = [self.period_edit('…citation'), self.edit('Typoo', 'Typo', 'n.1', ident='typo')]
+        output, answer = self.generate(draft, edits)
+        self.assertEqual(answer['totals']['applied'], 2)
+        doc = self.document(output)
+        self.assertEqual(redline.cleaned(redline.text_view(doc.locations['n.1'][1], doc.numbers))[0],
+                         'Typo citation; Synthetic citation.')
+
+    def test_period_whitespace_in_field_is_unchanged(self):
+        field = zotero(citation('Synthetic citation  '))
+        _, output = self.assert_period_applied(field + run(' \t'), 'Synthetic citation  . \t')
+        with zipfile.ZipFile(output) as z:
+            self.assertIn(field.encode(), z.read('word/footnotes.xml'))
+
+    def test_period_nested_fields_are_unchanged(self):
+        inner = '<w:fldSimple w:instr="REF inner">' + run('Synthetic citation') + '</w:fldSimple>'
+        outer = zotero(citation('Synthetic citation'), result_runs=inner)
+        _, output = self.assert_period_applied(outer, 'Synthetic citation.')
+        with zipfile.ZipFile(output) as z:
+            self.assertIn(outer.encode(), z.read('word/footnotes.xml'))
+
+    def test_period_incomplete_field_is_commented(self):
+        field = zotero(citation('Synthetic citation')).replace('<w:r><w:fldChar w:fldCharType="end"/></w:r>', '')
+        self.assert_period_comment(field, reason='field')
+
+    def test_period_malformed_field_boundaries_are_commented(self):
+        field = zotero(citation('Synthetic citation'))
+        separate = '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+        finish = '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+        for contents in (field.replace(separate, separate * 2), field + finish):
+            with self.subTest(contents=contents):
+                self.assert_period_comment(contents, reason='field')
+
+    def test_period_normalized_excerpt_matches_extractor_across_paragraphs(self):
+        # Load the shared reader explicitly from this checkout, never an installed skill.
+        spec = importlib.util.spec_from_file_location('period_citeform', TOOL.parents[2] / 'legal-research/citeform.py')
+        citeform = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(citeform)
+        draft = self.period_draft(run('  Earlier  text '),
+                                  paragraph(run(' Synthetic\t citation \u00a0')) + paragraph(''))
+        root = self.xml(draft, 'word/footnotes.xml').find('{%s}footnote' % W)
+        spans = []
+        for i, p in enumerate(root.findall('{%s}p' % W)):
+            if i:
+                spans.append((' ', frozenset()))
+            spans.extend(citeform.runs_spans(p, {}, None))
+        clean = citeform.clean_spans(spans)[0]
+        self.assertEqual(clean, 'Earlier text Synthetic citation')
+        doc = self.document(draft)
+        self.assertEqual(redline.cleaned(redline.text_view(doc.locations['n.1'][1], doc.numbers))[0], clean)
+        output, answer = self.generate(draft, [self.period_edit('…' + clean)])
+        self.assertEqual(answer['totals']['applied'], 1)
+        self.assert_period_views(draft, output, '  Earlier  text   Synthetic\t citation. \u00a0 ')
+
+    def test_period_body_and_unknown_location_never_append(self):
+        draft = self.period_draft(run('Synthetic citation'))
+        for location, find in (('¶0', '…Body[FN#1]'), ('n.99', '…Synthetic citation'), ('unknown', '…Synthetic citation')):
+            _, answer = self.generate(draft, [self.period_edit(find, location=location)])
+            self.assertEqual(answer['totals']['applied'], 0)
+
+    def test_period_policy_and_direct_edit_validation(self):
+        edit = self.period_edit()
+        redline.validate_edits([edit])
+        for replacement in ('.', '', None):
+            with self.assertRaisesRegex(ValueError, 'replacement'):
+                redline.validate_edits([dict(edit, replacement=replacement)])
+        finding = dict(location='n.1', find='…Synthetic citation', problem='p', fix='f',
+                       category='cite-terminal-punct', severity='likely')
+        cases = [finding, dict(finding, replacement=''), dict(finding, category='other'),
+                 dict(finding, replacement='Synthetic citation.'), dict(finding, severity='error')]
+        self.assertEqual([e['kind'] for e in redline.edits_from_findings(cases)],
+                         ['append-period', 'append-period', 'comment', 'comment', 'append-period'])
+
+    def test_period_direct_edits_cli(self):
+        draft = self.period_draft(zotero(citation('Synthetic citation')))
+        edits = self.root / 'append-edits.json'
+        edits.write_text(json.dumps([self.period_edit()]))
+        output, result = self.root / 'append-cli.docx', self.root / 'append-cli.json'
+        args = [sys.executable, '-I', '-B', str(TOOL), '--draft', str(draft), '--edits', str(edits),
+                '--output', str(output), '--result', str(result), '--author', 'Dubitante test', '--date', DATE]
+        completed = subprocess.run(args, capture_output=True, text=True, timeout=10)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(result.read_text())['edits'][0]['kind'], 'append-period')
+        self.assert_period_views(draft, output, 'Synthetic citation.')
+
+    def test_period_verifier_rejects_changed_field_formatting(self):
+        field = zotero(citation('Synthetic citation'), result_runs=run('Synthetic citation', '<w:rPr><w:i/></w:rPr>'))
+        draft = self.period_draft(field)
+        def corrupt(parts):
+            parts['word/footnotes.xml'] = parts['word/footnotes.xml'].replace(b'<w:i/>', b'<w:b/>')
+            return parts
+        with self.assertRaisesRegex(ValueError, 'Verification failed:.*field'):
+            self.generate(draft, [self.period_edit()], corrupt)
+
+    def test_period_verifier_also_protects_fields_before_plain_ending(self):
+        field = zotero(citation('Synthetic citation'), result_runs=run('Synthetic citation', '<w:rPr><w:i/></w:rPr>'))
+        draft = self.period_draft(field + run(' (parenthetical)'))
+        def corrupt(parts):
+            parts['word/footnotes.xml'] = parts['word/footnotes.xml'].replace(b'<w:i/>', b'<w:b/>')
+            return parts
+        with self.assertRaisesRegex(ValueError, 'Verification failed:.*field'):
+            self.generate(draft, [self.period_edit('…(parenthetical)')], corrupt)
 
 
 class WorkflowOutputInput(unittest.TestCase):
