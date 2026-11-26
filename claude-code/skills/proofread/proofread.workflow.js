@@ -840,6 +840,11 @@ ${STYLE ? '## Style suggestions\nseverity "style" findings, clearly optional.\n'
 the conventions table: issue | draft's dominant form | deviations | recommendation.
 Where the source data cites deviations by ¶ number, translate: give a few verbatim
 example snippets (Cmd+F-able) and a count, never raw ¶ numbers.
+A row whose issue is "space after § and ¶" comes from the extractor, which read the Word
+file's own characters: it counts the section and paragraph symbols followed by an ordinary
+space instead of a non-breaking one. Keep its counts, its examples and its recommendation
+(including the ^s code) as given, and do not turn it into findings; the snapshot text you
+and the other agents read shows every space the same, so it cannot be re-checked there.
 ${unvetted.length ? '## Unvetted\nthe unvetted list, clearly labeled as not re-verified.\n' : ''}## Coverage notes
 - what this pass does NOT check: citation accuracy/quotes against real sources (the
   cite-check skill), and substantive Bluebook form beyond what is listed above (signal

@@ -81,6 +81,16 @@ draft alone, no source consulted:
   caps broken mid-word, and case-name italicization under R. 2.1(a) (roman in a full cite standing
   in a citation clause, italic in a textual sentence or short form — the one call that needs an
   agent, since a pattern cannot tell those apart).
+- **Space after § and ¶** (`.docx` only; added 2026-11-26) — every section and
+  paragraph symbol should be followed by a non-breaking space, so a line never ends on the symbol.
+  The extractor reads this from the Word file's own characters (every text view the checkers read
+  shows all spaces the same) and reports ONE row in the Citation form section's conventions table:
+  the counts, a few examples, and the Word replacement that fixes them all (find the symbol and a
+  space, replace with the symbol and `^s`). Symbols inside Zotero citations or other Word fields
+  are counted separately, because a typed fix there does not last; the row says to make the
+  replacement after the fields are unlinked. Never a finding per symbol, and typography rather
+  than a Bluebook rule. Make sure the row reaches the report you save; if the workflow's report
+  dropped it, add it from `extract.json` → `form_checks.symbol_spacing` and `form_checks.conventions`.
 
 These run off `${CLAUDE_PLUGIN_ROOT}/skills/legal-research/citeform.py`, the **same module `/proofread` uses**,
 so the two skills cannot give contradictory advice. The rules as applied are written out in
@@ -437,7 +447,8 @@ holds the two arrays the workflow takes (`instances`, `secondary`).
 
 `extract_cites.py` prints a summary (footnote_count, body/footnote quote counts, unique_case_cite_count,
 supra_problem_candidates, plus `form_findings` / `form_short_form` / `form_typeface` /
-`formatting_available` / `case_name_candidates` from the form layer). `prepare_units.py` prints
+`formatting_available` / `case_name_candidates` from the form layer, and for a `.docx`
+`symbols_with_ordinary_space` / `symbols_with_ordinary_space_in_fields`, the § and ¶ counts). `prepare_units.py` prints
 unit_count / case_cites / supra_problems / unit_notes (the id → footnote list the workflow takes as
 `unitNotes`). Read `extract.json` to pull the arrays the workflow needs:
 `unique_case_cites`, `supra_problem_candidates`, and the whole `form_checks` block.

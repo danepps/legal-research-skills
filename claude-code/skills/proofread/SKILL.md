@@ -69,6 +69,22 @@ cited in full twice when R. 4.2 calls for `Author, supra note N`. All decidable 
 draft alone — see `${CLAUDE_PLUGIN_ROOT}/skills/legal-research/bluebook-typeface-and-short-forms.md`
 for the rules as applied.
 
+**SPACE AFTER § AND ¶** (added 2026-11-26; `.docx` only): every section and
+paragraph symbol should be followed by a non-breaking space, so a line never ends on the
+symbol. The extractor reads this from the Word file's own characters (the text every agent
+reads shows all spaces the same) and reports ONE row in the report's conventions table:
+how many symbols have a non-breaking space, how many have an ordinary one, a few examples,
+and the Word replacement that fixes them all (find the symbol and a space, replace with
+the symbol and `^s`). Symbols inside Zotero citations or other Word fields are counted
+separately, because a typed fix there does not last; the row says to make the replacement
+after the fields are unlinked. It is never a finding per symbol and it does not go through
+the verify pass. When the redline is on, the redline writer makes the change itself, as
+tracked changes, for every plain case outside a field (step 5, `--symbol-spaces fix`).
+Make sure the row reaches the report you save; if the workflow's report dropped it, add it
+from `proof.json` → `formatting.symbol_spacing` and `formatting.conventions`. Headers and
+footers are not read for this, and a markdown or plain-text draft is not checked at all
+(say so in the coverage notes when the draft has § or ¶ in it). Typography, not a Bluebook rule.
+
 **TYPEFACE** (added 2026-08-10, `.docx` only): the extractor now resolves run properties
 (`w:i`, `w:smallCaps`, `w:caps`) through character *and* paragraph styles, so italics and
 small caps ARE checked — signals/`Id.`/`supra` left roman, the `note N` after an italicized
@@ -198,7 +214,9 @@ For **deep**, run the extractor a SECOND time into a separate outdir with
 `--chunk-words 1200` and concatenate both runs' `chunk_files` into the workflow's
 `chunkFiles` (use the 1800 run's `proof.json`/`fulltext.txt` as `outDir`; the snapshot is
 identical so paragraph ids line up). Prints a summary (paragraph/footnote/endnote/
-word counts, chunk_count, lint_finding_count…). It writes `<scratch>/proof/proof.json`,
+word counts, chunk_count, lint_finding_count, and for a `.docx`
+`symbols_with_ordinary_space` / `symbols_with_ordinary_space_in_fields`, the § and ¶ counts
+described above…). It writes `<scratch>/proof/proof.json`,
 `fulltext.txt`, and `chunks/chunk-NN.json`.
 
 - If the summary shows `tracked_insertions`/`tracked_deletions` true: the extractor reads
@@ -292,7 +310,8 @@ is what it was before the option existed.
   python3 ${CLAUDE_PLUGIN_ROOT}/skills/proofread/scripts/redline_docx.py \
     --draft "<scratch>/snapshot.docx" --findings "<workflow output file>" \
     --output "<scratch>/redline.docx" --result "<scratch>/redline-result.json" \
-    --staging-dir "<scratch>" --author "Claude" --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --staging-dir "<scratch>" --author "Claude" --date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --symbol-spaces fix
   cp -n "<scratch>/redline.docx" "<draft's directory>/<draftName> — Proofread redline.docx"
   ```
   `cp -n` never replaces an existing file; if one is there, add ` 2`, ` 3` to the name. The
@@ -321,6 +340,18 @@ is what it was before the option existed.
   finding stays `unplaced` with a reason. The appended-period exception applies to
   footnotes and endnotes. Endnote comments anchor to the original body reference and
   name the endnote; rejected/accepted text and field verification include `word/endnotes.xml`.
+  `--symbol-spaces fix` (added 2026-11-26; always pass it) makes the writer put a
+  non-breaking space after every § and ¶ on its own, without a finding: where a symbol is
+  followed by exactly one ordinary space in the body, a footnote or an endnote, the space
+  becomes a tracked deletion and a non-breaking space a tracked insertion, with no comment.
+  It leaves alone, and counts by reason in the result's `symbol_spaces` object (`applied`,
+  `in_fields`, `skipped`), a space inside a Word field's displayed text or instructions, a
+  gap that is not one ordinary space, a space another edit already touches, and one inside
+  or beside existing tracked changes or a note mark; headers and footers are not read. These
+  changes are not in the `applied` total. Its own check does not treat the two kinds of
+  space as the same: the accepted text must differ from the expected text only at the
+  recorded positions. With no findings at all, the flag still makes a redline when there is
+  a space to fix. Tell the user the `symbol_spaces` counts along with the other totals.
   `--zotero-fields comment` turns field editing off. Tell the user how many changes went
   into Zotero fields (`applied_in_zotero_fields` in the result). Before writing anything it checks
   that the copy with its changes rejected equals the snapshot exactly, and with them accepted

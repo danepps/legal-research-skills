@@ -9,6 +9,7 @@ from pathlib import Path
 
 from common import read_json, read_jsonl, report_order, utc_now, write_json, write_jsonl, linked_note_ids
 from replacements import bind_audit, effective_finding, resolve_records
+from symbol_spacing import symbol_spacing_report
 
 
 VISIBLE_STATUSES = {"confirmed", "likely", "query", "fixed", "waived", "style", "prepublication"}
@@ -248,6 +249,9 @@ def main() -> int:
     lines += section("Author queries", groups["query"], raw_to_display, block_by_id, searchable_texts, note_parent_by_id)
     lines += section("Pre-publication checks", groups["prepublication"], raw_to_display, block_by_id, searchable_texts, note_parent_by_id)
     lines += section("Style consistency (optional)", groups["style"], raw_to_display, block_by_id, searchable_texts, note_parent_by_id)
+    spacing_note = symbol_spacing_report(document.get('formatting', {}))
+    if spacing_note:
+        lines.extend(["## Document-wide typography", "", spacing_note, ""])
     lines += section("Couldn't check", groups["waived"] + groups["pending"], raw_to_display, block_by_id, searchable_texts, note_parent_by_id)
     if args.include_rejected:
         lines += section("Rejected candidates", groups["rejected"], raw_to_display, block_by_id, searchable_texts, note_parent_by_id)

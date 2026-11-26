@@ -34,6 +34,9 @@ REL = 'http://schemas.openxmlformats.org/package/2006/relationships'
 CT = 'http://schemas.openxmlformats.org/package/2006/content-types'
 COMMENTS_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments'
 COMMENTS_CT = 'application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml'
+SYMBOL_GAP = re.compile(r'([§¶]+)(\s+)(?=\S)')
+NONBREAKING = frozenset('\u00a0\u202f\u2007')
+SYMBOL_PARTS = ('word/document.xml', 'word/footnotes.xml', 'word/endnotes.xml')
 
 
 def w(local):
@@ -571,6 +574,8 @@ class Writer:
         self.period_patches = {}
         self.body_comment_patches = []
         self.story_comments = {}
+        self.symbol_checks = None
+        self.symbol_fields = set()
 
     def ident(self, revision=False):
         value = str(self.next_id); self.next_id += 1
@@ -1071,6 +1076,150 @@ class Writer:
             result['reason'] = reason
         return result
 
+    def fix_symbol_spaces(self):
+        """Plan from the snapshot after findings, with an independent strict ledger.
+
+        in_fields counts displayed gaps; instruction gaps have their own skip
+        count, since citeform deliberately excludes instructions from its view.
+        No comments or finding totals are added by this pass.
+        """
+        summary = dict(applied=0, in_fields=0, skipped={})
+        records = {}  # source text node -> source character offsets
+
+        def skip(reason, count=1):
+            if count:
+                summary['skipped'][reason] = summary['skipped'].get(reason, 0) + count
+
+        edited_runs = {n.ancestor(w('r')) for n in set(self.events) | set(self.replacements)} | set(self.around)
+        for part in SYMBOL_PARTS:
+            root = self.doc.roots.get(part)
+            if root is None:
+                continue
+            fields = self.fields[part]
+            # The pass never splits a run intersecting a field. Also verify the
+            # entire bytes of fields which findings have left untouched.
+            other_patches = self.period_patches.get(part, [])
+            if part == 'word/document.xml':
+                other_patches = other_patches + self.body_comment_patches
+            for field in fields:
+                if (field not in self.field_changes
+                        and not any(r and self.part_for(r) == part and r.start < field.end and field.start < r.end
+                                    for r in edited_runs)
+                        and not any(field.start < b and a < field.end for a, b, _ in other_patches)):
+                    self.symbol_fields.add(field)
+
+            # Move ranges can span paragraphs without wrapping the moved text.
+            ranges, active = [], {}
+            for n in root.walk():
+                for kind in ('moveFrom', 'moveTo'):
+                    key = (kind, n.attrs.get(w('id')))
+                    if n.tag == w(kind + 'RangeStart'):
+                        active[key] = n.start
+                    elif n.tag == w(kind + 'RangeEnd') and key in active:
+                        ranges.append((active.pop(key), n.end))
+            ranges.extend((start, root.end) for start in active.values())
+
+            # Deleted text is absent from the accepted detector stream, but is
+            # inventoried separately so it is explicitly accounted for, once.
+            for n in root.walk():
+                if n.tag in (w('del'), w('moveFrom')) and not any(
+                        n.parent and n.parent.ancestor(w(t)) for t in ('del', 'moveFrom')):
+                    raw = ''.join(c.text if c.tag in (w('t'), w('delText')) else
+                                  ' ' if c.tag in (w('tab'), w('br'), w('cr'), w('p')) else ''
+                                  for c in n.walk())
+                    skip('tracked_revision', sum(1 for _ in SYMBOL_GAP.finditer(raw)))
+            instructions = [f.code for f in fields]
+            covered = {n for f in fields for n in f.nodes}
+            instructions.extend(n.text for n in root.walk() if n.tag == w('instrText') and n not in covered)
+            skip('field_instruction', sum(1 for code in instructions for m in SYMBOL_GAP.finditer(code)
+                                          if not all(c in NONBREAKING for c in m[2])))
+
+            if part == 'word/document.xml':
+                units = [n for n in root.walk() if n.tag == w('p')]
+            else:
+                kind = 'footnote' if part == 'word/footnotes.xml' else 'endnote'
+                units = [n for n in root.children if n.tag == w(kind)]
+            for unit in units:
+                if any(unit.ancestor(w(t)) for t in ('del', 'moveFrom')):
+                    continue
+                if part == 'word/document.xml':
+                    atoms = text_view(unit, self.doc.numbers)
+                else:
+                    # Include paragraphs in note tables as well as direct ones.
+                    # The synthetic separator can be detected, but never edited.
+                    atoms = []
+                    paragraphs = [n for n in unit.walk() if n.tag == w('p') and not any(
+                        n.ancestor(w(t)) for t in ('del', 'moveFrom'))]
+                    for i, p in enumerate(paragraphs):
+                        if i:
+                            atoms.append(Atom(' ', None, 0))
+                        atoms.extend(text_view(p, self.doc.numbers))
+                raw = ''.join(a.char for a in atoms)
+                for match in SYMBOL_GAP.finditer(raw):
+                    gap = atoms[match.start(2):match.end(2)]
+                    context = atoms[match.start():match.end() + 1]
+                    nodes = [a.node for a in context if a.node is not None]
+                    lo, hi = min(n.start for n in nodes), max(n.end for n in nodes)
+                    if all(c in NONBREAKING for c in match[2]):
+                        skip('already_nonbreaking')
+                    elif any(lo < f.end and f.start < hi for f in fields):
+                        summary['in_fields'] += 1
+                    elif match[2] != ' ' or gap[0].node is None or gap[0].node.tag != w('t'):
+                        skip('non_single_space')
+                    elif (any(n.ancestor(w(t)) for n in nodes for t in ('ins', 'del', 'moveFrom', 'moveTo'))
+                          or any(n.tag in (w('del'), w('moveFrom')) and lo < n.end and n.start < hi for n in unit.walk())
+                          or any(lo < end and start < hi for start, end in ranges)):
+                        skip('tracked_revision')
+                    else:
+                        atom = gap[0]; run = atom.node.ancestor(w('r'))
+                        note_tags = {w(t) for t in ('footnoteReference', 'endnoteReference', 'footnoteRef', 'endnoteRef')}
+                        if (any(n.tag in note_tags and lo < n.end and n.start < hi for n in unit.walk())
+                                or (run and any(n.tag in note_tags for n in run.walk()))):
+                            skip('note_mark')
+                        elif (run is None or atom.node.parent is not run
+                              or any(a.node is None or a.node.tag != w('t') for a in context)
+                              or len({n.ancestor(w('p')) for n in nodes}) != 1
+                              or any(n.ancestor(w('p')).parent.ancestor(w('p')) for n in nodes)):
+                            skip('unsupported_structure')
+                        elif (any(run.start < f.end and f.start < run.end for f in fields)
+                              or any(n.tag in (w('instrText'), w('fldChar'), w('fldSimple')) for n in run.walk())):
+                            skip('field_run')
+                        elif any(run.start < end and start < run.end for start, end in ranges):
+                            skip('tracked_revision')
+                        elif any(a <= c.offset < b or a == b and c.offset <= a <= c.offset + 1
+                                 for c in context for a, b, _ in
+                                 self.replacements.get(c.node, []) + self.period_text.get(c.node, [])):
+                            skip('other_edit')
+                        else:
+                            records.setdefault(atom.node, set()).add(atom.offset)
+
+        # Freeze the ordinary-edit baseline BEFORE adding symbol replacements.
+        # Record positions after its length changes, independently of the mutable
+        # replacement map consumed by edited_parts() and the existing verifier.
+        self.symbol_checks = {}
+        for key, unit in self.doc.units.items():
+            if key[0] not in SYMBOL_PARTS:
+                continue
+            atoms = text_view(unit, self.doc.numbers)
+            starts = {a.node: i - a.offset for i, a in enumerate(atoms) if a.node is not None}
+            changes = [(starts[n] + a, starts[n] + b, replacement)
+                       for n in starts for a, b, replacement in
+                       self.replacements.get(n, []) + self.period_text.get(n, [])]
+            positions = []
+            baseline = self.expected(atoms)
+            for i, atom in enumerate(atoms):
+                if atom.offset in records.get(atom.node, ()):
+                    at = i + sum(len(r) - (b - a) for a, b, r in changes if b <= i)
+                    if atom.char != ' ' or baseline[at:at + 1] != ' ':
+                        raise ValueError('Verification failed: symbol-space source is not U+0020')
+                    positions.append(at)
+            self.symbol_checks[key] = (baseline, tuple(positions))
+        for node, offsets in records.items():
+            for offset in sorted(offsets):
+                self.replacements.setdefault(node, []).append((offset, offset + 1, '\u00a0'))
+                summary['applied'] += 1
+        return summary
+
     def expected(self, atoms):
         output = []
         for i, atom in enumerate(atoms):
@@ -1187,6 +1336,15 @@ def verify(staged, original, writer):
         accepted = ''.join(a.char for a in text_view(after, document.numbers, writer.new_ids, True))
         if rejected != ''.join(a.char for a in before):
             raise ValueError('Verification failed: rejected view differs at %r' % (key,))
+        if writer.symbol_checks is not None and key in writer.symbol_checks:
+            baseline, positions = writer.symbol_checks[key]
+            expected = list(baseline)
+            for at in positions:
+                if expected[at] != ' ':
+                    raise ValueError('Verification failed: symbol-space position is not U+0020')
+                expected[at] = '\u00a0'
+            if accepted != ''.join(expected):
+                raise ValueError('Verification failed: strict symbol-space view differs at %r' % (key,))
         if accepted != writer.expected(before):
             raise ValueError('Verification failed: accepted view differs at %r' % (key,))
         # Independently check the requested full substitutions, rather than
@@ -1207,6 +1365,8 @@ def verify_fields(document, original, writer):
         if len(old_fields) != len(new_fields):
             raise ValueError('Verification failed: Word field structure changed')
         for before, after in zip(old_fields, new_fields):
+            if before in writer.symbol_fields and original.parts[part][before.start:before.end] != document.parts[part][after.start:after.end]:
+                raise ValueError('Verification failed: unedited field bytes changed during symbol-space pass')
             if part in original.story_parts and original.parts[part][before.start:before.end] != document.parts[part][after.start:after.end]:
                 raise ValueError('Verification failed: header/footer field bytes changed')
             if before in writer.period_fields and original.parts[part][before.start:before.end] != document.parts[part][after.start:after.end]:
@@ -1295,7 +1455,7 @@ def edits_from_findings(findings):
     return edits
 
 
-def generate(draft, edits, output, result, author, date, fault_hook=None, staging_dir=None, zotero_fields='edit'):
+def generate(draft, edits, output, result, author, date, fault_hook=None, staging_dir=None, zotero_fields='edit', symbol_spaces='off'):
     """fault_hook is in-process tests only, never a command-line option."""
     output, result = Path(output), Path(result)
     if os.path.lexists(output):
@@ -1309,13 +1469,15 @@ def generate(draft, edits, output, result, author, date, fault_hook=None, stagin
             validate_edits(edits)
             if zotero_fields not in ('edit', 'comment'):
                 raise ValueError('zotero_fields must be edit or comment')
+            if symbol_spaces not in ('fix', 'off'):
+                raise ValueError('symbol_spaces must be fix or off')
             stamp = datetime.datetime.fromisoformat(date.replace('Z', '+00:00'))
             if stamp.tzinfo is None:
                 raise ValueError('Date must include a time zone')
             if not author:
                 raise ValueError('Author is required')
             totals = dict(applied=0, commented=0, commented_instead=0, unplaced=0, applied_in_zotero_fields=0)
-            if not edits:
+            if not edits and symbol_spaces == 'off':
                 answer = dict(status='no_edits', reason='No confirmed findings to redline', edits=[], totals=totals)
                 json.dump(answer, result_file, ensure_ascii=False, indent=2)
                 return answer
@@ -1334,6 +1496,12 @@ def generate(draft, edits, output, result, author, date, fault_hook=None, stagin
                     if edit['kind'] == kind:
                         placed[edit['id']] = writer.place(edit)
             outcomes = [placed[edit['id']] for edit in edits]
+            spacing = writer.fix_symbol_spaces() if symbol_spaces == 'fix' else None
+            if not edits and not spacing['applied']:
+                answer = dict(status='no_edits', reason='No confirmed findings or symbol spaces to redline',
+                              edits=[], totals=totals, symbol_spaces=spacing)
+                json.dump(answer, result_file, ensure_ascii=False, indent=2)
+                return answer
             changed = writer.edited_parts()
             if fault_hook:
                 changed = fault_hook(changed)
@@ -1358,6 +1526,8 @@ def generate(draft, edits, output, result, author, date, fault_hook=None, stagin
                     totals['applied_in_zotero_fields'] += 1
             digest = hashlib.sha256(stage.read_bytes()).hexdigest()
             answer = dict(status='written', edits=outcomes, totals=totals, sha256=digest)
+            if spacing is not None:
+                answer['symbol_spaces'] = spacing
             json.dump(answer, result_file, ensure_ascii=False, indent=2)
             result_file.flush(); os.fsync(result_file.fileno())
             try:
@@ -1377,18 +1547,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('draft', 'output', 'result', 'author', 'date'):
         parser.add_argument('--' + name, required=True)
-    mode = parser.add_mutually_exclusive_group(required=True)
+    mode = parser.add_mutually_exclusive_group()
     mode.add_argument('--edits')
     mode.add_argument('--findings')
     parser.add_argument('--staging-dir')
     parser.add_argument('--zotero-fields', choices=('edit', 'comment'), default='edit')
+    parser.add_argument('--symbol-spaces', choices=('fix', 'off'), default='off')
     args = parser.parse_args()
+    if not (args.edits or args.findings) and args.symbol_spaces != 'fix':
+        parser.error('one of --edits or --findings is required unless --symbol-spaces fix is set')
     try:
-        with open(args.edits or args.findings, encoding='utf-8') as source:
-            values = json.load(source)
+        values = []
+        if args.edits or args.findings:
+            with open(args.edits or args.findings, encoding='utf-8') as source:
+                values = json.load(source)
         edits = edits_from_findings(values) if args.findings else values
         generate(args.draft, edits, args.output, args.result, args.author, args.date,
-                 staging_dir=args.staging_dir, zotero_fields=args.zotero_fields)
+                 staging_dir=args.staging_dir, zotero_fields=args.zotero_fields, symbol_spaces=args.symbol_spaces)
         return 0
     except Exception as error:
         print('Redline not made: ' + str(error), file=sys.stderr)

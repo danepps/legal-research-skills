@@ -16,6 +16,7 @@ from findings_diff import snapshot, diff, render
 from extract_cites import note_key
 from verify_docx_ooxml import VERIFICATION_METHOD
 from prepare_run_options import resolved_selection
+from symbol_spacing import validate_symbol_spacing
 
 
 REQUIRED_FILES = (
@@ -256,6 +257,7 @@ def main() -> int:
 
     manifest = load_json(args.run_dir / "run-manifest.json", errors)
     extraction = load_json(args.run_dir / "extraction.json", errors)
+    errors.extend(validate_symbol_spacing(extraction.get('form_checks', {})))
     if manifest.get("run_options_sha256"):
         try:
             options_path = args.run_dir / "run-options.json"
@@ -866,6 +868,8 @@ def main() -> int:
                         f"verdict lacks required verifier audit: {verdict.get('verdict_id')}"
                     )
         report = args.run_dir / "report.md"
+        errors.extend(validate_symbol_spacing(
+            extraction.get('form_checks', {}), report.read_text(encoding='utf-8') if report.is_file() else ''))
         if not report.is_file() or not report.read_text(encoding="utf-8").strip():
             errors.append("missing nonempty report.md")
         elif "Needs your attention" not in report.read_text(encoding="utf-8"):

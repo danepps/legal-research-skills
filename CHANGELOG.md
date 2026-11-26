@@ -2,6 +2,48 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.15 (2026-11-26)
+
+`proofread` and `cite-check` check that every section symbol (§) and paragraph symbol (¶) in a Word
+draft is followed by a non-breaking space, so a line never ends on the symbol, and the proofread
+redline can fix it. Companion Codex version **1.7.8**.
+
+- The check reads the Word file's own characters. Every text view the agents read collapses white
+  space, which turns a non-breaking space into an ordinary one, so no agent could see the difference
+  and none is asked to. A gap counts as non-breaking only if every character in it is U+00A0, U+202F
+  or U+2007. The code is shared: `legal-research/citeform.py` (`symbol_space_hits`,
+  `symbol_space_convention`), run by both extractors.
+- It is reported as one row in the conventions table (proofread: document-wide conventions;
+  cite-check: the Citation form section), never as a finding per symbol and not through the verify
+  pass. The row gives the counts, up to three examples with a place the author can find, and the Word
+  replacement that fixes them all: find the symbol and a space, replace with the symbol and `^s`. It
+  is typography, not a Bluebook rule, and the report says so.
+- Symbols inside a Word field's displayed text (a Zotero citation, a cross-reference, a table of
+  contents) are counted separately. A typed fix inside a Zotero citation is wiped on refresh or
+  flagged as a hand edit, so the row says to make the replacement after the fields are unlinked.
+- Redline: `redline_docx.py --symbol-spaces fix` (the skill now always passes it) puts the
+  non-breaking space in as tracked changes, with no comment, wherever a symbol is followed by exactly
+  one ordinary space in the body, a footnote or an endnote. It leaves alone, and counts by reason in
+  the result's new `symbol_spaces` object, a space inside a field's displayed text or instructions,
+  a gap that is not one ordinary space, a space another edit already touches, and one inside or
+  beside existing tracked changes or a note mark. These changes are not in the `applied` total. The
+  writer's existing checks collapse white space and could not confirm this change, so the pass has
+  its own strict check: the accepted text may differ from the expected text only at the recorded
+  positions, each a U+0020 that is now U+00A0. Without the option the writer's output is unchanged.
+- Limits: `.docx` only (a markdown or plain-text draft is not checked); headers and footers are not
+  read for this.
+- Tested with synthetic OOXML: the detector, both extractors, and the redline pass (22 tests,
+  including fault injection against the strict check and byte-identical output with the option off).
+  `run_tests.py` gains a check that the detector in `citeform.py` and the copy in each Codex skill
+  stay the same. The two extraction baselines (`endnotes-no-endnotes.json`,
+  `headers-footers-no-stories.json`) were regenerated; compared key by key with the old ones, the
+  only differences are the new `formatting.symbol_spacing` entry (Claude Code) and the new
+  `formatting` entry plus one appended limitation (Codex). Checked by hand on a real draft with 293
+  footnotes (not in this repository): both extractors count 27 symbols, 25 of them followed by an
+  ordinary space and none inside a field; the redline changed 25 of 25, and the detector run over
+  the redlined copy found none left. Not tested: a live run of either skill with
+  the check in it, a symbol inside a real Zotero field, and opening the redline in Word.
+
 ## 1.6.14 (2026-11-25)
 
 `cite-check` can use the user's own copies of sources from a folder, with no Zotero library needed. Companion Codex version **1.7.7**. Public plugin only; the change is not in the author's private skills.

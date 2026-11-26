@@ -186,6 +186,41 @@ def check_local_source_parity(root: Path = ROOT) -> list[str]:
     return failures
 
 
+SYMBOL_SPACING_FUNCTIONS = ("_symbol_stream", "symbol_space_state", "symbol_space_hits", "symbol_space_convention")
+
+
+def check_symbol_spacing_parity(root: Path = ROOT) -> list[str]:
+    """The detector for the space after § and ¶ lives in three places: citeform.py for the
+    Claude Code skills and an identical symbol_spacing.py in each of the two Codex skills
+    (they install on their own). Same functions in all three; the two Codex files are one text."""
+    def functions(path: Path) -> list:
+        found = {}
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            if isinstance(node, ast.FunctionDef) and node.name in SYMBOL_SPACING_FUNCTIONS:
+                first = node.body[0] if node.body else None
+                if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) \
+                        and isinstance(first.value.value, str):
+                    node.body.pop(0)
+                found[node.name] = ast.dump(node)
+        return [found.get(name) for name in SYMBOL_SPACING_FUNCTIONS]
+
+    failures = []
+    shared = root / "claude-code/skills/legal-research/citeform.py"
+    copies = [root / "codex" / skill / "scripts/symbol_spacing.py" for skill in ("internal-proofread", "cite-check")]
+    try:
+        if copies[0].read_text(encoding="utf-8") != copies[1].read_text(encoding="utf-8"):
+            failures.append("symbol_spacing.py: the two Codex copies differ")
+        wanted = functions(shared)
+        if None in wanted:
+            failures.append("citeform.py: a symbol-spacing function is missing")
+        elif functions(copies[0]) != wanted:
+            failures.append("symbol_spacing.py: the Codex detector differs from citeform.py")
+    except (OSError, SyntaxError) as exc:
+        failures.append(f"symbol spacing: cannot compare the copies: {exc}")
+    print(f"  3 symbol-spacing detector copies checked, {len(failures)} problems")
+    return failures
+
+
 def main() -> int:
     print(f"legal-research-skills checks (Python {sys.version.split()[0]})")
     all_failures: list[str] = []
@@ -193,6 +228,7 @@ def main() -> int:
         ("Test programs", run_test_programs),
         ("Python compile", compile_python),
         ("Local-source helper parity", check_local_source_parity),
+        ("Symbol-spacing detector parity", check_symbol_spacing_parity),
         ("Markdown links", check_markdown_links),
         ("SKILL.md frontmatter", check_frontmatter),
         ("Codex UI metadata", check_codex_ui_metadata),

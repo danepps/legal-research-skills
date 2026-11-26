@@ -11,6 +11,7 @@ from pathlib import Path
 
 from common import file_sha256, read_json, read_jsonl, validate_finding_location
 from replacements import resolve_records, validate_records
+from symbol_spacing import validate_symbol_spacing
 
 
 REQUIRED = (
@@ -91,6 +92,7 @@ def main() -> int:
         return 1
     if manifest.get("schema_version") != 1 or document.get("schema_version") != 1 or symbols.get("schema_version") != 1:
         errors.append("unsupported schema version")
+    errors.extend(validate_symbol_spacing(document.get('formatting', {})))
     source_hash = manifest.get("draft_sha256")
     if source_hash != document.get("input_sha256") or source_hash != symbols.get("source_sha256"):
         errors.append("source hashes differ across manifest, document, and symbols")
@@ -399,6 +401,7 @@ def main() -> int:
 
         report = run_dir / "report.md"
         report_text = report.read_text(encoding="utf-8")
+        errors.extend(validate_symbol_spacing(document.get('formatting', {}), report_text))
         if not report_text.strip():
             errors.append("report.md is empty")
         for heading in ("Needs your attention", "Confirmed errors", "Author queries", "Pre-publication checks", "Style consistency (optional)", "Couldn't check"):

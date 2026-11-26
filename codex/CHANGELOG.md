@@ -1,5 +1,33 @@
 # Codex plugin changes
 
+## 1.7.8 — 2026-11-26
+
+`internal-proofread` and `cite-check` check that every section symbol (§) and paragraph symbol (¶)
+in a Word draft is followed by a non-breaking space. Companion Claude Code version **1.6.15**.
+
+- Extraction reads the raw Word characters, skipping tracked deletions and move sources; the
+  normalized text the reviewers read cannot show the difference. A gap is non-breaking only if every
+  character in it is U+00A0, U+202F or U+2007. Field results (complex and simple fields, with state
+  carried across paragraphs within a part) are counted separately.
+- One document-wide typography note, never a finding per symbol and never a candidate for the model
+  review or audit passes. `internal-proofread`: counts and the item live in `document.json →
+  formatting`, and `build_report.py` prints the note. `cite-check`: they live in `extraction.json →
+  form_checks`, and the readiness validator requires the supplied `report_markdown` in the report
+  exactly once. The note gives the counts, up to three examples, the Word Replace All using `^s`,
+  and, when field results are affected, the advice to wait until Zotero fields are unlinked.
+- Each skill carries an identical `scripts/symbol_spacing.py`, ported from the Claude Code plugin's
+  `legal-research/citeform.py`; `run_tests.py` checks that the three stay the same. The skills
+  install on their own, so neither imports the other.
+- Limits: `.docx` only, recorded as a limitation for markdown and plain text. Headers and footers
+  are not read for this; `cite-check` does not read endnotes for it either. Codex still has no
+  bundled redline writer, so nothing here changes a draft.
+- Tested offline with synthetic documents (30 tests per skill). The two extraction baselines
+  under `internal-proofread/scripts/fixtures/` were regenerated; the only differences from the old
+  ones are the new `formatting` entry and one appended limitation. Checked by hand on a real draft
+  with 293 footnotes (not in this repository): both extractors count 27 symbols, 25 followed by an
+  ordinary space.
+  Not tested: a live run of either skill, and a symbol inside a real Zotero field.
+
 ## 1.7.7 — 2026-11-25
 
 `cite-check` can use the user's own copies of sources from a folder, with no Zotero library needed. Companion Claude Code version **1.6.14**.
