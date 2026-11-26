@@ -15,6 +15,7 @@ import sys
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
+from symbol_spacing import collect_symbol_spacing, skipped_symbol_spacing, TEXT_LIMITATION
 
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -334,6 +335,10 @@ def parse_docx(path: Path, include_deleted: bool) -> dict[str, object]:
     tracked_roots = [root for name, root in roots.items() if name in {"word/document.xml", "word/footnotes.xml", "word/endnotes.xml"}]
     return {
         "paragraphs": paragraphs, "footnotes": footnotes, "unreferenced_footnotes": unreferenced,
+        "form_checks": collect_symbol_spacing(
+            document_root, footnotes_root,
+            {xml_id: 'note ' + str(marks.get(xml_id, label)) for xml_id, label in labels.items()}),
+        "limitations": ['Space after § and ¶ is checked in body text, tables and footnotes; headers, footers and endnotes are not checked for this typography convention.'],
         "block_quote_paragraphs": blocks, "block_quote_candidates": block_candidates,
         "blocking_issues": issues, "warnings": warnings,
         "tracked_changes": {
@@ -386,6 +391,8 @@ def parse_markdown_or_text(path: Path) -> dict[str, object]:
     return {
         "paragraphs": paragraphs,
         "footnotes": footnotes,
+        "form_checks": skipped_symbol_spacing(),
+        "limitations": [TEXT_LIMITATION],
         "tracked_changes": {
             "insertions_present": False,
             "deletions_present": False,
@@ -469,6 +476,8 @@ def extract_document(path: Path, min_quote_words: int = 8, include_deleted: bool
         "comments_count": parsed["comments_count"],
         "blocking_issues": parsed.get("blocking_issues", []),
         "warnings": parsed.get("warnings", []),
+        "form_checks": parsed["form_checks"],
+        "limitations": parsed.get("limitations", []),
         "block_quote_candidates": parsed.get("block_quote_candidates", []),
         "paragraphs": paragraphs,
         "footnotes": parsed["footnotes"],

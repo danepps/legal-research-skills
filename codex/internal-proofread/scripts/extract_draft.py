@@ -13,6 +13,7 @@ from xml.etree import ElementTree as ET
 from common import SCHEMA_VERSION, file_sha256, normalize_space, utc_now, word_count, write_json
 from header_footer import collect as collect_headers_footers
 from endnotes import index as endnote_index, reference_copy, visible
+from symbol_spacing import collect_symbol_spacing, footnote_labels, skipped_symbol_spacing, TEXT_LIMITATION
 
 
 W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -132,7 +133,7 @@ def make_block(
     }
 
 
-def extract_docx(path: Path) -> tuple[list[dict], list[dict], list[dict], list[dict], list[str]]:
+def extract_docx(path: Path, formatting=None) -> tuple[list[dict], list[dict], list[dict], list[dict], list[str]]:
     blocks: list[dict] = []
     notes: list[dict] = []
     fields_index: list[dict] = []
@@ -283,6 +284,13 @@ def extract_docx(path: Path) -> tuple[list[dict], list[dict], list[dict], list[d
                 bookmarks_index.extend(dict(block_id=block_id, name=name) for name in bookmarks)
             if any(n['story'] == 'footnote' for n in notes):
                 limitations.append('Body/header/footer note references are ambiguous in a draft with both series; those references are suppressed. References inside a note resolve only within its own series.')
+        if formatting is not None:
+            formatting.update(collect_symbol_spacing(
+                document, optional_xml('word/footnotes.xml'),
+                footnote_labels(document, optional_xml('word/settings.xml')),
+                optional_xml('word/endnotes.xml'),
+                {n['note_id']: n['location_label'].lower() for n in notes if n['story'] == 'endnote'}))
+            limitations.append('Space after § and ¶ is checked in body text, tables, footnotes and referenced endnotes; headers and footers are not checked for this typography convention.')
     return blocks, notes, fields_index, bookmarks_index, limitations
 
 
@@ -363,9 +371,10 @@ def main() -> int:
     if not path.is_file():
         parser.error(f"draft does not exist: {path}")
     suffix = path.suffix.lower()
+    formatting = {}
     try:
         if suffix == ".docx":
-            blocks, notes, fields, bookmarks, limitations = extract_docx(path)
+            blocks, notes, fields, bookmarks, limitations = extract_docx(path, formatting)
             input_format = "docx"
         elif suffix in {".md", ".markdown"}:
             blocks, notes, fields, bookmarks, limitations = markdown_blocks(path)
@@ -378,6 +387,9 @@ def main() -> int:
     except (OSError, zipfile.BadZipFile, ET.ParseError, UnicodeDecodeError) as exc:
         print(f"ERROR: extraction failed: {exc}", file=sys.stderr)
         return 1
+    if input_format != 'docx':
+        formatting = skipped_symbol_spacing()
+        limitations.append(TEXT_LIMITATION)
     output = {
         "schema_version": SCHEMA_VERSION,
         "input_path": str(path),
@@ -389,6 +401,7 @@ def main() -> int:
         "notes": notes,
         "fields": fields,
         "bookmarks": bookmarks,
+        "formatting": formatting,
         "statistics": {
             "block_count": len(blocks),
             "note_count": len(notes),

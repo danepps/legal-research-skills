@@ -2878,6 +2878,11 @@ your attention" — they are tidy-up, not substance${FORM_FMT_OK ? '' : '. NOTE:
 ${JSON.stringify(formAll, null, 1)}
 
 === CITATION-FORM CONVENTIONS (document-wide; a short table in the same section) ===
+A row whose issue is "space after § and ¶" is typography, not a Bluebook rule: the extractor
+read the Word file's own characters and counted the section and paragraph symbols followed
+by an ordinary space instead of a non-breaking one. Keep its counts, examples and
+recommendation (including the ^s code) as given, say in a clause that it is not a Bluebook
+point, and do not turn it into findings.
 ${JSON.stringify(formConventions, null, 1)}
 
 === RUN LIMITS (for the method note's coverage limits: one plain line each, in this run's words; these are limits of the check, not findings) ===

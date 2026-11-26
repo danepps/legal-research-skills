@@ -697,6 +697,24 @@ def form_layer(src, notes_by_id, notes_by_num, paras, id2num, out_path):
     cands, conventions, counts = citeform.case_name_typeface(
         pseudo, {n: notes_by_num[n] for n in nspans}, para_spans, nspans)
 
+    # Space after § and ¶ (2026-11-26): a non-breaking space ties the symbol to its
+    # number. Read from the runs, because every text view here turns U+00A0 into an
+    # ordinary space; one convention row with counts, never a finding per symbol.
+    symbol_spacing = None
+    if hasattr(citeform, "symbol_space_hits"):               # older citeform
+        body_fields, note_fields = (citeform.symbol_space_state() for _ in range(2))
+        located = [("", h) for p in body_root.iter(W + "p")
+                   for h in citeform.symbol_space_hits([p], body_fields)]
+        by_note = {}
+        for fn in fn_root.findall(W + "footnote"):           # every note: fields span them
+            hits = citeform.symbol_space_hits(list(fn.iter(W + "p")), note_fields)
+            if fn.get(W + "id") in id2num:
+                by_note[id2num[fn.get(W + "id")]] = hits
+        located += [("note %s" % n, h) for n in sorted(by_note) for h in by_note[n]]
+        symbol_spacing, row = citeform.symbol_space_convention(located)
+        if row:
+            conventions.append(row)
+
     fmt_path = os.path.join(os.path.dirname(os.path.abspath(out_path or ".")),
                             "fulltext_fmt.txt")
     lines = []
@@ -717,6 +735,7 @@ def form_layer(src, notes_by_id, notes_by_num, paras, id2num, out_path):
             "case_name_candidates": cands, "case_name_counts": counts,
             "fulltext_fmt": fmt_path, "aligned": aligned, "unaligned": unaligned,
             "short_form_truncated": bool(stats.get("truncated")),
+            "symbol_spacing": symbol_spacing,
             "markup": "<i>italic</i>, <sc>small caps</sc>, <caps>prints all caps</caps>",
             "all_caps_paragraphs": sorted(pdisplay)}
 
@@ -875,6 +894,9 @@ def main(argv):
         summary["formatting_unaligned_footnotes"] = form["unaligned"]
     if form.get("short_form_truncated"):
         summary["form_short_form_truncated"] = True
+    if form.get("symbol_spacing"):
+        summary["symbols_with_ordinary_space"] = form["symbol_spacing"]["ordinary"]
+        summary["symbols_with_ordinary_space_in_fields"] = form["symbol_spacing"]["ordinary_in_fields"]
     for w in warnings:
         print("WARNING: " + w, file=sys.stderr)
     print(json.dumps(summary, indent=2))

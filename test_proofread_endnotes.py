@@ -461,6 +461,9 @@ new AF('args','budget','agent','parallel','phase','log',src)(
         return result
 
     def test_no_endnotes_matches_19c9937_bytes(self):
+        # Baseline regenerated at 1.6.15 / Codex 1.7.8. Against the 19c9937 bytes the only
+        # differences are additive: formatting.symbol_spacing (Claude), and formatting plus
+        # one appended limitation (Codex). Every other byte is as it was.
         golden = json.loads((CODEX / 'fixtures/endnotes-no-endnotes.json').read_text())
         for tree in ('claude', 'codex'):
             with self.subTest(tree=tree):

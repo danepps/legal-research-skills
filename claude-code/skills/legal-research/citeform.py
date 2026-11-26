@@ -691,3 +691,140 @@ def case_name_typeface(paras, notes, para_spans, note_spans, cap=40):
                 "context": ctx})
     return inventory, conventions, counts
 
+
+# ---- space after § and ¶ ------------------------------------------------------
+# Added 2026-11-26: a section or paragraph symbol should be tied to what
+# follows it by a NON-BREAKING space, so a line never ends on the symbol. Every
+# other view in these skills collapses whitespace (clean_spans, _clean), which
+# turns U+00A0 into an ordinary space, so this check reads the Word runs itself.
+# It is a typographic convention, not a Bluebook rule, and it is reported as ONE
+# document-wide convention row with counts, never as a finding per symbol: the fix
+# is a single find-and-replace, and no agent can re-verify it from fulltext.txt,
+# where the two kinds of space look the same.
+SYMBOL_SPACE = re.compile(r"([§¶]+)(\s+)(?=\S)")
+_NONBREAKING = frozenset("\u00a0\u202f\u2007")   # no-break, narrow no-break, figure
+_NOTE_CALL = "\x00"                                # a note reference in the stream
+
+
+def _symbol_stream(el, state, out):
+    """Append (char-run, in_field) pairs for one element. `state` carries the open
+    complex fields across paragraphs: a Zotero bibliography spans several."""
+    for child in el:
+        tag = child.tag
+        if tag in _SKIP_SUBTREES:
+            continue
+        if tag == W + "fldSimple":
+            state["simple"] += 1
+            _symbol_stream(child, state, out)
+            state["simple"] -= 1
+            continue
+        if tag == W + "fldChar":
+            kind = child.get(W + "fldCharType")
+            if kind == "begin":
+                state["stack"].append(False)         # False until the result starts
+            elif kind == "separate" and state["stack"]:
+                state["stack"][-1] = True
+            elif kind == "end" and state["stack"]:
+                state["stack"].pop()
+            continue
+        in_field = bool(state["simple"] or any(state["stack"]))
+        if tag == W + "t":
+            out.append((child.text or "", in_field))
+        elif tag in (W + "tab", W + "br", W + "cr"):
+            out.append((" ", in_field))
+        elif tag == W + "noBreakHyphen":
+            out.append(("-", in_field))
+        elif tag in (W + "footnoteReference", W + "endnoteReference"):
+            out.append((_NOTE_CALL, in_field))
+        else:
+            _symbol_stream(child, state, out)
+
+
+def symbol_space_state():
+    return {"stack": [], "simple": 0}
+
+
+def symbol_space_hits(paragraphs, state=None):
+    """Every § or ¶ (or run of them) that is followed by white space and then more
+    text, in document order. `paragraphs` are the w:p elements of ONE passage (a
+    body paragraph, or all the paragraphs of a note). Each hit is
+      {"symbol", "nonbreaking": bool, "in_field": bool, "context"}
+    where nonbreaking is True only when the whole gap is non-breaking characters,
+    in_field means the text is a Word field's displayed result (a Zotero citation,
+    a cross-reference, a table of contents) and context is a short excerpt with
+    white space collapsed, as it appears in the plain-text views."""
+    state = state if state is not None else symbol_space_state()
+    pieces = []
+    for i, p in enumerate(paragraphs):
+        if i:
+            pieces.append((" ", False))
+        _symbol_stream(p, state, pieces)
+    raw = "".join(t for t, _ in pieces)
+    flags = []
+    for t, f in pieces:
+        flags.extend([f] * len(t))
+    hits = []
+    for m in SYMBOL_SPACE.finditer(raw):
+        gap = m.group(2)
+        s = max(raw.rfind(_NOTE_CALL, 0, m.start()) + 1, m.start() - 30)
+        if s and raw[s - 1] != _NOTE_CALL:           # start the excerpt on a whole word
+            while s < m.start() and not raw[s - 1].isspace():
+                s += 1
+        e = m.end()
+        while e < len(raw) and not raw[e].isspace() and raw[e] != _NOTE_CALL and e - m.end() < 24:
+            e += 1
+        hits.append({"symbol": m.group(1),
+                     "nonbreaking": all(c in _NONBREAKING for c in gap),
+                     "in_field": any(flags[m.start(1):m.end(2)]),
+                     # a note's text opens with ". " after its number: not part of the excerpt
+                     "context": re.sub(r"^[.\s]+", "", _clean(raw[s:e]))})
+    return hits
+
+
+def symbol_space_convention(located, examples=3, listed=20):
+    """Roll the hits up for a report. `located` is [(label, hit)], label being a
+    reader-facing place ("note 12") or "" for body text. Returns (summary, row):
+    the summary always, the convention row only when some symbol is followed by an
+    ordinary space. `examples` in the summary are the first `listed` outside
+    fields (the ones an author can change while the citations are still linked);
+    the list is capped because the session retypes this block into workflow args."""
+    located = list(located)
+    bad = [(lab, h) for lab, h in located if not h["nonbreaking"]]
+    loose = [(lab, h) for lab, h in bad if not h["in_field"]]
+    summary = {"total": len(located),
+               "nonbreaking": len(located) - len(bad),
+               "ordinary": len(loose),
+               "ordinary_in_fields": len(bad) - len(loose),
+               "examples": [{"location": lab, "find": h["context"]}
+                            for lab, h in loose[:listed]]}
+    if not bad:
+        return summary, None
+    shown = (loose or bad)[:examples]
+    eg = "; ".join("%s`%s`" % ((lab + " ") if lab else "", h["context"]) for lab, h in shown)
+    good = len(located) - len(bad)
+    parts = []
+    if loose:
+        parts.append("%d followed by an ordinary space, so a line can end on the symbol"
+                     % len(loose))
+    if len(bad) > len(loose):
+        parts.append("%d%s inside Zotero citations or other Word fields"
+                     % (len(bad) - len(loose), " more" if loose else " with an ordinary space,"))
+    # The table's first column is the draft's commoner form, whichever that is.
+    if len(bad) >= good:
+        dominant = "ordinary space (%d of %d)" % (len(bad), len(located))
+        parts.insert(0, "non-breaking space after %d" % good)
+    else:
+        dominant = "non-breaking space (%d of %d)" % (good, len(located))
+    rec = ("Put a non-breaking space after every § and ¶. In Word that is one Replace All "
+           "per symbol: find the symbol followed by a space, replace with the symbol "
+           "followed by ^s (Word's code for a non-breaking space).")
+    if len(bad) > len(loose):
+        rec += (" Replace All also changes the text shown inside Zotero citations, where "
+                "a typed fix is wiped on refresh or flagged as a hand-modified citation, "
+                "so in a draft that is still linked to Zotero do it after the fields are "
+                "unlinked (the editors' copy).")
+    row = {"issue": "space after § and ¶",
+           "dominant": dominant,
+           "minority": "%s (for example: %s)" % ("; ".join(parts), eg),
+           "recommendation": rec}
+    return summary, row

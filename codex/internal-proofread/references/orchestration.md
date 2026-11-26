@@ -24,6 +24,16 @@
 11. Run `make_rejection_packets.py`. Independently audit every high-impact rejected omission, duplication, cross-reference, and numbering candidate. Merge the result rows with `merge_rejection_audit.py`; reopen or revise dispositions as required.
 12. Build the report and enforce readiness validation.
 
+The §/¶ spacing convention bypasses all review and audit lanes. Extraction reads
+raw `w:t` characters (excluding deletions and move sources), treats a gap as
+non-breaking only when every character is U+00A0, U+202F or U+2007, and carries
+complex/simple field state across paragraphs within each part. The counts and
+single convention live in `document.json → formatting`; `build_report.py` renders
+the item once and `validate_run.py` checks its presence without adding a finding.
+Examples have reader-facing note labels; counts are matching symbol runs, so §§
+counts once. Report the extraction limitations for unsupported text input and
+unexamined stories.
+
 ## Independent recall pass
 
 The recall pass is mandatory. Standard review generates 900–1,200-word body packets and note packets bounded at 1,200 words or 40 notes. Exhaustive review uses 600–900-word body packets and note packets bounded at 900 words or 30 notes. Generate them only after the first merge so each packet can identify existing spans as do-not-repeat locations. The second reader must search for semantic editing residue, nonadjacent repetition, transposed defined terms, malformed noun phrases, internal name/date/number conflicts, and a second defect in a block where the first pass found something else. It must not turn accepted variants or stylistic elegance into errors.

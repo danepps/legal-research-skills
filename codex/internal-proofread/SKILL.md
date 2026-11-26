@@ -37,6 +37,16 @@ when their display switch is off; extraction does not infer actual pagination.
 
 ## Non-negotiable rules
 
+For `.docx`, extraction checks the raw Word characters after § and ¶ and stores
+counts in `document.json → formatting.symbol_spacing` and at most one item in
+`formatting.conventions`. `build_report.py` prints that document-wide typography
+item directly, with examples, Word Replace All instructions using `^s`, and advice
+to wait until Zotero fields are unlinked when field results are affected; this is
+not a Bluebook rule. Never turn it into per-symbol findings, model review or audit
+candidates, or automatic replacements: normalized review text loses the evidence.
+Clean drafts produce no item; Markdown/text record a limitation. Headers and
+footers are outside this check's coverage.
+
 - Preserve the original draft. Keep all snapshots, packets, ledgers, audits, and intermediate reports inside the hidden run directory.
 - Never move, rename, delete, quarantine, or reorganize any artifact outside the current run directory unless the user expressly asks. Treat files and hidden run directories created by other tools or earlier workflows as out of scope.
 - By default, place the run under `<draft-parent>/.codex-proofread/runs/`; never create a visible `proofread-runs`, `AI Memos/proofread-runs`, packet, ledger, verifier, diagnostic, or temporary file in the user's workspace.

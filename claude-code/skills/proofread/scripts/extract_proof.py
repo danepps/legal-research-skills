@@ -66,6 +66,7 @@ from citeform import (                                       # noqa: E402
     parse_styles, runs_spans, clean_spans, shift_spans, render_marked,
     prop_ratio, CAPTION_CITE, _caption_key,
     short_form_lint, typeface_lint, case_name_typeface,
+    symbol_space_state, symbol_space_hits, symbol_space_convention,
 )
 
 # Per-agent passage size. Proofreading recall degrades as the passage grows —
@@ -171,7 +172,9 @@ def parse_docx(src, headers_footers=None, endnotes=None, limitations=None):
         headers_footers.extend(collect_headers_footers(
             optional_xml, lambda p: read_spans(p, _para_style(p)), clean_spans))
 
-    notes_by_id = {}
+    # Space after § and ¶: read from the runs, because clean_spans() below turns a
+    # non-breaking space into an ordinary one. One field state per part.
+    notes_by_id, fn_fields = {}, symbol_space_state()
     for fn in fn_root.findall(W + "footnote"):
         if fn.get(W + "type") in ("separator", "continuationSeparator"):
             continue
@@ -181,11 +184,14 @@ def parse_docx(src, headers_footers=None, endnotes=None, limitations=None):
                 spans.append((" ", frozenset()))
             spans += read_spans(p, _para_style(p))
         text, sp = clean_spans(spans)
-        notes_by_id[fn.get(W + "id")] = {"text": text, "spans": sp}
+        notes_by_id[fn.get(W + "id")] = {
+            "text": text, "spans": sp,
+            "symspace": symbol_space_hits(fn.findall(W + "p"), fn_fields)}
 
     if endnotes is not None and end_records:
         en_root = optional_xml('word/endnotes.xml')
         by_id = {n.get(W + 'id'): n for n in en_root.findall(W + 'endnote')}
+        en_fields = symbol_space_state()
         for record in end_records:
             node = by_id[record['note_id']]
             spans = []
@@ -194,7 +200,9 @@ def parse_docx(src, headers_footers=None, endnotes=None, limitations=None):
                     spans.append((' ', frozenset()))
                 spans.extend(read_spans(paragraph, _para_style(paragraph)))
             text, sp = clean_spans(spans)
-            endnotes.append(dict(record, text=text, spans=sp, words=len(text.split())))
+            endnotes.append(dict(record, text=text, spans=sp, words=len(text.split()),
+                                 symspace=symbol_space_hits(
+                                     [n for n in visible(node) if n.tag == W + 'p'], en_fields)))
     paras, order = [], []
     has_ins = has_del = False
     if end_records:
@@ -203,7 +211,9 @@ def parse_docx(src, headers_footers=None, endnotes=None, limitations=None):
         has_del = en_root.find('.//' + W + 'del') is not None
 
     body_paragraphs = (n for n in visible(body_root) if n.tag == W + "p") if end_records else body_root.iter(W + "p")
+    body_fields = symbol_space_state()
     for p in body_paragraphs:
+        symspace = symbol_space_hits([p], body_fields)   # every paragraph: fields span them
         if p.find(".//" + W + "ins") is not None:
             has_ins = True
         if p.find(".//" + W + "del") is not None:
@@ -213,7 +223,7 @@ def parse_docx(src, headers_footers=None, endnotes=None, limitations=None):
         for ref in p.iter(W + "footnoteReference"):
             order.append(ref.get(W + "id"))
         if t:
-            entry = {"text": t, "style": style, "spans": sp}
+            entry = {"text": t, "style": style, "spans": sp, "symspace": symspace}
             if end_records:
                 entry['endnote_ids'] = [n.get(W + 'id') for n in visible(p) if n.tag == W + 'endnoteReference']
             paras.append(entry)
@@ -1050,6 +1060,18 @@ def main(argv):
             en_inventory, en_conventions, en_case_counts = case_name_typeface([], end_text, {}, end_spans)
             case_inventory += list(endnote_labels(en_inventory, endnotes))
             fmt_conventions += list(endnote_labels(en_conventions, endnotes))
+    # Space after § and ¶ (.docx only: the markdown path never sees which kind of
+    # space it was). One convention row, no findings; headers and footers are not read.
+    symbol_spacing = None
+    if fmt_ok:
+        located = [("", h) for p in raw_paras for h in p.get("symspace") or []]
+        located += [("note %d" % id2num[fid], h)
+                    for fid, rec in sorted(notes_by_id.items(), key=lambda kv: id2num.get(kv[0], 0))
+                    if fid in id2num for h in rec.get("symspace") or []]
+        located += [("endnote %s" % r["number"], h) for r in endnotes for h in r.pop("symspace", [])]
+        symbol_spacing, row = symbol_space_convention(located)
+        if row:
+            fmt_conventions.append(row)
     # page-range dash style: flag hyphen ranges only when en-dash clearly
     # dominates the draft's own footnotes (a convention, not an absolute)
     lint += range_lint(notes)
@@ -1237,6 +1259,7 @@ def main(argv):
                 {"para": h["para"], "text": h["text"], "display": h["display"]}
                 for h in labeled_headings if h.get("display")],
             "conventions": fmt_conventions,
+            "symbol_spacing": symbol_spacing,
             "case_name_counts": case_counts,
             "case_name_candidates": case_inventory,
             "italic_runs": sum(1 for sp in list(para_spans.values()) + list(note_spans.values()) + list(end_spans.values())
@@ -1263,7 +1286,10 @@ def main(argv):
         "short_form_findings": sum(1 for f in lint if f["rule"] == "cite-short-form"),
         "formatting_available": bool(fmt_ok),
         "typeface_findings": sum(1 for f in lint if f["rule"].startswith("fmt-")),
-        "typeface_conventions": len(fmt_conventions),
+        "typeface_conventions": sum(1 for c in fmt_conventions if c.get("issue") != "space after § and ¶"),
+        **({"symbols_with_ordinary_space": symbol_spacing["ordinary"],
+            "symbols_with_ordinary_space_in_fields": symbol_spacing["ordinary_in_fields"]}
+           if symbol_spacing else {}),
         "all_caps_headings": sum(1 for h in labeled_headings if h.get("display")),
         "paragraph_count": data["paragraph_count"],
         "footnote_count": footnote_count,

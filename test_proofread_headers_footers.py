@@ -199,6 +199,9 @@ class CoverageTests(unittest.TestCase):
         return answer
 
     def test_no_stories_matches_release_golden(self):
+        # Baseline regenerated at 1.6.15 / Codex 1.7.8: the only differences from the earlier
+        # one are formatting.symbol_spacing (Claude), and formatting plus one appended
+        # limitation (Codex).
         expected = json.loads((CODEX / 'fixtures/headers-footers-no-stories.json').read_text())
         for tree in ('claude', 'codex'):
             for suffix in ('.docx', '.md'):

@@ -212,6 +212,18 @@ After core quotation verification, requested support and required audits, read [
 
 ### 6. Write and publish the report
 
+For `.docx`, extraction checks raw Word characters after § and ¶, excluding
+deletions and move sources, and keeps counts in `extraction.json →
+form_checks.symbol_spacing`. If ordinary gaps exist, copy the single
+`form_checks.conventions` item's `report_markdown` paragraph into a document-wide
+typography note; the readiness gate requires it exactly once. It is typography,
+not a Bluebook rule, and includes examples, one Word Replace All per symbol using
+`^s`, and advice to wait until Zotero fields are unlinked when field results are
+affected. Never put it in citation units, findings, model review or audit passes:
+their normalized text cannot re-check the spaces. Clean drafts produce no item;
+disclose `extraction.limitations`, including the skipped check for Markdown/text
+and its body/table/footnote scope for Word drafts.
+
 Write the canonical report to `<run-dir>/report.md`. Put genuine findings first; do not put cleared suspicions, near-findings, or internal deliberation in “Needs your attention.” Then include the history/treatment advisory, complete footnote ledger and limitations. State the existence-only share of citation instances using the exact summary sentence in the ledger reference; count instances, not unique sources.
 
 When support is enabled, run `prepare_support_units.py RUN_DIR --refresh-counts`
