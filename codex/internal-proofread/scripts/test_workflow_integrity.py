@@ -72,6 +72,47 @@ class WorkflowIntegrityTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('snapshot is missing', result.stderr)
 
+    def test_report_footer_survives_real_readiness_and_publication(self):
+        self.initialize('This clean paragraph contains a complete sentence for a controlled offline review.\n')
+        manifest = json.loads((self.run / 'run-manifest.json').read_text())
+        report = (self.run / 'report.md').read_text()
+        body, rule, footer = report.rpartition('\n---\n')
+        self.assertTrue(rule)
+        self.assertEqual([line for line in report.splitlines() if line.strip()][1], 'Run status: **complete**')
+        self.assertNotIn('Draft:', body)
+        self.assertNotIn('Source SHA-256:', body)
+        self.assertEqual(footer, f"\nDraft: `{manifest['draft_path']}`  \nSource SHA-256: `{manifest['draft_sha256']}`  \n")
+        result = self.call('publish_report.py', self.run, '--model', 'fixture', '--tokens', '0', '--subagents', 'none')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        published = (self.root / 'Draft — Proofread.md').read_text()
+        self.assertEqual(published.rpartition('\n---\n')[0], body)
+        self.assertIn(f"\nDraft: `{manifest['original_draft_path']}`  \n", published)
+        self.assertIn(f"\nSource SHA-256: `{manifest['draft_sha256']}`  \n", published)
+
+    def test_readiness_rejects_misplaced_missing_or_changed_provenance(self):
+        self.initialize('This clean paragraph contains a complete sentence for a controlled offline review.\n')
+        path = self.run / 'report.md'
+        report = path.read_text()
+        body, _, footer = report.rpartition('\n---\n')
+        title, _, substance = body.partition('\n')
+        manifest = json.loads((self.run / 'run-manifest.json').read_text())
+        mutations = {
+            'legacy header': title + '\n' + footer + '\n' + substance,
+            'duplicate metadata': title + '\n' + footer + '\n' + substance + '\n---\n' + footer,
+            'missing footer': body,
+            'wrong hash': report.replace(manifest['draft_sha256'], 'b' * 64),
+            'wrong draft': report.replace(manifest['draft_path'], 'other.md'),
+            'trimmed hash spaces': report.replace(f"{manifest['draft_sha256']}`  \n", f"{manifest['draft_sha256']}`\n"),
+            'content after footer': report + '\nMore findings.\n',
+            'old attribution header': title + '\n\n> Created by: **Codex**  \n' + substance + '\n---\n' + footer,
+        }
+        for name, text in mutations.items():
+            with self.subTest(mutation=name):
+                path.write_text(text)
+                result = self.call('validate_run.py', self.run, '--require-ready')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('provenance', result.stderr)
+
     def test_malformed_findings_fail_merge_and_readiness(self):
         self.initialize('This clean paragraph contains a complete sentence for a controlled offline review.\n')
         chunk = read_rows(self.run / 'chunks.jsonl')[0]

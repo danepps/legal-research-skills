@@ -2,6 +2,26 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.17 (2026-11-27)
+
+`proofread`: a report starts with its findings. The snapshot line and the header block no longer
+sit between the title and the first finding. Companion Codex version **1.7.9**, which makes the
+same change to `internal-proofread`.
+
+- The workflow's `report` used to carry a block quotation under its title with the snapshot time
+  and the draft's 64-character SHA-256, typed by the report agent from its prompt. The script now
+  writes that line itself, as the report's last line, so the hash is exact; the agent is told to
+  write no provenance line and is no longer shown the hash, and one it writes anyway is removed.
+- The mechanical fallback report (used when the report agent fails twice) keeps its failure notice
+  under the title and also ends with the snapshot line.
+- `SKILL.md`, step 5: nothing is added between the title and the findings and no `Topic:` line is
+  written. `Production details:`, then `Date:` and `By:`, are the last lines of the file.
+- Nothing else about the report changes: the same sections in the same order, the same findings
+  data, the same redline.
+- Tests: `scripts/test_workflow_provenance.py` (stubbed agents) checks the three cases.
+- Not tested: a live run. A host that publishes the report with a header of its own under the
+  title (the Dubitante app did) has to stop doing so separately.
+
 ## 1.6.16 (2026-11-27)
 
 `legal-research`, `cite-check` and `find-cite`: every agent that can save a file is told where its

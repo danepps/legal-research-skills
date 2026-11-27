@@ -187,13 +187,13 @@ footer. A host program that runs this skill states its own choices in its prompt
 Live OneDrive/Word co-authoring changes the file between reads — the smoke-test draft
 gained/lost footnotes across three reads in one morning. Copy the draft to the session
 scratchpad first and run everything off the snapshot; record the snapshot time for the
-report header.
+report's provenance line.
 
 ```
 cp "<draftPath>" "<scratch>/snapshot.docx" && chmod a-w "<scratch>/snapshot.docx"
 ```
 Record the snapshot time; the extractor computes the snapshot's SHA-256 (in `proof.json`)
-— both go into the workflow args and appear in the report header as provenance.
+— both go into the workflow args, and the workflow writes them as the report's last line.
 
 **The draft is read-only to this skill — structurally, not just by convention.** The
 original draft's path goes into the `cp` above and NOWHERE else: never into Workflow args,
@@ -280,28 +280,26 @@ The workflow returns `{ report, counts, exitState, degradation, rejectedFindings
 substitution. Pass `replacements: true` only when redline is on; without it every agent prompt
 is what it was before the option existed.
 - Write **`report`** to `<draft's directory>/<draftName> — Proofread.md` (next to the draft).
-- **Research memo header & production footer (required, per the author — global rule in
-  ~/.claude/CLAUDE.md):** the report opens directly under the title (alongside the
-  snapshot line) with the structured header block (`Topic:` / `Date:` / `By:`); the
-  `Production details:` block goes at the **very end of the file** (after everything
-  else, set off by a `---` rule) — never up top. `Date` is local time
-  (`date "+%Y-%m-%d %H:%M %Z"` when writing the file); `By` is `Claude-<orchestrating
-  session model>` (exact id); `Production details` names the skill, the workflow-agent
-  model(s) actually used (read them off the run's per-agent progress entries — don't
-  assume the model map), the wall-clock duration, and the token count — from the workflow
-  completion notification's `<usage>` block (`duration_ms`, `subagent_tokens`,
-  `agent_count`), labeled subagent output tokens (orchestrator overhead not included).
-  Example header:
-  ```
-  Topic: Proofread of <draft name>
-  Date: 2026-07-14 15:05 PDT
-  By: Claude-fable-5
-  ```
-  Example footer (last lines of the file):
+- **Nothing between the title and the findings; date, author and production details end the
+  file** (decided by the author on 2026-11-27: the `Topic:` / `Date:` / `By:` block and the snapshot
+  line used to sit under the title, ahead of the first finding). The workflow's `report`
+  already starts with its heading and its TL;DR and ends with the snapshot line; add nothing
+  above the findings and write no `Topic:` line. After the report, as the last lines of the
+  file, set off by a `---` rule, add `Production details:`, then `Date:` and `By:`. `Date` is
+  local time (`date "+%Y-%m-%d %H:%M %Z"` when writing the file); `By` is
+  `Claude-<orchestrating session model>` (exact id); `Production details` names the skill, the
+  workflow-agent model(s) actually used (read them off the run's per-agent progress entries —
+  don't assume the model map), the wall-clock duration, and the token count — from the workflow
+  completion notification's `<usage>` block (`duration_ms`, `subagent_tokens`, `agent_count`),
+  labeled subagent output tokens (orchestrator overhead not included).
+  Example (last lines of the file; two spaces end the `Date` line so `By` stays on its own):
   ```
   ---
   Production details: Claude Code /proofread; 8m 25s; 664,041 subagent output
     tokens across 24 agents (workflow agents Claude Opus 4.8)
+
+  Date: 2026-07-14 15:05 PDT
+  By: Claude-fable-5
   ```
 - **Redline (only when it was chosen, `.docx` only).** A deterministic script builds it from
   the workflow's own findings; you never edit the document yourself. Run it on the snapshot,

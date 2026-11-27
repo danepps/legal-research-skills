@@ -1,5 +1,21 @@
 # Codex plugin changes
 
+## 1.7.9 — 2026-11-27
+
+`internal-proofread` reports start with their title and findings summary, with all
+provenance in one final block. Companion Claude Code version **1.6.17**.
+
+- Move the five attribution/accounting lines, draft path, and source hash below
+  the report body and a `---` rule, alongside `Date:`, `By:`, and `Production details:`.
+  Drop the redundant `Topic:` line; preserve every other line's wording and values,
+  including the exact backticked source hash and its two trailing spaces for hosts.
+- Build and validate canonical reports with final-block provenance. Recognize
+  both new and legacy visible reports for replacement, requiring Codex attribution
+  and the exact draft path together; preserve other reviewers' and other drafts' files.
+- Offline regressions cover findings-first output, complete unduplicated footer
+  fields, exact hash formatting, both replacement layouts, overwrite protection,
+  and the full build/readiness/publication path. No live model or host-app run.
+
 ## 1.7.8 — 2026-11-26
 
 `internal-proofread` and `cite-check` check that every section symbol (§) and paragraph symbol (¶)
