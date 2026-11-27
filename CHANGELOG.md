@@ -2,6 +2,21 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.18 (2026-11-27)
+
+`find-cite`: an entry starts with its cites. No Codex skill changed; the companion Codex version
+stays **1.7.9**.
+
+- The `entry` used to open with a `**Proposition:**` line and an `**Authority type:**` line that
+  gave the classifier's reasoning. The proposition line is gone: a host prints the proposition as
+  the entry's heading, and in a chat the user has just typed it. The authority type, with the same
+  reasoning, is now an italic note at the end, just before the `*Checked:*` line. (Dan,
+  2026-11-27, looking at an entry in the Dubitante app: keep this simple for people who are not
+  technical.)
+- The result's `proposition`, `authorityType` and `authorityTypeBasis` fields are unchanged.
+- Tests: `scripts/test_workflow.py` checks the new order in every stubbed run.
+- Not tested: a live run in the new layout.
+
 ## 1.6.17 (2026-11-27)
 
 `proofread`: a report starts with its findings. The snapshot line and the header block no longer

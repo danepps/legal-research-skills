@@ -754,8 +754,8 @@ const counts = {
 // The footnote-ready entry, rendered here from the fields above (no model writes it).
 const TYPE_LABEL = { cases: 'cases', scholarship: 'scholarship', both: 'cases and scholarship' }
 const entryLines = []
-entryLines.push(`**Proposition:** ${PROPOSITION.replace(/\s+/g, ' ')}`, '')
-entryLines.push(`**Authority type:** ${TYPE_LABEL[authorityType]} (${authorityTypeBasis.replace(/["“”]/g, "'")}).`, '')
+// The entry starts with the cites. The proposition is the heading (or the user's own message),
+// and how the authority type was chosen is a note at the end, beside the checking counts.
 if (cites.length) {
   for (const c of cites) {
     const paren = c.support.type === 'quotation' ? ` (“${c.support.text}”)` : (c.support.text ? ` (${c.support.text.replace(/[.\s]+$/, '')})` : '')
@@ -774,6 +774,7 @@ if (cites.length) {
 }
 if (gaps.length) entryLines.push(`**Gaps:** ${gaps.join(' ')}`, '')
 if (degradation.length) entryLines.push(`**Limits of this run:** ${degradation.join(' ')}`, '')
+entryLines.push(`*Authority type: ${TYPE_LABEL[authorityType]} (${authorityTypeBasis.replace(/["“”*]/g, "'")}).*`, '')
 entryLines.push(`*Checked: ${counts.candidatesFound} candidates found; ${counts.verifiedInFull} verified in full, ${counts.partiallyVerified} partially verified, ${counts.dropped} dropped${counts.notChecked ? `, ${counts.notChecked} not checked` : ''}. Open-web sources only; no Westlaw, Lexis, KeyCite or Shepard's.*`)
 const entry = entryLines.join('\n') + '\n'
 

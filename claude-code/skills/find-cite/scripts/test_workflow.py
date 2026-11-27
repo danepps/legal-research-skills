@@ -326,6 +326,11 @@ check(all(len(x["labels"]) <= 12 for x in all_runs), "no run exceeded the agent 
 check(all(not x["unstubbed"] for x in all_runs), "no unstubbed agent call")
 check(all(list(x["out"].keys())[:6] ==["proposition", "authorityType", "authorityTypeBasis", "exitState", "degradation", "entry"] for x in all_runs),
       "entry comes before the long fields in the result")
+check(all(not x["out"]["entry"].startswith("**Proposition") and "**Authority type" not in x["out"]["entry"] for x in all_runs),
+      "an entry starts with its cites, not the proposition or the authority type")
+check(all(x["out"]["entry"].rstrip("\n").split("\n")[-3].startswith("*Authority type: ") and
+          x["out"]["entry"].rstrip("\n").split("\n")[-1].startswith("*Checked: ") for x in all_runs),
+      "the authority type is a note at the end, before the checking counts")
 for x in all_runs:
     for c in x["out"]["cites"]:
         if c["verification"]["level"] != "verified" and re.search(r", \d+(?:[–-]\d+)? \(", c["citation"]):
