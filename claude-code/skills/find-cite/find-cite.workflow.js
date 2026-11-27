@@ -18,7 +18,7 @@ export const meta = {
 //
 // ---- args ------------------------------------------------------------------------------
 // { skillsDir (required), proposition (required), authorityType: cases|scholarship|both|auto
-//   (default auto), constraints, jurisdiction, asOfDate, zoteroServer, runTag }
+//   (default auto), constraints, jurisdiction, asOfDate, zoteroServer, runTag, scratchDir }
 // Unusable arguments throw before any agent starts.
 let A = args
 if (typeof A === 'string') {
@@ -27,7 +27,7 @@ if (typeof A === 'string') {
   }
 }
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v)
-const KNOWN_ARGS = ['skillsDir', 'proposition', 'authorityType', 'constraints', 'jurisdiction', 'asOfDate', 'zoteroServer', 'runTag']
+const KNOWN_ARGS = ['skillsDir', 'proposition', 'authorityType', 'constraints', 'jurisdiction', 'asOfDate', 'zoteroServer', 'runTag', 'scratchDir']
 const TYPES = ['cases', 'scholarship', 'both', 'auto']
 const argProblems = []
 if (!isObj(A)) argProblems.push('args is missing or is not an object')
@@ -39,6 +39,7 @@ else {
   if (A.authorityType != null && !TYPES.includes(String(A.authorityType).trim().toLowerCase())) argProblems.push(`authorityType must be one of ${TYPES.join(', ')} (got ${JSON.stringify(A.authorityType)})`)
   for (const k of ['constraints', 'jurisdiction', 'asOfDate', 'runTag']) if (A[k] != null && typeof A[k] !== 'string') argProblems.push(`${k} must be a string`)
   if (A.zoteroServer != null && (typeof A.zoteroServer !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(A.zoteroServer))) argProblems.push('zoteroServer must be an MCP server name (letters, digits, dot, dash, underscore)')
+  if (A.scratchDir != null && (typeof A.scratchDir !== 'string' || !/^\/+[^/]/.test(A.scratchDir.trim()) || /["`$\\\n\r]/.test(A.scratchDir))) argProblems.push('scratchDir must be the absolute path of a folder, with no double quote, backtick, dollar sign, backslash or line break')
   const unknown = Object.keys(A).filter((k) => !KNOWN_ARGS.includes(k))
   if (unknown.length) argProblems.push(`unknown argument${unknown.length === 1 ? '' : 's'} ${unknown.join(', ')} (known: ${KNOWN_ARGS.join(', ')})`)
 }
@@ -67,7 +68,22 @@ const fnv = (s) => {
 }
 const RUN_TAG = String(A.runTag || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) ||
   fnv(`${PROPOSITION}|${REQUESTED_TYPE}|${CONSTRAINTS}|${JURISDICTION}|${AS_OF}`).toString(36)
-const scratch = (slot) => `/tmp/fc-${RUN_TAG}-${slot}`
+// Where the agents' temporary files go (1.6.16). /tmp unless args.scratchDir names another folder:
+// a host that confines a run to its own folder (the Dubitante app) passes one inside it, because
+// such a run cannot write /tmp. The folder must exist. A path with a space or another character
+// the shell would split on is written inside double quotes, so the same text works in a command
+// and in the Read tool's file_path once the quotes are dropped.
+const SCRATCH_DIR = String(A.scratchDir || '').trim().replace(/\/+$/, '') || '/tmp'
+const SCRATCH_Q = /^[A-Za-z0-9_.\/@%+=:,-]+$/.test(SCRATCH_DIR) ? '' : '"'
+const scratch = (slot, suffix = '') => `${SCRATCH_Q}${SCRATCH_DIR}/fc-${RUN_TAG}-${slot}${suffix}${SCRATCH_Q}`
+// Every agent that can save a file gets this. Agents given no path made one up (/tmp/<case>.txt),
+// which two agents can collide on and which a confined run refuses (2026-11-26 trial).
+const tempFiles = (slot) => `TEMPORARY FILES: every file you save (a page, a PDF, extracted text, a script's output, a
+quotation) gets one of the paths named above or, for anything else, a name that starts with
+  ${scratch(slot, '-')}
+(for example ${scratch(slot, '-page.html')}). Write nowhere else: not another name in /tmp, not the
+working directory, not the home folder. Other agents are running at the same time, and some hosts
+refuse a write anywhere else. Do not cd to another folder.${SCRATCH_Q ? '\nThe folder\'s path has a space or another special character in it: keep the double quotes around it in every shell command.' : ''}`
 
 // ---- models, caps, budget -------------------------------------------------------------
 // Model constants follow legal-research.workflow.js: Haiku only where a weak read cannot
@@ -333,10 +349,10 @@ const QUOTAS = LANES.length === 2 ? { cases: 3, scholarship: 2 } : { [LANES[0]]:
 const quoteSteps = (slot) => `QUOTATION (optional; checked by script, never by you). If one continuous sentence or phrase of
 at most 40 words, with no double quotation marks inside and no omissions, states the proposition well,
 you may propose it. Copy it from the text you saved, never from memory or a WebFetch summary:
-  cat > ${scratch(slot)}-q.txt <<'FC_QUOTE_END'
+  cat > ${scratch(slot, '-q.txt')} <<'FC_QUOTE_END'
   <the quotation exactly as it appears in the text>
   FC_QUOTE_END
-  python3 "${RECEIPT}" --id ${slot} --quote-file ${scratch(slot)}-q.txt --source ${scratch(slot)}-src.txt --url "<the URL the text came from>" [--pincite <page>] [--first-page <printed number of a PDF's first page>]
+  python3 "${RECEIPT}" --id ${slot} --quote-file ${scratch(slot, '-q.txt')} --source ${scratch(slot, '-src.txt')} --url "<the URL the text came from>" [--pincite <page>] [--first-page <printed number of a PDF's first page>]
 It prints the matched source passage and a final line RECEIPT {json}. Copy that JSON into quoteReceipt
 field for field, and set quote to exactly the text in the quote file. If the status is not_found, fix
 the copy from the text at most twice; if it still fails, leave quote empty and drop quoteReceipt: the
@@ -359,11 +375,11 @@ Use the Bash tool for the scripts below (ToolSearch "select:Bash" if it is not l
    before concluding anything. exists=false only if both fail and a web search for the name finds nothing.
    If the record shows a different case at that cite, or a different year, correct the fields from the
    record and say so in notes; never keep a citation the record contradicts.
-2. OPEN THE OPINION and save its text: python3 "${FETCH_PAGE}" "<url>" --out ${scratch(slot)}-src.txt
+2. OPEN THE OPINION and save its text: python3 "${FETCH_PAGE}" "<url>" --out ${scratch(slot, '-src.txt')}
    Prefer the Caselaw Access Project page (official U.S. Reports star pagination), then CourtListener, LII,
    FindLaw. With more than one candidate URL, test them all in one call first: python3 "${PROBE}" "<url1>" "<url2>".
    Never print the whole file: grep -n -i the saved file for the passage, read small excerpts, or print one
-   printed page with python3 "${VERIFY_QUOTES}" ${scratch(slot)}-src.txt --page <N>.
+   printed page with python3 "${VERIFY_QUOTES}" ${scratch(slot, '-src.txt')} --page <N>.
    Confirm (a) whether the passage supports the proposition: squarely, partially, or not at all; (b) whether it
    is in the MAJORITY opinion (otherwise give opinionPart and opinionAuthor); (c) the printed page it sits on,
    in official U.S. Reports pagination where the text carries it. pinciteSeen=true only if you saw that page
@@ -379,6 +395,7 @@ Use the Bash tool for the scripts below (ToolSearch "select:Bash" if it is not l
    explaining that ...), no quotation marks. fit: one line (canonical cite / recent reaffirmation / ...). Do not
    cite any other authority with a reporter citation in paraphrase, fit, shortfall, treatment or notes.
    signal: a tentative suggestion only. basis: a few honest words (opened at the pincite on CAP; lookup only).
+${tempFiles(slot)}
 ${ACCESS}
 ${SOURCES}`
   : `You are verifying ONE candidate piece of scholarship for a law-review footnote. An unverified citation must
@@ -395,10 +412,10 @@ ${ZOTERO ? '' : 'Do not call any Zotero tool: no library was named for this run.
    first page, year. Correct the candidate's data from the record and say so in notes. Never fill a field from memory.
    Set studentNote=true for a student Note or Comment, and venueTier (1 flagship general law review or top
    peer-edited journal, 2 strong secondary or specialty, 3 other).
-2. OPEN THE TEXT if you can and save it: python3 "${FETCH_PAGE}" "<url>" --out ${scratch(slot)}-src.txt
+2. OPEN THE TEXT if you can and save it: python3 "${FETCH_PAGE}" "<url>" --out ${scratch(slot, '-src.txt')}
    (repository and faculty-page PDFs work; SSRN downloads and HeinOnline usually do not). With more than one
    candidate URL, test them all first: python3 "${PROBE}" "<url1>" "<url2>". Never print the whole file: grep
-   it, read excerpts, or print one page with python3 "${VERIFY_QUOTES}" ${scratch(slot)}-src.txt --page <N> --first-page <first printed page>.
+   it, read excerpts, or print one page with python3 "${VERIFY_QUOTES}" ${scratch(slot, '-src.txt')} --page <N> --first-page <first printed page>.
    Confirm whether the piece supports the proposition (squarely, partially, not at all) and the printed page of
    the supporting passage. pinciteSeen=true only if you saw that page in the text. If only the piece's
    existence and general thesis can be confirmed, set opened=false and give no pincite.
@@ -407,6 +424,7 @@ ${ZOTERO ? '' : 'Do not call any Zotero tool: no library was named for this run.
    explaining that ...), no quotation marks. fit: one line (leading article / standard synthesis / student note,
    only authority found / ...). Do not cite any other authority in paraphrase, fit, shortfall or notes.
    treatmentChecked=false. signal: a tentative suggestion only. basis: a few honest words.
+${tempFiles(slot)}
 ${ACCESS}
 ${SOURCES}`
 

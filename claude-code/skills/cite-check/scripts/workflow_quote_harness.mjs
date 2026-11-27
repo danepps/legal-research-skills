@@ -113,6 +113,10 @@ console.log(JSON.stringify({
   reportSecondaryHeader: section('=== SECONDARY-SOURCE EXISTENCE', 'NOT FOUND'),
   // the scratch-file prefix each source-reading agent was given (one per agent, never shared)
   scratchPrefixes: prompts.filter((p) => /^(verify|re-verify)/.test(p.label)).map((p) => (p.prompt.match(/--out (\/tmp\/cc-[A-Za-z0-9_-]+)-src-/) || [])[1] || ''),
+  // where each agent was told to put a file it saves: the prefix of the TEMPORARY FILES rule, and
+  // how many prompts still name a /tmp path of this workflow (none when args.scratchDir is set)
+  tempFiles: prompts.map((p) => ({ label: p.label, prefix: (p.prompt.match(/gets a name that starts with\n  (.+)\n/) || [])[1] || '' })),
+  tmpNamed: prompts.filter((p) => /(^|[^.\w])\/tmp\/cc-/.test(p.prompt)).length,
   genericScratch: prompts.some((p) => /\/tmp\/(src|q|sup|resup)-/.test(p.prompt)),
   reverifyNamesId: prompts.filter((p) => p.label.startsWith('re-verify')).every((p) => p.prompt.includes(`THE UNIT ID IS ${p.label.split('#')[1]} `)),
 }))

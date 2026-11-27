@@ -359,5 +359,33 @@ r = run({"args": args(authorityType="cases"),
          "verify": {"Mathews v. United States, 485 U.S. 58 (1988)": vcase("Mathews v. United States", "485 U.S. 58", "1988", basis="Opened on CAP.")}})
 check(r["ok"] and ".;" not in r["out"]["entry"] and ". ;" not in r["out"]["entry"], "a basis ending in a period does not leave stray punctuation in the entry")
 
+# ---------------------------------------------------------------------------------------
+print("temporary files: /tmp by default, args.scratchDir when a host names a folder")
+M = "Mathews v. United States, 485 U.S. 58 (1988)"
+
+
+def scratch_run(**kw):
+    return run({"args": args(authorityType="cases", runTag="t1", **kw), "search": {"cases": [cand(M)]},
+                "verify": {M: vcase("Mathews v. United States", "485 U.S. 58", "1988")}})
+
+
+p = scratch_run()["verifyPrompt"]
+check("--out /tmp/fc-t1-c1-src.txt" in p and "cat > /tmp/fc-t1-c1-q.txt <<" in p and "--source /tmp/fc-t1-c1-src.txt" in p,
+      "with no scratchDir the paths are the /tmp ones, unquoted, as before")
+check("TEMPORARY FILES:" in p and "\n  /tmp/fc-t1-c1-\n" in p and "Do not cd to another folder." in p and "double quotes around it" not in p,
+      "the verifier is told where any other file it saves must go")
+p = scratch_run(scratchDir="/runs/r1/work/.tmp/")["verifyPrompt"]
+check("--out /runs/r1/work/.tmp/fc-t1-c1-src.txt" in p and "/tmp/fc-" not in p.replace("/.tmp/fc-", "") and '"/runs' not in p,
+      "a plain scratchDir replaces /tmp in every path, unquoted (a trailing slash is dropped)")
+p = scratch_run(scratchDir="/Users/a b/Dan's Project/.dubitante/runs/r1/work/.tmp")["verifyPrompt"]
+Q = '"/Users/a b/Dan\'s Project/.dubitante/runs/r1/work/.tmp/fc-t1-c1'
+check('--out %s-src.txt"' % Q in p and 'cat > %s-q.txt" <<' % Q in p and '--quote-file %s-q.txt" --source %s-src.txt" --url' % (Q, Q) in p
+      and '--page <N>' in p and '%s-src.txt" --page <N>' % Q in p, "a scratchDir with a space is double-quoted whole, suffix included")
+check('\n  %s-"\n' % Q in p and "keep the double quotes around it" in p, "and the rule says to keep the quotes")
+check(len(re.findall(r"(?<![\"\w.])/Users/a b", p)) == 0, "no unquoted copy of that path is left in the prompt")
+for bad, why in (("runs/r1", "a relative path"), ("/", "the root alone"), ("/a/$HOME/b", "a dollar sign"), ('/a/"b', "a double quote"),
+                 ("/a/`b`", "a backtick"), ("/a\\b", "a backslash"), ("/a\nb", "a line break"), (7, "a number")):
+    check(refused(run({"args": args(scratchDir=bad)}), "scratchDir must be the absolute path of a folder"), "refused: " + why)
+
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)

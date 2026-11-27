@@ -2,6 +2,41 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.16 (2026-11-27)
+
+`legal-research`, `cite-check` and `find-cite`: every agent that can save a file is told where its
+temporary files go, and a new optional `scratchDir` argument moves them out of `/tmp`. No Codex skill
+changed; the companion Codex version stays **1.7.8**.
+
+- Why. A program that launches a run inside a file boundary (the Dubitante app, with its boundary
+  on) lets the run write only its own folder. The workflows named `/tmp` paths for the cite-checkers
+  and refutation voters, and gave the `legal-research` readers, scouts and gap-fill agents no path at
+  all, so those agents made up their own (`/tmp/<case>.txt`). Two agents can collide on such a name,
+  and a confined run refuses every one of them: on 2026-11-26 a confined research memo verified 11
+  authorities where the same question unconfined verified 19.
+- `scratchDir` (all three workflows): the absolute path of an existing folder. Left out, the folder
+  is `/tmp` and every path the workflows already named is unchanged. A path with a space is written
+  inside double quotes in the commands the agents are given. A relative path, or one with a double
+  quote, backtick, dollar sign, backslash or line break, stops the workflow before any agent starts.
+  The skills say to pass it only when the launching program supplies a folder.
+- A `TEMPORARY FILES` rule in each prompt whose agent can run a command: any file it saves gets a
+  name starting with a prefix unique to the run and to that agent, in the scratch folder, and it
+  writes nowhere else and does not `cd` elsewhere. This is new for `legal-research`'s scope, survey,
+  read and gap-fill agents and for `cite-check`'s existence and history agents; the agents that
+  already had a named path keep it and get the rule for anything else. This rule is in every run,
+  with or without `scratchDir`.
+- Tests: the stubbed-agent tests of the three workflows check the default paths, a plain folder, a
+  folder with a space, that no prompt names a `/tmp` path of the workflow once `scratchDir` is set,
+  that no two file-saving agents share a prefix, and each refused form of the argument.
+- Checked live on 2026-11-27 through the Dubitante app's opt-in tests with its boundary on, one run
+  each. Research memo, the question of the 2026-11-26 trial: the agents saved their files in the
+  run's folder under the given names and none in `/tmp`; 14 authorities verified and 5 unverified,
+  then 16 and 3 once the app also worked around a Claude Code refusal that is separate from this
+  change. Cite-check on a six-footnote fixture: complete, with the same counts as the unconfined run
+  of 2026-11-26. One run each is not a measure of quality, and the memo counts vary from run to run.
+- Not tested: `find-cite` live with `scratchDir`; a folder whose path has a space, live; any run
+  outside the app with `scratchDir` set.
+
 ## 1.6.15 (2026-11-26)
 
 `proofread` and `cite-check` check that every section symbol (§) and paragraph symbol (¶) in a Word

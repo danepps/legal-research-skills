@@ -57,6 +57,7 @@ let readPrompt = ''
 let revisePrompt = ''
 let repairPrompt = ''
 const optsByLabel = {}
+const prompts = []
 // A memo with real sentences, so edits have something to find. "The rule is settled." occurs twice.
 const DRAFT = [
   '# Memo', '',
@@ -73,6 +74,7 @@ const parallel = async (fns) => Promise.all(fns.map((f) => f().catch(() => null)
 const candidate = (v, i) => `Case ${v}-${i}, ${100 + i} U.S. ${v.slice(1)}${i} (1990)`
 async function agent(prompt, opts) {
   const L = opts.label || opts.phase
+  prompts.push({ label: L, prompt })
   labels.push(L)
   calls[L] = (calls[L] || 0) + 1
   optsByLabel[L] = { model: opts.model, effort: opts.effort }
@@ -195,6 +197,10 @@ try {
     finalHasPostDraftBullet: /- POST-DRAFT ADDITIONS/.test(finalPrompt),
     finalHasWeaveRule: /\* TABLES:/.test(finalPrompt) && /\* COUNTS:/.test(finalPrompt) && /\* CITATION STYLE:/.test(finalPrompt),
     finalPostDraftSection: cut('=== POST-DRAFT ADDITIONS ===', '=== DRAFT MEMO ==='),
+    // where each agent was told to put a file it saves: the prefix of the TEMPORARY FILES rule, and
+    // how many prompts still name a /tmp path of this workflow (none when args.scratchDir is set)
+    tempFiles: prompts.map((p) => ({ label: p.label, prefix: (p.prompt.match(/gets a name that starts with\n  (.+)\n/) || [])[1] || '' })),
+    tmpNamed: prompts.filter((p) => /(^|[^.\w])\/tmp\/lr-/.test(p.prompt)).length,
     finalMemoSection: finalPrompt.slice(finalPrompt.indexOf('=== DRAFT MEMO ===')),
   }))
 } catch (e) {
