@@ -402,6 +402,17 @@ def main() -> int:
         report = run_dir / "report.md"
         report_text = report.read_text(encoding="utf-8")
         errors.extend(validate_symbol_spacing(document.get('formatting', {}), report_text))
+        body, separator, footer = report_text.rpartition("\n---\n")
+        expected_footer = (
+            f"\nDraft: `{manifest.get('draft_path')}`  \n"
+            f"Source SHA-256: `{source_hash}`  \n"
+        )
+        if not separator or footer != expected_footer:
+            errors.append("report.md provenance must be the exact draft and source hash in the final block; rerun build_report.py")
+        if any(line.startswith(("Draft:", "Source SHA-256:", "> Created by:", "> Model:",
+                                "> Generated:", "> Elapsed:", "> Tokens:", "Topic:",
+                                "Date:", "By:", "Production details:")) for line in body.splitlines()):
+            errors.append("report.md provenance appears before the final block; rerun build_report.py")
         if not report_text.strip():
             errors.append("report.md is empty")
         for heading in ("Needs your attention", "Confirmed errors", "Author queries", "Pre-publication checks", "Style consistency (optional)", "Couldn't check"):

@@ -230,8 +230,6 @@ def main() -> int:
     lines = [
         "# Internal Proofread Report",
         "",
-        f"Draft: `{manifest.get('draft_path')}`  ",
-        f"Source SHA-256: `{manifest.get('draft_sha256')}`  ",
         f"Run status: **{status}**",
         "",
         "## Needs your attention",
@@ -265,7 +263,12 @@ def main() -> int:
     lines.extend(["## Extraction and workflow limitations", ""])
     for limitation in manifest.get("limitations", []):
         lines.append(f"- {limitation}")
-    lines.append("")
+    lines.extend([
+        "", "---", "",
+        f"Draft: `{manifest.get('draft_path')}`  ",
+        f"Source SHA-256: `{manifest.get('draft_sha256')}`  ",
+        "",
+    ])
     (run_dir / "report.md").write_text("\n".join(lines), encoding="utf-8")
     manifest["status"] = status
     manifest["updated_at"] = utc_now()

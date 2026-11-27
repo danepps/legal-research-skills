@@ -761,8 +761,7 @@ const reportAgent = () => agent(
 ${COUNTS.footnotes ?? '?'} footnotes${COUNTS.endnotes ? `, ${COUNTS.endnotes} endnotes` : ''}). Audience: the authors (law professors) — direct,
 no filler, no praise padding. Your ENTIRE final message must be the report markdown, nothing else.
 
-PROVENANCE (put this under the title as a one-line blockquote):
-snapshot ${SNAPTIME || 'time unknown'}${SHA256 ? `, SHA-256 ${SHA256}` : ''}; plain-text pass.
+Write no provenance line (no snapshot time, no hash): the script adds it after your report.
 
 CONFIRMED PROSE FINDINGS (every one re-verified in context; already sorted into draft
 order; "location" is the reader-facing label — containing Part/Section and/or approximate
@@ -805,7 +804,6 @@ ${JSON.stringify(conventions, null, 1)}
 
 STRUCTURE:
 # Proofread — ${DRAFT_NAME}
-the provenance blockquote
 _A one-line TL;DR: counts by severity, and the single most important catch._
 ${coverageGapText ? `## Coverage gaps
 FIRST, before the findings: list every COVERAGE GAP above, one line each, stating plainly which
@@ -867,7 +865,7 @@ if (!report) {
   const line = (f) => `- **${f.locationPath || f.location}** — \`${f.find}\` — ${f.problem}${f.fix ? ` — ${f.fix}` : ''}${f.verifierNote ? ` _(${f.verifierNote})_` : ''}`
   report = [
     `# Proofread — ${DRAFT_NAME}`,
-    `> snapshot ${SNAPTIME || 'time unknown'}${SHA256 ? `, SHA-256 ${SHA256}` : ''}; plain-text pass. REPORT AGENT FAILED — this is a mechanical listing of the verified findings, not the narrated report.`,
+    `> REPORT AGENT FAILED — this is a mechanical listing of the verified findings, not the narrated report.`,
     coverageGapText ? `\n## Coverage gaps\n${coverageGapText}` : '',
     `\n## Confirmed findings (${confirmed.length})`,
     ...confirmed.map(line),
@@ -878,6 +876,12 @@ if (!report) {
     `\n## Degradation\n${degradation.map((d) => `- ${d}`).join('\n')}`,
   ].filter(Boolean).join('\n')
 }
+// Provenance is the report's LAST line, written here (1.6.17). It used to be a blockquote under
+// the title, typed by the report agent: a 64-character hash between the title and the first
+// finding, and one more thing a model could mistype. A line the agent wrote anyway is dropped.
+const PROVENANCE = `> snapshot ${SNAPTIME || 'time unknown'}${SHA256 ? `, SHA-256 ${SHA256}` : ''}; plain-text pass.`
+report = report.split('\n').filter((l) => !/^\s*>\s*snapshot\b.*\b(SHA-256|plain-text pass)/i.test(l)).join('\n')
+  .replace(/\s+$/, '') + `\n\n${PROVENANCE}\n`
 
 return {
   report,

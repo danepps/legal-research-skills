@@ -42,11 +42,19 @@ def codex_report_for(path: Path, original: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        header = "\n".join(path.read_text(encoding="utf-8-sig").splitlines()[:24])
+        text = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError):
         return False
     expected_draft = f"Draft: `{original}`"
-    return bool(CODEX_PROVENANCE_RE.search(header)) and expected_draft in header
+    header = "\n".join(text.splitlines()[:24])
+    _, separator, footer = text.rpartition("\n---\n")
+    # Keep the legacy header window; new reports identify themselves in the final
+    # block only. Incidental mentions elsewhere in a long report confer no ownership.
+    for block in (header, footer if separator else ""):
+        drafts = [line.rstrip() for line in block.splitlines() if line.startswith("Draft:")]
+        if CODEX_PROVENANCE_RE.search(block) and drafts == [expected_draft]:
+            return True
+    return False
 
 
 def main() -> int:
@@ -111,26 +119,27 @@ def main() -> int:
     completed_at = generated.astimezone(timezone.utc)
     elapsed_seconds = int((completed_at.astimezone(timezone.utc) - started.astimezone(timezone.utc)).total_seconds())
 
-    report_lines = report_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    report = report_path.read_text(encoding="utf-8")
+    body, separator, footer = report.rpartition("\n---\n")
+    if not separator:
+        parser.error(f"canonical report has no final provenance block: {report_path}")
+    report_lines = footer.splitlines(keepends=True)
     visible_draft_line = f"Draft: `{manifest.get('original_draft_path', original)}`  \n"
     for index, line in enumerate(report_lines):
         if line.startswith("Draft: `"):
             report_lines[index] = visible_draft_line
             break
-    report = "".join(report_lines)
-    title, separator, body = report.partition("\n")
-    if not separator:
-        parser.error(f"canonical report has no title line: {report_path}")
     provenance = (
-        f"{title}\n\n"
         f"> Created by: **Codex**  \n"
         f"> Model: `{model}`  \n"
         f"> Generated: {generated.strftime('%Y-%m-%d %H:%M:%S %Z')}  \n"
         f"> Elapsed: {format_elapsed(elapsed_seconds)}  \n"
         f"> Tokens: {token_text}\n\n"
     )
-    published = provenance + body.lstrip("\n").rstrip() + (
-        f"\n\n---\n\nTopic: Proofreading of {original.stem}\n"
+    # Strip only newlines from the canonical footer: the source-hash line's two
+    # trailing spaces are part of the host application's snapshot contract.
+    published = body.rstrip() + "\n\n---\n\n" + provenance + "".join(report_lines).strip("\n") + (
+        f"\n"
         f"Date: {generated.strftime('%Y-%m-%d')}\n"
         f"By: Codex-{model}\n"
         f"Production details: {token_text}; elapsed through audit: {format_elapsed(elapsed_seconds)}; "

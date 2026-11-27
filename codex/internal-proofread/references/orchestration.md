@@ -34,6 +34,22 @@ Examples have reader-facing note labels; counts are matching symbol runs, so §�
 counts once. Report the extraction limitations for unsupported text input and
 unexamined stories.
 
+## Report publication
+
+Start the report with its title, followed immediately by its findings summary or
+first section; the existing run-status summary stays there. All provenance belongs
+in one final block after the body and a `---` rule. `build_report.py` puts `Draft:`
+and `Source SHA-256:` there; `publish_report.py` uses the original draft path and
+adds the existing `> Created by:`, `> Model:`, `> Generated:`, `> Elapsed:`, and
+`> Tokens:` lines, followed by `Date:`, `By:`, and `Production details:` in that
+same block. Preserve their wording and values; omit `Topic:` because it repeats
+the title. The source-hash line is exactly `Source SHA-256: ` followed by the hash
+in backticks and two trailing spaces, which the host uses to verify its snapshot.
+Readiness rejects misplaced, duplicated, or altered canonical provenance; rebuild
+an old canonical report before publishing it. Replacement of a visible report
+requires the exact Codex attribution and this draft's path, found together in
+either the new final block or the legacy first 24 lines.
+
 ## Independent recall pass
 
 The recall pass is mandatory. Standard review generates 900–1,200-word body packets and note packets bounded at 1,200 words or 40 notes. Exhaustive review uses 600–900-word body packets and note packets bounded at 900 words or 30 notes. Generate them only after the first merge so each packet can identify existing spans as do-not-repeat locations. The second reader must search for semantic editing residue, nonadjacent repetition, transposed defined terms, malformed noun phrases, internal name/date/number conflicts, and a second defect in a block where the first pass found something else. It must not turn accepted variants or stylistic elegance into errors.
