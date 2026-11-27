@@ -63,6 +63,7 @@ else {
   if (A.unitNotes != null && !Array.isArray(A.unitNotes) && !isObj(A.unitNotes)) argProblems.push('unitNotes must be a list of [id, footnote] pairs or an object')
   else if (Array.isArray(A.unitNotes) && A.unitNotes.some((p) => !Array.isArray(p) || p.length !== 2)) argProblems.push('unitNotes must be a list of [id, footnote] pairs')
   for (const k of ['formChecks', 'zoteroHits', 'sourceHits', 'sourceLookupSummary', 'costModel']) if (A[k] != null && !isObj(A[k])) argProblems.push(`${k} must be an object`)
+  if (A.scratchDir != null && (typeof A.scratchDir !== 'string' || !/^\/+[^/]/.test(A.scratchDir.trim()) || /["`$\\\n\r]/.test(A.scratchDir))) argProblems.push('scratchDir must be the absolute path of a folder, with no double quote, backtick, dollar sign, backslash or line break')
 }
 if (argProblems.length) throw new Error(`cite-check workflow: unusable arguments (${argProblems.join('; ')}). No agent was started. Launch the workflow again with args as a JSON object built from the step-3 output.`)
 const EXTRACT_PATH = A.extractPath || ''
@@ -303,7 +304,31 @@ const RUN_TAG = (() => {
   for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0
   return h.toString(36)
 })()
-const scratch = (tag) => `/tmp/cc-${RUN_TAG}-${tag}`
+// Where those files go (1.6.16). /tmp unless args.scratchDir names another folder: a host that
+// confines a run to its own folder (the Dubitante app) passes one inside it, because such a run
+// cannot write /tmp. The folder must exist. A path with a space or another character the shell
+// would split on is written inside double quotes, so the same text works in a command and in the
+// Read tool's file_path once the quotes are dropped.
+const SCRATCH_DIR = String(A.scratchDir || '').trim().replace(/\/+$/, '') || '/tmp'
+const SCRATCH_Q = /^[A-Za-z0-9_.\/@%+=:,-]+$/.test(SCRATCH_DIR) ? '' : '"'
+const scratch = (tag, suffix = '') => `${SCRATCH_Q}${SCRATCH_DIR}/cc-${RUN_TAG}-${tag}${suffix}${SCRATCH_Q}`
+// A short stable tag for an agent that has no index of its own (an existence or history batch).
+const slotOf = (kind, text) => {
+  let h = 5381
+  const t = String(text || '')
+  for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0
+  return `${kind}-${h.toString(36)}`
+}
+// Every agent that can save a file gets this, not only the ones given a path for a source's text.
+// An agent with no path makes one up (/tmp/<case>.txt), which two agents can collide on and which
+// a confined run refuses (2026-11-26 trial of the legal-research workflow).
+const tempFiles = (tag) => `TEMPORARY FILES: every file you save (a downloaded page or PDF, extracted text, a script's
+output) gets a name that starts with
+  ${scratch(tag, '-')}
+(for example ${scratch(tag, '-page.html')}), unless these instructions give its exact path. Write
+nowhere else: not another name in /tmp, not the working directory, not the home folder. Other
+agents are running at the same time, and some hosts refuse a write anywhere else. Do not cd to
+another folder.${SCRATCH_Q ? '\nThe folder\'s path has a space or another special character in it: keep the double quotes around it in every shell command.' : ''}`
 
 // Collapse a resolved citation to a unique-source key: drop the pincite and any
 // parenthetical so a case cited 30 times at different pages fetches ONCE.
@@ -516,19 +541,19 @@ TOOLS: WebSearch and WebFetch. If not callable, first run ToolSearch query "sele
 
 // Deterministic quote check: the model proposes, the script proves. Shared by
 // every prompt whose agent fetches source text (verify / tail / re-verify). `sp` is the agent's
-// own scratch prefix (see scratch()).
+// own scratch tag (see scratch()).
 const deterministicCheck = (sp) => `DETERMINISTIC QUOTE CHECK (MANDATORY before judging any quote by eye):
 save each fetched source's FULL text to a scratch file with --out (this bypasses the stdout
 truncation caps — a plain "> file" redirect does NOT) and run the deterministic verifier over every
 quote you were given, e.g.:
-  python3 "${FETCH_PAGE}" "<url>" --out ${sp}-src-<slug>.txt
-  python3 "${VERIFY_QUOTES}" ${sp}-src-<slug>.txt --json ${sp}-q-<slug>.json
+  python3 "${FETCH_PAGE}" "<url>" --out ${scratch(sp, '-src-<slug>.txt')}
+  python3 "${VERIFY_QUOTES}" ${scratch(sp, '-src-<slug>.txt')} --json ${scratch(sp, '-q-<slug>.json')}
 where <slug> is a short filename-safe tag for the source (letters, digits, dashes — no spaces) and
 the JSON file holds [{"id":..,"quote":"..","pincite":".."}] with every quote copied EXACTLY. Always
 use the --json route: passing quotes as shell arguments breaks on any quote that contains a double
 quote, a dollar sign, a backtick or an apostrophe, and a quote mangled by the shell is reported
 not_found through no fault of the draft.
-Use EXACTLY that path prefix: other agents are running at the same time in the same /tmp, and a
+Use EXACTLY that path prefix: other agents are running at the same time in the same folder, and a
 shared filename would let you verify a quote against someone else's source or quote list.
 (--out prints a one-line summary; NEVER cat the file into your context — it can be an entire
 book-length source. Read at most targeted excerpts around the verifier's reported matches.)
@@ -537,7 +562,7 @@ tool's returned text to a scratch file VERBATIM, unedited), a saved page, a past
 it in a file and run the verifier against it. Once source text is in hand, no quote gets a
 verbatim/mismatch verdict by eye.
 For pincite checking, add --first-page to the same command:
-  python3 "${VERIFY_QUOTES}" ${sp}-src-<slug>.txt --json ${sp}-q-<slug>.json --first-page <printed page no. of the PDF's first page>
+  python3 "${VERIFY_QUOTES}" ${scratch(sp, '-src-<slug>.txt')} --json ${scratch(sp, '-q-<slug>.json')} --first-page <printed page no. of the PDF's first page>
 Per quote it reports a status — verbatim | normalized (typographic-only differences: curly vs
 straight quotes, dashes, hyphenation, ligatures — identical as printed) | altered (matches with the
 draft's MARKED ellipses/brackets honored) | not_found — plus the printed PAGE of the match when the
@@ -1050,6 +1075,7 @@ STEP 2 — for each citation:
 - Opinions that postdate your training data are real; do not downgrade a 2025–2026 cite because
   you do not recognize the case.
 Pace yourself; if the script reports a 429 rate-limit, wait and retry once.
+${tempFiles(slotOf('ex', JSON.stringify(batch)))}
 ${SOURCES}`
 
 // Secondary sources (articles / books / statutes / internet) cited WITHOUT a quotation never
@@ -1127,6 +1153,7 @@ from an opencasebook.org URL slug; the Stanford Law Review's own page showed the
   routinely ROTATE author order and sit in different volumes; aggregators conflate the parts. Match
   the exact part the draft cites before reporting any author-order or volume discrepancy.
 - Author ORDER specifically is never a finding without the source's own title page or landing page.
+${tempFiles(slotOf('sec', JSON.stringify(batch)))}
 ${SOURCES}`
 
 const existGate = !tight(RESERVE_REPORT + RESERVE_REVERIFY + existBatches.length * COST.exist + secBatches.length * COST.existWeb)
@@ -1448,7 +1475,7 @@ for. Load the units (proposition sentence, full footnote, signal, parenthetical)
   python3 "${PREPARE_SUPPORT}" "${EXTRACT_PATH}" --pick ${units.map((u) => u.id).join(' ')}
 ${units.map(supportUnitLine).join('\n')}
 Read a pincited page from your saved source file with:
-  python3 "${VERIFY_QUOTES}" ${scratch(b.tag)}-src-<slug>.txt --page <pincite> [--first-page <printed no. of the PDF's first page>]
+  python3 "${VERIFY_QUOTES}" ${scratch(b.tag, '-src-<slug>.txt')} --page <pincite> [--first-page <printed no. of the PDF's first page>]
 Return one entry per support id in supportVerdicts (separate from the quote verdicts).
 ${SUPPORT_RULES}
 `
@@ -1496,7 +1523,7 @@ unlock path — do NOT keep retrying):
   must support the proposition. Dead link -> try archive.org and report the archived URL in
   urlFinding. SSRN/bepress 403s are bot-blocks, not dead — mark "bot-blocked but presumptively live".
 
-${deterministicCheck(scratch(b.tag))}
+${deterministicCheck(b.tag)}
 
 PER-QUOTE VERDICTS (see the discipline rules below — apply them strictly):
 - verbatim: matches the source word-for-word.
@@ -1549,6 +1576,7 @@ METADATA-FINDING DISCIPLINE (violations of each caused false report findings in 
   report it as "possible off-by-one — confirm marker convention", never as a confident correction.
 ${supportFoldBlock(b)}
 ${CALIBRATION}
+${tempFiles(b.tag)}
 ${SOURCES}`
 
 // Tail batch prompt for the degraded (single-quote long-tail) sources.
@@ -1562,9 +1590,10 @@ ${chunk.map((b) => `- key ${b.key} | ${b.kind} | ${b.source}\n    [id ${b.quotes
 
 ${TOOL_CAP(2 + 3 * chunk.length)}
 
-${deterministicCheck(scratch(`t${i}`))}
+${deterministicCheck(`t${i}`)}
 
 ${CALIBRATION}
+${tempFiles(`t${i}`)}
 ${SOURCES}`
 
 const verifyCost = (b) => (b.zotero && b.zotero.text ? COST.verifyZotero : COST.verify)
@@ -1811,15 +1840,15 @@ parenthetical, opinion note), via Bash (load it with ToolSearch "select:Bash" if
 
 STEP 2 — fetch each source ONCE (stop after ${MIRROR_CAP} attempts; then every unit on it is
 "unverifiable" with the unlock path). Save the FULL text with --out (never cat it into context):
-  python3 "${FETCH_PAGE}" "<url>" --out ${scratch(tag)}-sup-<slug>.txt
-(<slug> is a short filename-safe tag for the source. Use exactly that prefix: other agents share /tmp.)
+  python3 "${FETCH_PAGE}" "<url>" --out ${scratch(tag, '-sup-<slug>.txt')}
+(<slug> is a short filename-safe tag for the source. Use exactly that prefix: other agents share the folder.)
 A source whose LOCAL COPY or ZOTERO line says its text is on disk needs no fetch at all: read the pincited page
 straight from that file.
 For a case, CourtListener's HTML opinion or CAP static HTML carries star pagination; for a journal
 PDF, use --first-page only after calibrating printed labels against physical segments, including covers.
 For a LOCAL COPY without eligible printed pagination, disclose the locator as not judged; do not
 pass the draft pin as a file-page number. Then read the PINCITED page of each eligible unit:
-  python3 "${VERIFY_QUOTES}" ${scratch(tag)}-sup-<slug>.txt --page <pincite> [--first-page <printed first page>]
+  python3 "${VERIFY_QUOTES}" ${scratch(tag, '-sup-<slug>.txt')} --page <pincite> [--first-page <printed first page>]
 (a range "512-514" works; if the file has no page boundaries the tool says so — then grep -n the
 proposition's key terms and read a targeted excerpt with sed -n). For a WHOLE-WORK unit, read the
 holding / abstract / introduction and the part that bears on the claim; cap your effort.
@@ -1827,6 +1856,7 @@ holding / abstract / introduction and the part that bears on the claim; cap your
 STEP 3 — one verdict per unit, per the rules below. Echo each support id and sourceKey exactly.
 
 ${SUPPORT_RULES}
+${tempFiles(tag)}
 ${SOURCES}`
 
 let supportDedicated = [...supportByKey.entries()]
@@ -2005,9 +2035,10 @@ with its severity and source text: it is reported as the finding, in place of th
 
 ${TOOL_CAP(10)}
 
-${deterministicCheck(scratch(`r${f.id}`))}
+${deterministicCheck(`r${f.id}`)}
 
 ${CALIBRATION}
+${tempFiles(`r${f.id}`)}
 ${SOURCES}`
 
 // 2026-11-15 review, three changes here:
@@ -2077,8 +2108,8 @@ ${supportUnitById.get(f.id) && !['case', 'statute'].includes(supportUnitById.get
 Source it read: ${f.sourceIdentified || f.source}; locator: ${f.locator || '(none)'}; posture: ${f.posture || '(none)'}
 Source text it reported: ${f.sourceText ? `"${f.sourceText}"` : '(none reported)'}
 
-STEP 2 — open the source yourself (${MIRROR_CAP} attempts max; --out to ${scratch(`rs${f.id}`)}.txt, then
-  python3 "${VERIFY_QUOTES}" ${scratch(`rs${f.id}`)}.txt --page <pincite> [--first-page N])
+STEP 2 — open the source yourself (${MIRROR_CAP} attempts max; --out to ${scratch(`rs${f.id}`, '.txt')}, then
+  python3 "${VERIFY_QUOTES}" ${scratch(`rs${f.id}`, '.txt')} --page <pincite> [--first-page N])
 and check specifically for these artifact classes:
 - PARAPHRASED CLAIM: did the first checker test a stronger claim than the draft's own words (its
   hedges, its framing verb)? Judge the draft's sentence as written.
@@ -2096,6 +2127,7 @@ sourceText. If it is an artifact, upheld=false with the corrected verdict.
 ${TOOL_CAP(10)}
 
 ${SUPPORT_RULES}
+${tempFiles(`rs${f.id}`)}
 ${SOURCES}`
 const supportToReverify = supportFindings.filter((f) => f.verdict === 'contradicted' || f.verdict === 'not_supported')
 const supportReverified = new Map()
@@ -2349,6 +2381,7 @@ low when the case did not resolve or a tool errored. Never report from memory.
 Pace yourself; on a 429 rate-limit, wait and retry once — then move on and mark that case
 "tool-error" rather than retrying again.
 
+${tempFiles(slotOf('h', JSON.stringify(batch)))}
 ${TOOL_CAP(4 + 3 * batch.length)}`
 const historyBatches = []
 const historyTargets = HISTORY_ON ? historyCases.filter((c) => c.exists) : []

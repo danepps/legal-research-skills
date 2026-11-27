@@ -14,7 +14,8 @@ export const meta = {
 // ---- args (passed from the skill) -------------------------------------------
 // args = { skillsDir: '<plugin root>/skills', question, mode: 'caselaw'|'scholarship'|'both', outputStyle: 'academic'|'practitioner',
 //          jurisdiction, asOfDate, notes, deep:boolean, projectDir:string,
-//          finalizeModel:string (optional; unset = the session model), escalate:boolean (default true) }
+//          finalizeModel:string (optional; unset = the session model), escalate:boolean (default true),
+//          runTag:string (optional), scratchDir:string (optional; the folder for agents' temporary files, default /tmp) }
 // The arguments are checked before any agent starts (1.6.11, 2026-11-23). Arguments that
 // arrived as a string that does not parse used to be replaced with none, and the whole pipeline
 // then ran on the placeholder question below. The proofread workflow failed live that way on
@@ -33,6 +34,7 @@ else {
   if (A.outputStyle != null && !['academic', 'practitioner'].includes(String(A.outputStyle).toLowerCase())) argProblems.push('outputStyle must be academic or practitioner')
   for (const k of ['jurisdiction', 'asOfDate', 'notes', 'projectDir', 'skillsDir', 'finalizeModel']) if (A[k] != null && typeof A[k] !== 'string') argProblems.push(`${k} must be a string`)
 }
+if (A && typeof A === 'object' && !Array.isArray(A) && A.scratchDir != null && (typeof A.scratchDir !== 'string' || !/^\/+[^/]/.test(A.scratchDir.trim()) || /["`$\\\n\r]/.test(A.scratchDir))) argProblems.push('scratchDir must be the absolute path of a folder, with no double quote, backtick, dollar sign, backslash or line break')
 if (argProblems.length) throw new Error(`legal-research workflow: unusable arguments (${argProblems.join('; ')}). No agent was started. Launch the workflow again with args as a JSON object, as in SKILL.md step 4.`)
 const QUESTION = A.question
 const MODE = (A.mode || 'both').toLowerCase()
@@ -55,6 +57,33 @@ const RUN_TAG = (() => {
   for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0
   return h.toString(36)
 })()
+// Where the agents' temporary files go (1.6.16). /tmp unless args.scratchDir names another folder:
+// a host that confines a run to its own folder (the Dubitante app) passes one inside it, because
+// such a run cannot write /tmp. The folder must exist. A path with a space or another character
+// the shell would split on is written inside double quotes, so the same text works in a command
+// and in the Read tool's file_path once the quotes are dropped.
+const SCRATCH_DIR = String(A.scratchDir || '').trim().replace(/\/+$/, '') || '/tmp'
+const SCRATCH_Q = /^[A-Za-z0-9_.\/@%+=:,-]+$/.test(SCRATCH_DIR) ? '' : '"'
+const scratch = (slot, suffix = '') => `${SCRATCH_Q}${SCRATCH_DIR}/lr-${RUN_TAG}-${slot}${suffix}${SCRATCH_Q}`
+// A short stable slot name for an agent that has no index of its own (a reader, a survey vector).
+const slotOf = (kind, text) => {
+  let h = 5381
+  const t = String(text || '')
+  for (let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0
+  return `${kind}-${h.toString(36)}`
+}
+// Every agent that can save a file gets this. Only the cite-checkers and the refutation voters
+// used to be given a path; the readers, the scouts and the gap-fill agents were given none and
+// made one up (/tmp/<case>.txt, /tmp/o.json), which two agents can collide on and which a
+// confined run refuses: on 2026-11-26 such a run verified 11 authorities where an unconfined
+// one verified 19.
+const tempFiles = (slot) => `TEMPORARY FILES: every file you save (a downloaded page or PDF, extracted text, a script's
+output) gets a name that starts with
+  ${scratch(slot, '-')}
+(for example ${scratch(slot, '-page.html')}), unless these instructions give its exact path. Write
+nowhere else: not another name in /tmp, not the working directory, not the home folder. Other
+agents are running at the same time, and some hosts refuse a write anywhere else. Do not cd to
+another folder.${SCRATCH_Q ? '\nThe folder\'s path has a space or another special character in it: keep the double quotes around it in every shell command.' : ''}`
 
 const DO_CASES = MODE === 'caselaw' || MODE === 'both'
 const DO_SCHOLARSHIP = MODE === 'scholarship' || MODE === 'both'
@@ -703,6 +732,7 @@ vector for the doctrine's origins / pre-modern ancestry (older cases often use D
 terminology — include period vocabulary and predecessor doctrines in those queries), the canonical
 era, and the most recent developments. A question-worded search alone will cluster on the modern
 canon and miss the early material.
+${tempFiles('scope')}
 ${SOURCES}`,
   { schema: PLAN_SCHEMA, phase: 'Scope', effort: 'medium' }
 ))
@@ -755,6 +785,7 @@ HARD RULES — this is a SEARCH-ONLY sweep:
   and a repository copy of the same paper, report the repository URL.
 
 Quality over quantity — prefer foundational/landmark and directly on-point sources over noise.
+${tempFiles(slotOf('sv', v.label))}
 ${SOURCES}`
 
 // Scholarship modes also sweep the user's own Zotero library (via the Zotero MCP server).
@@ -772,7 +803,8 @@ INSTRUCTIONS:
 - Run a few keyword searches against the library (vary terms across the issues above).
 - Report up to ${CANDIDATES_PER_VECTOR} relevant items. For each: the best citation you can build
   from the item's metadata, set zoteroKey to the Zotero item key, and ONE line on relevance.
-  Leave url empty unless the metadata has one. No quotes; you haven't read the texts.`
+  Leave url empty unless the metadata has one. No quotes; you haven't read the texts.
+${tempFiles('sv-zotero')}`
 
 // v6: sweep the user's own project directory — prior memos, downloaded opinions, notes. Nearly
 // free and compounds across runs (the Codex-side comparison memo drew real depth from this).
@@ -793,7 +825,8 @@ INSTRUCTIONS:
   kind "other" (or "case"/"article" if the file IS one), and ONE line on why it's relevant.
 - These are the user's own files: they may contain prior AI research memos. Those are valuable
   MAPS (what was already found) but are NOT citable authority — say so in the why line.
-- If the directory is empty of relevant material, return {"candidates": []}. Never invent files.`
+- If the directory is empty of relevant material, return {"candidates": []}. Never invent files.
+${tempFiles('sv-local')}`
 
 phase('Survey')
 // Each survey job is retried once if its agent dies; a vector that still returns nothing is a
@@ -940,6 +973,7 @@ INSTRUCTIONS:
   one-line relevance from the search snippet ONLY. Do NOT supply a proposition, holding, quote, or
   pin cite from memory; leave them empty.
 - Never invent anything. Verbatim means verbatim.
+${tempFiles(slotOf('rd', `${c.citation || ''}|${c.url || ''}`))}
 ${BLUEBOOK}
 ${SOURCES}`
 
@@ -1155,6 +1189,7 @@ OVERALL QUESTION: ${QUESTION}
   citation, key proposition, one short verbatim quote, pinpoint cite; opened=true).
 - If you cannot find or confirm it, set opened=false and say so in fetchNote. NEVER invent a
   citation, quote, or pin cite — an honest miss is fine; the draft already notes the gap.
+${tempFiles(slotOf(retry ? 'gapr' : 'gap', m))}
 ${BLUEBOOK}
 ${SOURCES}`
   const gapJob = (m, retry) => () =>
@@ -1209,8 +1244,8 @@ const toVerify = [
 
 // Per-run, per-chunk, per-authority scratch path for source dumps (CLAUDE-07). `idx` is the
 // authority's global index, or the literal "<index>" placeholder the agent substitutes.
-const srcFile = (ch, idx) => `/tmp/lr-${RUN_TAG}-c${ch[0].gi}-src-${idx}.txt`
-const refuteFile = (c, k) => `/tmp/lr-${RUN_TAG}-refute-${c.gi}-v${k}.txt`
+const srcFile = (ch, idx) => scratch(`c${ch[0].gi}`, `-src-${idx}.txt`)
+const refuteFile = (c, k) => scratch(`refute-${c.gi}-v${k}`, '.txt')
 
 const chunkPrompt = (ch) => `You are a cite-checker confirming authorities a legal memo relies on.
 
@@ -1256,10 +1291,11 @@ source to check a quote, settle verbatim-ness deterministically: python3 "${FETC
 verbatim/normalized/altered/not_found status (and word_diff on misses) is the answer; save your
 judgment for whether the passage supports the proposition.`
     : 'Be efficient — a reliable search/catalog/API hit confirming the case name, reporter, and year is enough for existence; only open the source if something looks off. You are confirming, not re-researching (but if you DO open a source to check a quote, run it through the deterministic verifier: python3 "' + FETCH_PAGE + '" "<url>" --out ' + srcFile(ch, '<index>') + ' && python3 "' + VERIFY_QUOTES + '" ' + srcFile(ch, '<index>') + ' "<quote>").'}
-SCRATCH FILES: other cite-check agents are running at the same time and share /tmp, so write
+SCRATCH FILES: other cite-check agents are running at the same time and share the folder, so write
 source dumps ONLY to the path pattern above, substituting the authority's [bracketed] index for
 <index> (one file per authority); never reuse a file for a different authority and never write to
-a generic name like /tmp/src.txt.
+a generic name like src.txt.
+${tempFiles(`c${ch[0].gi}`)}
 ACCESS DISCIPLINE: at most 2 access attempts per authority, via WebSearch/WebFetch only — never
 browser automation, library proxies, or SSO/login flows. If a source sits behind a paywall or bot
 wall, stop and report the strongest basis you actually reached (secondary-corroboration or
@@ -1431,7 +1467,7 @@ run the quote verifier —
   python3 "${FETCH_PAGE}" "<url>" --out ${refuteFile(c, k)}
   python3 "${VERIFY_QUOTES}" ${refuteFile(c, k)} "<the quote>"
 (text obtained any other way — Zotero fulltext, a saved page — goes into that same scratch file).
-Use EXACTLY that path — other voters and cite-checkers are running concurrently in the same /tmp,
+Use EXACTLY that path — other voters and cite-checkers are running concurrently in the same folder,
 and a shared filename would let you verify the quote against someone else's source.
 Its status is the verbatim-ness answer: verbatim/normalized -> the quote is good;
 altered -> check the marked alterations are honest; not_found -> read the word_diff — draft_only/
@@ -1479,6 +1515,7 @@ AUTHORITY: ${c.citation}
 URL: ${c.url || '(locate it yourself)'}
 Proposition: ${c.proposition || ''}
 Quote: ${c.quote || '(none)'} ${c.pincite ? '@ ' + c.pincite : ''}
+${tempFiles(`refute-${c.gi}-v${k}`)}
 ${SOURCES}`
 
 const refuteVoter = (c, k) => agent(refutePrompt(c, k), {

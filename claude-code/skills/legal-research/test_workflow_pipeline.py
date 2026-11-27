@@ -40,6 +40,7 @@ Skipped without node.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -295,6 +296,33 @@ if p.returncode != 0:
     print(p.stderr[-800:])
 for (text, want), g in zip(FIXTURES, got or [None] * len(FIXTURES)):
     check(g == want, "%s: %r" % ("negative" if want else "not negative", text[:70]))
+
+print("temporary files: every agent that can save one is told where, and args.scratchDir moves them all")
+FILE_AGENTS = ("Scope", "survey:", "read:", "gapfill", "verify:", "refute:")
+
+
+def temp_prefixes(r):
+    return {t["label"]: t["prefix"] for t in r["tempFiles"] if t["label"].startswith(FILE_AGENTS)}
+
+
+r = run("gapfill+refuted", extra={"runTag": "t1"})
+px = temp_prefixes(r)
+kinds = {k for k in FILE_AGENTS if any(l.startswith(k) for l in px)}
+check(kinds == set(FILE_AGENTS), "scope, survey, read, gap-fill, verify and refute agents all ran (%s)" % sorted(kinds))
+check(all(re.fullmatch(r"/tmp/lr-t1-[A-Za-z0-9-]+-", p) for p in px.values()),
+      "with no scratchDir each one's prefix is /tmp/lr-<runTag>-<its own slot>- (%s)" % sorted(set(px.values()))[:3])
+readers = [p for l, p in px.items() if l.startswith("read:")]
+check(len(readers) == 8 and len(set(readers)) == 8, "the eight readers have eight different prefixes")
+check(len(set(px.values())) == len(px), "no two of these agents share a prefix")
+check(r["tmpNamed"] > 0, "the /tmp paths are named in the prompts, as before")
+DIR = "/Users/a b/Proj/.dubitante/runs/r1/work/.tmp"
+r = run("gapfill+refuted", extra={"runTag": "t1", "scratchDir": DIR + "/"})
+px2 = temp_prefixes(r)
+check(set(px2) == set(px) and all(p == '"%s/%s"' % (DIR, q[len("/tmp/"):]) for (l, p), (l2, q) in zip(sorted(px2.items()), sorted(px.items()))),
+      "with scratchDir the same names sit in that folder, double-quoted because the path has a space")
+check(r["tmpNamed"] == 0, "and no prompt names a /tmp path of this workflow")
+r = run("gapfill+refuted", extra={"runTag": "t1", "scratchDir": "/runs/r1/work/.tmp"})
+check(all(p.startswith("/runs/r1/work/.tmp/lr-t1-") for p in temp_prefixes(r).values()) and r["tmpNamed"] == 0, "a plain path is not quoted")
 
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)

@@ -121,5 +121,11 @@ check(lean != deep_on, "the stubbed run tells lean from deep (%s, %s)" % (lean, 
 check(harness_exit("false") == lean, "deep:'false' is lean, not deep")
 check(harness_exit("true") == deep_on, "deep:'true' is deep")
 
+print("scratchDir (the folder for the agents' temporary files)")
+check(passed(run(dict(GOOD, scratchDir="/runs/r 1/work/.tmp"))), "an absolute path, spaces included, is accepted")
+for bad, why in (("runs/r1", "a relative path"), ("/", "the root alone"), ("/a/$HOME/b", "a dollar sign"), ('/a/"b', "a double quote"),
+                 ("/a/`b`", "a backtick"), ("/a\\b", "a backslash"), ("/a\nb", "a line break"), (7, "a number")):
+    check(refused(run(dict(GOOD, scratchDir=bad)), "scratchDir must be the absolute path of a folder"), "refused: " + why)
+
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)

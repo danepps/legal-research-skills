@@ -151,5 +151,11 @@ r = run({"extractPath": "/x/e.json", "caseCites": "x", "ledger": 3})
 check(refused(r, "caseCites") and "ledger" in r["message"] and "unitCount" in r["message"] and "secondaryCites" in r["message"],
       "every problem is named at once")
 
+print("scratchDir (the folder for the agents' temporary files)")
+check(run(dict(GOOD, scratchDir="/runs/r 1/work/.tmp"))["ok"], "an absolute path, spaces included, is accepted")
+for bad, why in (("runs/r1", "a relative path"), ("/", "the root alone"), ("/a/$HOME/b", "a dollar sign"), ('/a/"b', "a double quote"),
+                 ("/a/`b`", "a backtick"), ("/a\\b", "a backslash"), ("/a\nb", "a line break"), (7, "a number")):
+    check(refused(run(dict(GOOD, scratchDir=bad)), "scratchDir must be the absolute path of a folder"), "refused: " + why)
+
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)

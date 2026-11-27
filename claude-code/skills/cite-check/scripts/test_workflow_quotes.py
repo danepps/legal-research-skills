@@ -24,6 +24,7 @@ Needs node (the workflow is JavaScript). Skips, with exit 0, when node is absent
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -162,6 +163,25 @@ with tempfile.TemporaryDirectory() as td:
     r = run("exist-dead")
     check(r["agents"].count("exist:5") == 2 and any("5 case cite(s) got no existence result" in d for d in r["degradation"]) and r["exitState"] == "complete_with_limits",
           "a batch that dies twice is disclosed (%s)" % r["degradation"])
+
+    print("temporary files: every agent that can save one is told where, and args.scratchDir moves them all")
+    FILE_AGENTS = ("exist:", "verify:", "re-verify:")
+
+    def temp_prefixes(r):
+        return [(t["label"], t["prefix"]) for t in r["tempFiles"] if t["label"].startswith(FILE_AGENTS)]
+
+    r = run("corrected", {"runTag": "t1"})
+    px = temp_prefixes(r)
+    check({k for k in FILE_AGENTS if any(l.startswith(k) for l, _ in px)} == set(FILE_AGENTS), "existence, verify and re-verify agents all ran (%s)" % [l for l, _ in px])
+    check(all(re.fullmatch(r"/tmp/cc-t1-[A-Za-z0-9-]+-", p) for _, p in px) and len({p for _, p in px}) == len(px),
+          "with no scratchDir each has its own /tmp/cc-<runTag>-<tag>- prefix (%s)" % [p for _, p in px][:3])
+    check(r["tmpNamed"] > 0 and len(r["scratchPrefixes"]) >= 5 and all(r["scratchPrefixes"]), "the /tmp paths are named in the prompts, as before")
+    DIR = "/Users/a b/Proj/.dubitante/runs/r1/work/.tmp"
+    r = run("corrected", {"runTag": "t1", "scratchDir": DIR})
+    px2 = temp_prefixes(r)
+    check([p for _, p in px2] == ['"%s/%s"' % (DIR, p[len("/tmp/"):]) for _, p in px],
+          "with scratchDir the same names sit in that folder, double-quoted because the path has a space")
+    check(r["tmpNamed"] == 0, "and no prompt names a /tmp path of this workflow")
 
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)

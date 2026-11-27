@@ -535,6 +535,10 @@ Workflow({
 })
 ```
 
+`scratchDir` (optional, not shown above) is the folder where the workflow's agents keep their
+temporary files; left out, it is `/tmp`. Leave it out unless the program that launched this
+session gives you a folder to pass, as one that confines a run to its own folder does.
+
 Pass `args` as a JSON object, exactly as shown, never as a JSON-encoded string, and copy the
 step-3 values into it without rewording or trimming them. The workflow checks its arguments
 before it starts any agent (2026-11-23): `extractPath`, `footnoteCount`, `unitCount`,

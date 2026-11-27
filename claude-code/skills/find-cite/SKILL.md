@@ -64,6 +64,10 @@ Workflow({
   }
 })
 ```
+`scratchDir` (optional, not shown above) is the folder where the workflow's agents keep their
+temporary files; left out, it is `/tmp`. Leave it out unless the program that launched this
+session gives you a folder to pass, as one that confines a run to its own folder does.
+
 Pass `args` as a JSON object, never as a JSON-encoded string, and leave out any optional field
 you have no value for. The workflow checks its arguments before any agent starts: a missing
 `skillsDir` or `proposition`, an unknown `authorityType`, a misspelled argument name, or a
