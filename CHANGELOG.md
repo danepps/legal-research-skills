@@ -2,6 +2,30 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.19 (2026-11-27)
+
+`cite-check`: a clean result is no longer counted as a finding. No Codex skill changed (its
+history and treatment findings are structured rows with a verdict); the companion Codex version
+stays **1.7.9**.
+
+- Five live runs on the same six-note draft (2026-11-27, Dubitante, Sonnet) agreed on every real
+  finding, but their findings export held 7 to 11 items. The extra items were clean results that
+  agents had written into finding fields instead of leaving them empty: treatment text such as
+  'None naming this case as overruled or limited', metadata lines such as 'No metadata problems:
+  … matches the fetched record', and, in two runs, history lines that only restated the case-name
+  or year mismatch already reported for the same cite. On a re-run, such items would have shown in
+  'Since the last report' as new or resolved findings when nothing had changed.
+- The workflow now drops them before building the export, the counts and the report agent's
+  data: a treatment, history or metadata line that opens with 'None', 'Nothing', 'No adverse …',
+  'No metadata problems …' and the like; and a history line on a cite with a case-name or year
+  mismatch that names no history outcome (affirmed, reversed, vacated, remanded, cert., overruled,
+  and so on). A real treatment flag (one run's 'Limited or declined to follow in part by a state
+  court. People v. Brown …') and a real history outcome on a mismatched cite are kept.
+- Tests: `scripts/test_workflow_case_metadata.py` feeds the five runs' texts through the stubbed
+  workflow; seven checks fail on 1.6.18. `scripts/workflow_case_harness.mjs` can now stub the
+  verify agents' metadata lines and returns the report agent's history data.
+- Not tested: a live run.
+
 ## 1.6.18 (2026-11-27)
 
 `find-cite`: an entry starts with its cites. No Codex skill changed; the companion Codex version
