@@ -382,5 +382,24 @@ with tempfile.TemporaryDirectory() as td:
     flags = hist.split("TREATMENT FLAGS", 1)[1]
     check("Shirley" not in flags.split("NOT CHECKED")[0], "report data: Shirley is not listed as a treatment flag")
 
+    # ---- 'not truncated' is not a cut; read-in-full is the agent's answer (the 1.6.21 run) ----
+    print("treatmentReadInFull, and 'not truncated' in text")
+    full = {c: {"coverage": "Full output read, not truncated. No docket pass (SCOTUS)."} for c in LIVE_EXISTENCE}
+    r = run(live, {"existence": LIVE_EXISTENCE, "history": full})
+    check(not any("not read in full" in x for x in r["degradation"]), "'not truncated' without the field: no limit (%s)" % r["degradation"])
+    mixed = {"287 U.S. 435": {"treatmentReadInFull": True, "coverage": "first ~3.5KB of output only"},
+             "356 U.S. 396": {"treatmentReadInFull": False, "coverage": "Full output read."}}
+    r = run(live, {"existence": LIVE_EXISTENCE, "history": mixed})
+    d = [x for x in r["degradation"] if "not read in full" in x]
+    check(len(d) == 1 and "356 U.S. 396" in d[0] and "287 U.S. 435" not in d[0], "the field decides when present (%s)" % d)
+
+    print("a metadata line that only confirms the cite")
+    meta = ["Citation 503 U.S. 540, 549 (1992) is correct for the passage. [source: https://static.case.law/us/503/html/0540-01.html]",
+            "The volume is correct but the first page should be 540 [source: https://example.org/synthetic-a]",
+            "year: the draft gives 1991; the record gives 1992 [source: https://example.org/synthetic-b]"]
+    r = run(live, {"existence": LIVE_EXISTENCE, "verifyMeta": meta})
+    md_items = [i["label"] for i in r["items"] if i["kind"] == "metadata"]
+    check(md_items == meta[1:], "the 'is correct' line dropped, the two with a discrepancy kept (%s)" % md_items)
+
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)
