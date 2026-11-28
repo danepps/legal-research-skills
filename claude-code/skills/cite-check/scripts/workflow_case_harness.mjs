@@ -25,6 +25,7 @@ const budget = { spent: () => 0, total: 0, remaining: () => 1e9 }
 const labels = []
 const logs = []
 let reportPrompt = ''
+let historyPromptSeen = ''
 const parallel = async (fns) => Promise.all(fns.map((f) => f().catch(() => null)))
 const ids = (prompt, re) => [...prompt.matchAll(new RegExp(re.source, 'g'))].map((m) => Number(m[1]))
 const noteOf = new Map((args.unitNotes || []).map(([i, n]) => [Number(i), n]))
@@ -47,6 +48,7 @@ async function agent(prompt, opts) {
     return { results: cites.filter((c) => ex[c] !== null).map((c) => ({ citation: c, exists: true, basis: 'courtlistener-api', ...(ex[c] || {}) })) }
   }
   if (L.startsWith('history')) {
+    historyPromptSeen = historyPromptSeen || prompt
     const h = stub.history || {}
     return { cases: [...prompt.matchAll(/- cite: ([^|]+?) \|/g)].map((m) => m[1].trim()).map((c) => ({ cite: c, status: 'checked', historyBasis: 'none-found', confidence: 'moderate', ...(h[c] || {}) })) }
   }
@@ -76,6 +78,7 @@ console.log(JSON.stringify({
   reportLimits: section('=== RUN LIMITS', 'Return ONLY'),
   reportHistory: section('=== SUBSEQUENT HISTORY & TREATMENT', 'NOT CHECKED / NOT RESOLVED'),
   reportNotChecked: section('NOT CHECKED / NOT RESOLVED', '==='),
+  historyPrompt: historyPromptSeen,
   reportAsksForSection: /Case name or year does not match the reporter cite/.test(reportPrompt) && /never write that case cites were confirmed with no issues/.test(reportPrompt),
   logs,
 }))
