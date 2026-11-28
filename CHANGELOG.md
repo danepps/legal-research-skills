@@ -2,6 +2,25 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.23 (2026-11-27)
+
+`cite-check`: a lower court's treatment is still a flag. No Codex skill changed; the companion
+Codex version stays **1.7.9**.
+
+- In the live run that checked 1.6.22 the history agent read *People v. Brown*, 218 P.3d 733
+  (Colo. App. 2009) ('other divisions of this court have declined to follow Mathews with respect
+  to the affirmative defense') and set it aside, on the ground that a state intermediate court does
+  not undermine a Supreme Court holding. Four earlier runs had flagged it as 'scope unconfirmed'.
+- The history prompt now says the treating court's rank does not matter: a state or lower court
+  that declines to follow or limits the case is a flag, with the court named, and the author
+  decides what it means for the draft. Section G is advisory, so the conservative reading wins.
+- 1.6.22 otherwise behaved as intended in that run: every lookup read in full
+  (`treatmentReadInFull` true for all five), no false limit, and a findings export of exactly the
+  six real findings.
+- Tests: `scripts/test_workflow_case_metadata.py` checks the sentence reaches the history prompt
+  (the harness now returns that prompt).
+- Not tested: a live run.
+
 ## 1.6.22 (2026-11-27)
 
 `cite-check`: two false positives from the live run that checked 1.6.21. No Codex skill changed;

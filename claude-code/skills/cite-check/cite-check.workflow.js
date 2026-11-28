@@ -2370,9 +2370,11 @@ FOR EACH CASE, via Bash (load with ToolSearch "select:Bash" if needed):
    name_search_treatment_probe. A signal row whose snippet names THIS case's parties and says it
    was overruled / abrogated / limited / declined to follow / superseded is a treatment flag:
    set treatmentFlag true and, in treatment, name the treating case, cite, date, and the scope if
-   the snippet shows it, else "scope unconfirmed — open <case>". Rows about other cases are noise,
-   and so is a row where THIS case is the one doing the overruling or disapproving: set
-   treatmentFlag false, leave treatment empty, and say what you set aside in note. Copy routes.* counts and
+   the snippet shows it, else "scope unconfirmed — open <case>". The treating court's rank does
+   not matter: a state or lower court that declines to follow or limits THIS case is a flag; name
+   the court in treatment, and the author decides what it means for the draft. Rows about other
+   cases are noise, and so is a row where THIS case is the one doing the overruling or
+   disapproving: set treatmentFlag false, leave treatment empty, and say what you set aside in note. Copy routes.* counts and
    distinct_cases_returned into treatmentRoutes with most_recent_citing_date.
 3. If the cite does not resolve, the tool says so: run
      python3 "${CL_TOOLS}" find "<case name>" --cite "<cite>" --year <year>

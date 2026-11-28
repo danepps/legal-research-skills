@@ -401,5 +401,10 @@ with tempfile.TemporaryDirectory() as td:
     md_items = [i["label"] for i in r["items"] if i["kind"] == "metadata"]
     check(md_items == meta[1:], "the 'is correct' line dropped, the two with a discrepancy kept (%s)" % md_items)
 
+    # ---- the treating court's rank does not matter (the 1.6.22 run set aside People v. Brown) --
+    r = run(live, {"existence": LIVE_EXISTENCE})
+    check("treating court's rank does" in r["historyPrompt"] and "state or lower court that declines to follow" in r["historyPrompt"],
+          "history prompt: a state or lower court declining to follow is a flag")
+
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)
