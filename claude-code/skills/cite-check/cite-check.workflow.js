@@ -290,6 +290,14 @@ async function gatedFanout(jobs, costs, reserve, strict = false) {
 
 const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 
+// Clean results written into a finding field (2026-11-27). The history and metadata schemas say
+// "empty if none", but agents sometimes write the clean result instead: "None naming this case as
+// overruled…", "No metadata problems: … matches the fetched record". Five live runs on one six-note
+// draft carried 0 to 4 such items each, so the same findings came out as 7 to 11, and a re-run's
+// "since the last report" diff would list them as new or resolved. A finding never opens this way.
+const NULL_RESULT = /^\W*(none|nothing|no (adverse|later|subsequent|treatment|history|omitted|metadata|problem|issue|discrepanc|record|case|row|result|finding|change|correction)\w*|not (found|applicable)|n\/a)\b/i
+const isNullResult = (s) => !String(s || '').trim() || NULL_RESULT.test(String(s).trim())
+
 // Scratch files (2026-11-15 review; the legal-research workflow fixed the same thing as CLAUDE-07).
 // Agents run concurrently and share /tmp. The prompts used to name /tmp/src-<slug>.txt and
 // /tmp/q-<slug>.json with a slug the agent chose, so two re-verify agents on the same source could
@@ -1198,7 +1206,7 @@ for (const r of existRaw.filter(Boolean)) {
 }
 const secBad = secondaryExistence.filter((s) => s.exists === false && s.basis !== 'unconfirmed')
 const secUnconfirmed = secondaryExistence.filter((s) => s.exists === false && s.basis === 'unconfirmed')
-const secMetaAll = secondaryExistence.flatMap((s) => (s.metadataFindings || []).map((m) => `[${s.key}] ${m}`))
+const secMetaAll = secondaryExistence.flatMap((s) => (s.metadataFindings || []).filter((m) => !isNullResult(m)).map((m) => `[${s.key}] ${m}`))
 // Evidence gate (2026-10-19): a metadata CORRECTION is only an "Error (fix)" when the agent tagged
 // the source record it actually opened ("[source: …]"). Untagged lines were derived from search
 // snippets / third-party listings and go to the report as "confirm", never as a fix — the
@@ -2412,6 +2420,18 @@ if (historyBatches.length && !tight(RESERVE_REPORT + COST.history)) {
 } else if (!HISTORY_ON && CASE_CITES.length) {
   degradation.push('subsequent-history / treatment pass turned off by the caller (history:false)')
 }
+// Keep only real findings in historyFinding and treatment (see NULL_RESULT). A historyFinding that
+// only restates a case-name or year mismatch already reported for the same cite (two of the five
+// 2026-11-27 runs: "Year error, not a history item.") is the same finding twice; it names no
+// history outcome, so it is dropped here and the case-metadata item stands.
+const HISTORY_OUTCOME = /\b(aff'?d|affirm\w*|rev'?d|revers\w*|vacat\w*|remand\w*|cert\w*|overrul\w*|abrogat\w*|supersed\w*|modif\w*|withdr[ae]wn|rehearing|en banc|dismiss\w*)/i
+const metaMismatchCites = citeMeta.map((m) => norm(m.cite)).filter(Boolean)
+for (const h of historyResults) {
+  if (h.historyFinding && isNullResult(h.historyFinding)) h.historyFinding = ''
+  if (h.historyFinding && !HISTORY_OUTCOME.test(h.historyFinding) &&
+      metaMismatchCites.some((c) => ` ${norm(h.cite)} `.includes(` ${c} `))) h.historyFinding = ''
+  if (h.treatment && isNullResult(h.treatment)) h.treatment = ''
+}
 const historyByCite = new Map(historyResults.map((h) => [norm(h.cite), h]))
 const historyFindings = historyResults.filter((h) => h.status === 'checked' && h.historyFinding)
 const treatmentFlags = historyResults.filter((h) => h.status === 'checked' && h.treatment)
@@ -2674,7 +2694,7 @@ const fmtSupport = (f) => `- n.${f.footnote} [${f.verdict}${f.severity === 'high
   `\n    basis: ${f.basis || 'unstated'}`
 const supportSec = (pred) => supportFindings.filter((f) => !f.artifact && !f.unaudited && pred(f)).map(fmtSupport).join('\n') || '(none)'
 
-const metaFindingsFlat = [...new Set(verifyResults.flatMap((v) => v.metadataFindings || []))]
+const metaFindingsFlat = [...new Set(verifyResults.flatMap((v) => v.metadataFindings || []))].filter((m) => !isNullResult(m))
 // Same evidence gate as the existence pass: a verify agent's metadata correction is a fix only
 // when it names the record it read; untagged lines are "confirm" items.
 const metaFindingsEvidenced = metaFindingsFlat.filter((m) => EVIDENCED.test(m))

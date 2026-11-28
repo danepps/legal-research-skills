@@ -11,6 +11,7 @@
 //   _stub.secondary   { "<source key>": { exists, basis } } (default: exists, web)
 //   _stub.history     { "<reporter cite>": { status, note } } (default: checked)
 //   _stub.quotes      { "<unit id>": "<verdict>" } (default: verbatim)
+//   _stub.verifyMeta  [ "<metadataFindings line>", ... ] returned by every quote-verify agent (default: none)
 // Segment agents resolve each quote unit to the first full case cite in its footnote (from the
 // ledger), so the quote side is plain.
 import fs from 'node:fs'
@@ -52,7 +53,7 @@ async function agent(prompt, opts) {
   if (L.startsWith('verify')) {
     const key = prompt.match(/SOURCE-BUNDLE KEY \(echo it back exactly\): (.+)/)[1].trim()
     const q = stub.quotes || {}
-    return { sourceKey: key, sourceIdentified: 'stub source', fetchBasis: 'authoritative-reproduction',
+    return { sourceKey: key, sourceIdentified: 'stub source', fetchBasis: 'authoritative-reproduction', metadataFindings: stub.verifyMeta || [],
       verdicts: ids(prompt, /\[id (\d+)\]/).map((id) => ({ id, verdict: q[id] || 'verbatim', severity: 'low', basis: 'authoritative-reproduction' })) }
   }
   if (L.startsWith('zotero-sweep')) return { results: [] }
@@ -73,6 +74,7 @@ console.log(JSON.stringify({
   reportCaseBlock: section('=== CASE NAME / YEAR DOES NOT MATCH', '=== URL FINDINGS'),
   reportExistence: section('=== CASE EXISTENCE ===', '=== CASE NAME / YEAR'),
   reportLimits: section('=== RUN LIMITS', 'Return ONLY'),
+  reportHistory: section('=== SUBSEQUENT HISTORY & TREATMENT', 'NOT CHECKED / NOT RESOLVED'),
   reportAsksForSection: /Case name or year does not match the reporter cite/.test(reportPrompt) && /never write that case cites were confirmed with no issues/.test(reportPrompt),
   logs,
 }))

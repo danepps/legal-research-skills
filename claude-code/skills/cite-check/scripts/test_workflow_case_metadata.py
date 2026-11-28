@@ -13,6 +13,9 @@
 2. exitState is complete_with_limits exactly when `degradation` is non-empty, and each limit is a
    plain sentence with its count and cause (the live run ended complete_with_limits with an empty
    list; the cause was a history lookup that got HTTP 429 twice), with no duplicate lines.
+3. A clean result written into a finding field is not a finding (2026-11-27, five live runs of the
+   same draft gave 7 to 11 findings): "None naming …" treatment text, "No metadata problems …"
+   metadata lines, and a history line that only restates the case-name or year mismatch.
 
 Drives the workflow through scripts/workflow_case_harness.mjs with stubbed agents (no model, no
 network). Skips, with exit 0, when node is absent.
@@ -303,6 +306,44 @@ with tempfile.TemporaryDirectory() as td:
     r = run(dict(base, history=False), {"existence": ok3})
     invariant(r, "history turned off")
     check(r["degradation"] == ["subsequent-history / treatment pass turned off by the caller (history:false)"], "history:false is its own single line (%s)" % r["degradation"])
+
+    # ---- clean results are not findings (2026-11-27) -----------------------------------
+    # Texts as the five live runs of 2026-11-27 returned them (abridged).
+    print("clean results in finding fields: the 2026-11-27 runs")
+    clean_history = {
+        "287 U.S. 435": {"historyFinding": 'Draft cite says "(1934)"; CourtListener shows decided 1932-12-19. Year error, not a history item.',
+                         "treatment": "None naming this case. Signal rows (Spradley, Black, Webb, Jimenez Recio) concern other cases."},
+        "356 U.S. 396": {"historyFinding": 'Draft cite "Sherman v. United States, 356 U.S. 396 (1958)" does not match: 356 U.S. 396 resolves to Thomas v. Arizona.',
+                         "treatment": "None naming Thomas v. Arizona (356 U.S. 390). Signal rows are routine overruled objections."},
+        "411 U.S. 423": {"treatment": "None found naming Russell as overruled or limited."},
+        "485 U.S. 58": {"treatment": "Limited or declined to follow in part by a state court. People v. Brown, 218 P.3d 733 (Colo. App. 2009), says 'other divisions of this court have declined to follow Mathews with respect to the affirmative defense'."},
+        "503 U.S. 540": {"treatment": "No adverse treatment found naming Jacobson."},
+    }
+    clean_meta = ["No metadata problems: Jacobson v. United States, 503 U.S. 540 (1992) matches the fetched record [source: https://static.case.law/us/503/html/0540-01.html]",
+                  "No metadata problems found: Jacobson v. United States, 503 U.S. 540 (1992). [source: https://static.case.law/us/503/html/0540-01.html]",
+                  "year: the draft gives 1991 for a synthetic source; the record gives 1992 [source: https://example.org/synthetic-record]"]
+    r = run(live, {"existence": LIVE_EXISTENCE, "history": clean_history, "verifyMeta": clean_meta})
+    kinds = [i["kind"] for i in r["items"]]
+    tr = [i for i in r["items"] if i["kind"] == "treatment"]
+    check(len(tr) == 1 and tr[0]["cite"] == "485 U.S. 58" and "People v. Brown" in tr[0]["label"],
+          "treatment: only the Mathews flag; four 'None …' texts dropped (%s)" % [i["label"][:40] for i in tr])
+    check("history" not in kinds, "history: the two restated name/year mismatches are not history findings (%s)" % [i["label"][:50] for i in r["items"] if i["kind"] == "history"])
+    md_items = [i["label"] for i in r["items"] if i["kind"] == "metadata"]
+    check(md_items == [clean_meta[2]], "metadata: the two 'No metadata problems' lines dropped, the real one kept (%s)" % md_items)
+    check(kinds.count("case-metadata") == 2, "the case-metadata items still stand (%d)" % kinds.count("case-metadata"))
+    check(r["counts"]["history"]["treatmentFlags"] == 1 and r["counts"]["history"]["missingHistory"] == 0,
+          "counts: 1 treatment flag, 0 missing history (%s)" % r["counts"]["history"])
+    hist = r["reportHistory"]
+    add = hist.split("ADD SUBSEQUENT HISTORY", 1)[1].split("TREATMENT FLAGS", 1)[0]
+    check("(none)" in add and "Year error" not in hist, "report data: nothing to add under subsequent history")
+    check("People v. Brown" in hist and "None naming" not in hist and "None found" not in hist, "report data: the Mathews flag, no 'None …' text")
+
+    print("a history outcome on a mismatched cite is still a finding")
+    real = dict(clean_history)
+    real["356 U.S. 396"] = {"historyFinding": "The draft omits that the judgment was vacated and remanded (synthetic outcome for this test)."}
+    r = run(live, {"existence": LIVE_EXISTENCE, "history": real})
+    hi = [i for i in r["items"] if i["kind"] == "history"]
+    check(len(hi) == 1 and hi[0]["cite"] == "356 U.S. 396" and "vacated" in hi[0]["label"], "history: the vacated-and-remanded line stays (%s)" % [i["label"][:50] for i in hi])
 
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)
