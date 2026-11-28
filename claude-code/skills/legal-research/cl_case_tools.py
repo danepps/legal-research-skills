@@ -444,10 +444,13 @@ def cmd_citing(args):
         "rows_returned": len(recent) + len(probe) + len(name_rows) + len(name_probe),
         "total_citing": total,
         "most_recent_citing_date": max([r["date"] for r in recent + name_rows if r.get("date")] or [None]),
-        "recent_citing": recent,
+        # The treatment rows come before the recent-citing listing (2026-11-27): an agent that
+        # cut the output short with `head -c 3500` read only the recent rows and reported five
+        # cases as treatment-checked without seeing a treatment row.
         "treatment_probe": {"total_with_treatment_language": probe_total, "most_relevant": probe},
-        "name_search_only": name_only,
         "name_search_treatment_probe": name_probe,
+        "recent_citing": recent,
+        "name_search_only": name_only,
         "caveats": (
             "Two routes ran: the citation graph (`cites:`) and a full-text phrase search for the case "
             "name filed after the decision. They miss different cases; name_search_only lists what the "

@@ -83,5 +83,32 @@ merged = clt.merge_entries(head, tail)
 check("merge_entries: union in date order, no duplicate", [e["entry"] for e in merged] == [1, 2, 9])
 check("merge_entries: empty tail is a no-op", clt.merge_entries(head, []) == head)
 
+# citing: the treatment rows print before the recent-citing listing (2026-11-27). A cite-check
+# history agent cut each output at 3,500 bytes and saw only the recent rows.
+import argparse, contextlib, io, json  # noqa: E402
+row = lambda i, snippet="": {"cluster_id": i, "case": f"Case {i} v. Other", "date": "2020-01-01", "snippet": snippet, "url": ""}
+stubs = {
+    "resolve_cluster": lambda case, name=None: {"cluster_id": 1, "case_name": "Mathews v. United States", "date_filed": "1988-02-24", "how": "stub"},
+    "opinions_for_cluster": lambda cid: [{"id": 11}],
+    "search_citing": lambda ids, terms, limit, by_date=True: (5, [row(100 + k, "x" * 2000) for k in range(5)]) if terms is None
+                     else (1, [row(200, "declined to follow Mathews")]),
+    "search_name_route": lambda name, date, terms, limit, by_date=True: ("q", 1, [row(300, "Mathews limited")] if terms else [row(301)]),
+}
+saved = {k: getattr(clt, k) for k in stubs}
+for k, v in stubs.items():
+    setattr(clt, k, v)
+buf = io.StringIO()
+try:
+    with contextlib.redirect_stdout(buf):
+        clt.cmd_citing(argparse.Namespace(case="485 U.S. 58", name="Mathews v. United States", limit=10))
+finally:
+    for k, v in saved.items():
+        setattr(clt, k, v)
+text = buf.getvalue()
+keys = list(json.loads(text))
+check("citing: treatment_probe and name_search_treatment_probe come before recent_citing",
+      keys.index("treatment_probe") < keys.index("recent_citing") and keys.index("name_search_treatment_probe") < keys.index("recent_citing"))
+check("citing: the treatment row is inside the first 3,500 bytes", "declined to follow Mathews" in text[:3500])
+
 print("\n%d failure(s)" % fails)
 sys.exit(1 if fails else 0)

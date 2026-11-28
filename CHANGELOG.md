@@ -2,6 +2,32 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.20 (2026-11-27)
+
+`cite-check`: a treatment check whose output was cut short is listed as not checked. Also
+`legal-research`'s `cl_case_tools.py citing`, which both skills use. No Codex skill changed (it
+uses its own `courtlistener_treatment.py`); the companion Codex version stays **1.7.9**.
+
+- The live run that checked 1.6.19 (2026-11-27, Dubitante, Sonnet) found none of the treatment
+  flag every earlier run of the same draft had found (*People v. Brown*, 218 P.3d 733 (Colo. App.
+  2009), on *Mathews*). Its history agent had run the five `citing` lookups in one command, each
+  piped through `head -c 3500`. The tool printed the recent citing cases first and the treatment
+  rows last, so the agent read no treatment row. It said so in each case's note ('first ~3.5KB of
+  output only'), but the case was still counted as checked, the run ended `complete`, and the
+  report said 'Treatment flags: none'.
+- `cl_case_tools.py citing` now prints `treatment_probe` and `name_search_treatment_probe` before
+  `recent_citing` and `name_search_only`. The keys and their contents are unchanged.
+- The history agent's prompt tells it to run the lookup once per case, read the whole output, and
+  write 'truncated' in coverage when it could not.
+- A checked case whose note or coverage says its output was truncated (or 'first ~3.5KB', 'not
+  read in full') keeps its history result but drops to low confidence, is listed in the report data
+  under 'not checked' as 'treatment unchecked', and adds one run limit naming the cites, so the run
+  ends `complete_with_limits`.
+- Tests: `test_cl_case_tools.py` stubs the CourtListener calls and checks the order (a treatment
+  row falls inside the first 3,500 bytes); `test_workflow_case_metadata.py` feeds the run's notes
+  through the stubbed workflow. Both fail on 1.6.19.
+- Not tested: a live run.
+
 ## 1.6.19 (2026-11-27)
 
 `cite-check`: a clean result is no longer counted as a finding. No Codex skill changed (its

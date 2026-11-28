@@ -75,6 +75,7 @@ console.log(JSON.stringify({
   reportExistence: section('=== CASE EXISTENCE ===', '=== CASE NAME / YEAR'),
   reportLimits: section('=== RUN LIMITS', 'Return ONLY'),
   reportHistory: section('=== SUBSEQUENT HISTORY & TREATMENT', 'NOT CHECKED / NOT RESOLVED'),
+  reportNotChecked: section('NOT CHECKED / NOT RESOLVED', '==='),
   reportAsksForSection: /Case name or year does not match the reporter cite/.test(reportPrompt) && /never write that case cites were confirmed with no issues/.test(reportPrompt),
   logs,
 }))

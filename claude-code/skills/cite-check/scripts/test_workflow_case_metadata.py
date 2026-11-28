@@ -345,5 +345,28 @@ with tempfile.TemporaryDirectory() as td:
     hi = [i for i in r["items"] if i["kind"] == "history"]
     check(len(hi) == 1 and hi[0]["cite"] == "356 U.S. 396" and "vacated" in hi[0]["label"], "history: the vacated-and-remanded line stays (%s)" % [i["label"][:50] for i in hi])
 
+    # ---- a treatment probe not read in full is not a check (2026-11-27) -------------------
+    # The live run's history agent piped each citing output through `head -c 3500` and said so in
+    # its notes; the report then said "Treatment flags: none" with no limit.
+    print("treatment output cut short: the 2026-11-27 run")
+    cut = {
+        "287 U.S. 435": {"note": "Supreme Court; no history to add. Treatment output was truncated; no treatment flag read for this case.",
+                         "coverage": "Supreme Court, no docket pass. Citing tool read, first ~3.5KB of output only (recent citing rows, all with empty signals)."},
+        "356 U.S. 396": {"coverage": "Supreme Court, no docket pass. First ~3.5KB of output only."},
+        "411 U.S. 423": {"note": "Supreme Court; no history to add. Output truncated; no treatment flag read in the portion seen."},
+        "485 U.S. 58": {"note": "Supreme Court; no history to add.", "coverage": "Supreme Court, no docket pass. Both routes read in full."},
+        "503 U.S. 540": {"note": "Supreme Court; no history to add.", "coverage": "Supreme Court, no docket pass."},
+    }
+    r = run(live, {"existence": LIVE_EXISTENCE, "history": cut})
+    invariant(r, "truncated treatment output")
+    d = [x for x in r["degradation"] if "not read in full" in x]
+    check(len(d) == 1 and "3 case cite(s)" in d[0] and all(c in d[0] for c in ("287 U.S. 435", "356 U.S. 396", "411 U.S. 423"))
+          and "485 U.S. 58" not in d[0] and "503 U.S. 540" not in d[0], "one limit line naming the three cut cites, not the two read in full (%s)" % d)
+    check(r["exitState"] == "complete_with_limits", "exit state complete_with_limits")
+    nc = r["reportHistory"].split("NOT CHECKED / NOT RESOLVED", 1)[1] if "NOT CHECKED / NOT RESOLVED" in r["reportHistory"] else r["reportNotChecked"]
+    check(nc.count("treatment unchecked") == 3, "report data: the three cut cites under not checked (%d)" % nc.count("treatment unchecked"))
+    r = run(live, {"existence": LIVE_EXISTENCE, "history": {}})
+    check(not any("not read in full" in x for x in r["degradation"]), "no limit when every output was read")
+
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)
