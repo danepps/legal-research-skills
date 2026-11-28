@@ -2,6 +2,25 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.21 (2026-11-27)
+
+`cite-check`: the history agent says yes or no to a treatment flag. No Codex skill changed (its
+treatment findings already carry a verdict); the companion Codex version stays **1.7.9**.
+
+- In the live run that checked 1.6.20 (2026-11-27), the agent wrote into `treatment` a row it had
+  set aside: 'Scope unconfirmed: State v. Shirley … That row says Russell disapproved a different
+  case, Bueno, so it is not adverse treatment of Russell.' The report then listed *United States v.
+  Russell*, 411 U.S. 423 (1973), under 'Treatment flags' and in the same entry said it was not
+  one. 1.6.19's clean-result filter does not catch this, because the text opens like a flag.
+- The history schema has a required `treatmentFlag` (true only when a row says this case was
+  overruled, abrogated, limited, declined to follow or superseded). When it is false, any
+  `treatment` text moves to `note` as 'set aside: …' and is not a finding. The prompt says a row
+  in which this case does the overruling or disapproving is not a flag. An answer without the
+  field keeps 1.6.20's behaviour.
+- Tests: `scripts/test_workflow_case_metadata.py` feeds the run's Shirley text with
+  `treatmentFlag: false`.
+- Not tested: a live run.
+
 ## 1.6.20 (2026-11-27)
 
 `cite-check`: a treatment check whose output was cut short is listed as not checked. Also

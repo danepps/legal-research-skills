@@ -2313,14 +2313,15 @@ const HISTORY_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['cite', 'status'],
+        required: ['cite', 'status', 'treatmentFlag'],
         properties: {
           cite: { type: 'string', description: 'the citation, echoed exactly' },
           status: { type: 'string', enum: ['checked', 'not-resolved', 'tool-error', 'skipped'] },
           subsequentHistory: { type: 'string', description: 'the subsequent history found, in Bluebook order with cites, e.g. "aff\'d, 980 F.3d 157 (1st Cir. 2020), rev\'d, 600 U.S. 181 (2023)"; empty if none was found' },
           historyBasis: { type: 'string', enum: ['docket+opinions', 'opinions-only', 'docket-only', 'none-found', 'not-checked'], description: 'what the history rests on' },
           historyFinding: { type: 'string', description: 'ONLY when the draft\'s citation omits history you found (or states history the record contradicts): one line, quoting the draft\'s cite text and giving the history to add. Empty otherwise.' },
-          treatment: { type: 'string', description: 'adverse treatment that names THIS case (overruled / abrogated / limited / declined to follow / superseded by statute), with the treating case\'s name, cite and date and the scope as far as the snippet shows ("scope unconfirmed" otherwise). Empty if none.' },
+          treatmentFlag: { type: 'boolean', description: 'true ONLY when a row says THIS case was overruled / abrogated / limited / declined to follow / superseded. false when no row does, including when a signal row turned out to concern a different case or to show this case treating another one' },
+          treatment: { type: 'string', description: 'ONLY when treatmentFlag is true: the adverse treatment that names THIS case, with the treating case\'s name, cite and date and the scope as far as the snippet shows ("scope unconfirmed" otherwise). Empty when treatmentFlag is false; rows you looked at and set aside go in note.' },
           treatmentRoutes: { type: 'string', description: 'coverage line: graph N (M with treatment language) / name-search N (K not in graph) / D distinct cases; most recent citing date' },
           coverage: { type: 'string', description: 'what was and was not checked: docket read (N entries after decision, truncated?), docket skipped (state court / no RECAP record), same-litigation opinions found, name resolution route' },
           confidence: { type: 'string', enum: ['high', 'moderate', 'low'] },
@@ -2362,8 +2363,10 @@ FOR EACH CASE, via Bash (load with ToolSearch "select:Bash" if needed):
    Read treatment_probe.most_relevant (mentions_target=true rows first) and
    name_search_treatment_probe. A signal row whose snippet names THIS case's parties and says it
    was overruled / abrogated / limited / declined to follow / superseded is a treatment flag:
-   name the treating case, cite, date, and the scope if the snippet shows it, else "scope
-   unconfirmed — open <case>". Rows about other cases are noise. Copy routes.* counts and
+   set treatmentFlag true and, in treatment, name the treating case, cite, date, and the scope if
+   the snippet shows it, else "scope unconfirmed — open <case>". Rows about other cases are noise,
+   and so is a row where THIS case is the one doing the overruling or disapproving: set
+   treatmentFlag false, leave treatment empty, and say what you set aside in note. Copy routes.* counts and
    distinct_cases_returned into treatmentRoutes with most_recent_citing_date.
 3. If the cite does not resolve, the tool says so: run
      python3 "${CL_TOOLS}" find "<case name>" --cite "<cite>" --year <year>
@@ -2435,6 +2438,13 @@ for (const h of historyResults) {
   if (h.historyFinding && !HISTORY_OUTCOME.test(h.historyFinding) &&
       metaMismatchCites.some((c) => ` ${norm(h.cite)} `.includes(` ${c} `))) h.historyFinding = ''
   if (h.treatment && isNullResult(h.treatment)) h.treatment = ''
+  // treatmentFlag false is the agent saying 'not a flag' (2026-11-27: 'That row says Russell
+  // disapproved a different case, Bueno, so it is not adverse treatment of Russell', written into
+  // treatment, reached the report's treatment flags). Its reasoning moves to note.
+  if (h.treatment && h.treatmentFlag === false) {
+    h.note = [h.note, `set aside: ${h.treatment}`].filter(Boolean).join(' ')
+    h.treatment = ''
+  }
 }
 // A treatment probe the agent did not read in full is not a treatment check (2026-11-27: a live
 // run cut every citing output at 3,500 bytes, said so in each case's note, and the report still

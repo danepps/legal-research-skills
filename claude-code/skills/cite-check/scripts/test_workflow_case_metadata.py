@@ -368,5 +368,19 @@ with tempfile.TemporaryDirectory() as td:
     r = run(live, {"existence": LIVE_EXISTENCE, "history": {}})
     check(not any("not read in full" in x for x in r["degradation"]), "no limit when every output was read")
 
+    # ---- treatmentFlag false is not a flag (2026-11-27, the run that checked 1.6.20) -------
+    print("treatmentFlag: a row set aside is not a flag")
+    flagged = {
+        "411 U.S. 423": {"treatmentFlag": False, "treatment": "Scope unconfirmed: State v. Shirley (N.M. Ct. App., 2007-08-23) has a row with the 'disapproved' signal. That row says Russell disapproved a different case, Bueno, so it is not adverse treatment of Russell."},
+        "485 U.S. 58": {"treatmentFlag": True, "treatment": "Declined to follow, scope unconfirmed: People v. Brown (Colo. Ct. App., 2009-06-25) says 'other divisions of this court have declined to follow Mathews with respect to the affirmative defense'."},
+        "503 U.S. 540": {"treatment": "Limited by a synthetic later case (no treatmentFlag field: an older agent answer)."},
+    }
+    r = run(live, {"existence": LIVE_EXISTENCE, "history": flagged})
+    tr = sorted(i["cite"] for i in r["items"] if i["kind"] == "treatment")
+    check(tr == ["485 U.S. 58", "503 U.S. 540"], "treatment items: Mathews (flag true) and the answer without the field; not Russell (%s)" % tr)
+    hist = r["reportHistory"]
+    flags = hist.split("TREATMENT FLAGS", 1)[1]
+    check("Shirley" not in flags.split("NOT CHECKED")[0], "report data: Shirley is not listed as a treatment flag")
+
 print("\n%d FAILED" % fails if fails else "\nall passed")
 sys.exit(1 if fails else 0)
