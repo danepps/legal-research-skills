@@ -295,6 +295,11 @@ const norm = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
 // overruled…", "No metadata problems: … matches the fetched record". Five live runs on one six-note
 // draft carried 0 to 4 such items each, so the same findings came out as 7 to 11, and a re-run's
 // "since the last report" diff would list them as new or resolved. A finding never opens this way.
+// A metadata line that only confirms the cite (2026-11-27: 'Citation 503 U.S. 540, 549 (1992) is
+// correct for the passage. [source: …]') is a clean result too, unless it also names a discrepancy.
+const CLEAN_META = /\b(is|are|was|were) (correct|accurate|right)\b|\bmatch(es|ed)? the (fetched |cited )?(record|source)\b/i
+const DISCREPANCY = /\b(should|wrong|incorrect|not|differ\w*|mismatch\w*|discrepan\w*|instead|rather than|but)\b|n't\b/i
+const isCleanMeta = (s) => isNullResult(s) || (CLEAN_META.test(String(s)) && !DISCREPANCY.test(String(s).replace(/\[source:[^\]]*\]/gi, '')))
 const NULL_RESULT = /^\W*(none|nothing|no (adverse|later|subsequent|treatment|history|omitted|metadata|problem|issue|discrepanc|record|case|row|result|finding|change|correction)\w*|not (found|applicable)|n\/a)\b/i
 const isNullResult = (s) => !String(s || '').trim() || NULL_RESULT.test(String(s).trim())
 
@@ -1206,7 +1211,7 @@ for (const r of existRaw.filter(Boolean)) {
 }
 const secBad = secondaryExistence.filter((s) => s.exists === false && s.basis !== 'unconfirmed')
 const secUnconfirmed = secondaryExistence.filter((s) => s.exists === false && s.basis === 'unconfirmed')
-const secMetaAll = secondaryExistence.flatMap((s) => (s.metadataFindings || []).filter((m) => !isNullResult(m)).map((m) => `[${s.key}] ${m}`))
+const secMetaAll = secondaryExistence.flatMap((s) => (s.metadataFindings || []).filter((m) => !isCleanMeta(m)).map((m) => `[${s.key}] ${m}`))
 // Evidence gate (2026-10-19): a metadata CORRECTION is only an "Error (fix)" when the agent tagged
 // the source record it actually opened ("[source: …]"). Untagged lines were derived from search
 // snippets / third-party listings and go to the report as "confirm", never as a fix — the
@@ -2313,13 +2318,14 @@ const HISTORY_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['cite', 'status', 'treatmentFlag'],
+        required: ['cite', 'status', 'treatmentFlag', 'treatmentReadInFull'],
         properties: {
           cite: { type: 'string', description: 'the citation, echoed exactly' },
           status: { type: 'string', enum: ['checked', 'not-resolved', 'tool-error', 'skipped'] },
           subsequentHistory: { type: 'string', description: 'the subsequent history found, in Bluebook order with cites, e.g. "aff\'d, 980 F.3d 157 (1st Cir. 2020), rev\'d, 600 U.S. 181 (2023)"; empty if none was found' },
           historyBasis: { type: 'string', enum: ['docket+opinions', 'opinions-only', 'docket-only', 'none-found', 'not-checked'], description: 'what the history rests on' },
           historyFinding: { type: 'string', description: 'ONLY when the draft\'s citation omits history you found (or states history the record contradicts): one line, quoting the draft\'s cite text and giving the history to add. Empty otherwise.' },
+          treatmentReadInFull: { type: 'boolean', description: 'true when you read the whole citing output for this case (in the tool result or from a saved file); false when any of it went unread' },
           treatmentFlag: { type: 'boolean', description: 'true ONLY when a row says THIS case was overruled / abrogated / limited / declined to follow / superseded. false when no row does, including when a signal row turned out to concern a different case or to show this case treating another one' },
           treatment: { type: 'string', description: 'ONLY when treatmentFlag is true: the adverse treatment that names THIS case, with the treating case\'s name, cite and date and the scope as far as the snippet shows ("scope unconfirmed" otherwise). Empty when treatmentFlag is false; rows you looked at and set aside go in note.' },
           treatmentRoutes: { type: 'string', description: 'coverage line: graph N (M with treatment language) / name-search N (K not in graph) / D distinct cases; most recent citing date' },
@@ -2358,8 +2364,8 @@ FOR EACH CASE, via Bash (load with ToolSearch "select:Bash" if needed):
      python3 "${CL_TOOLS}" citing "<cite>" --name "<case name>" --limit 10
    Run it once per case and read the WHOLE output. Never shorten it (no head, tail, cut or a
    byte limit): the treatment rows are what this step is for, and a run that cut each output at
-   3,500 bytes read none of them. If you could not read a case's output in full, say so in
-   coverage with the word "truncated"; that case is then listed as not fully checked.
+   3,500 bytes read none of them. Set treatmentReadInFull false when any of a case's output went
+   unread; that case is then listed as not fully checked.
    Read treatment_probe.most_relevant (mentions_target=true rows first) and
    name_search_treatment_probe. A signal row whose snippet names THIS case's parties and says it
    was overruled / abrogated / limited / declined to follow / superseded is a treatment flag:
@@ -2450,8 +2456,12 @@ for (const h of historyResults) {
 // run cut every citing output at 3,500 bytes, said so in each case's note, and the report still
 // said "Treatment flags: none" with no limit). The case stays listed as checked for history, its
 // confidence drops to low, and the cut is a run limit.
-const TRUNCATED = /\btruncat\w*|\bfirst ~?\d[\d.,]*\s*(kb|bytes|characters|chars|lines)\b|\bnot (read|seen) in full\b/i
-const historyTruncated = historyResults.filter((h) => h.status === 'checked' && TRUNCATED.test(`${h.note || ''} ${h.coverage || ''}`))
+// treatmentReadInFull is the agent's own answer; the text test is the fallback for an answer
+// without it, and skips 'not truncated' (2026-11-27: 'Full output read, not truncated' on all five
+// cases set this off when it was text only).
+const TRUNCATED = /(?<!\bnot |\bnever |\bno |\bun)\btruncat\w*|\bfirst ~?\d[\d.,]*\s*(kb|bytes|characters|chars|lines)\b|\bnot (read|seen) in full\b/i
+const historyTruncated = historyResults.filter((h) => h.status === 'checked' &&
+  (h.treatmentReadInFull === false || (h.treatmentReadInFull !== true && TRUNCATED.test(`${h.note || ''} ${h.coverage || ''}`))))
 for (const h of historyTruncated) h.confidence = 'low'
 if (historyTruncated.length) degradation.push(`subsequent-history / treatment pass: the citing output was not read in full for ${historyTruncated.length} case cite(s) (${historyTruncated.map((h) => h.cite).join('; ')}), so treatment for ${historyTruncated.length === 1 ? 'it is' : 'them is'} unchecked`)
 const historyByCite = new Map(historyResults.map((h) => [norm(h.cite), h]))
@@ -2716,7 +2726,7 @@ const fmtSupport = (f) => `- n.${f.footnote} [${f.verdict}${f.severity === 'high
   `\n    basis: ${f.basis || 'unstated'}`
 const supportSec = (pred) => supportFindings.filter((f) => !f.artifact && !f.unaudited && pred(f)).map(fmtSupport).join('\n') || '(none)'
 
-const metaFindingsFlat = [...new Set(verifyResults.flatMap((v) => v.metadataFindings || []))].filter((m) => !isNullResult(m))
+const metaFindingsFlat = [...new Set(verifyResults.flatMap((v) => v.metadataFindings || []))].filter((m) => !isCleanMeta(m))
 // Same evidence gate as the existence pass: a verify agent's metadata correction is a fix only
 // when it names the record it read; untagged lines are "confirm" items.
 const metaFindingsEvidenced = metaFindingsFlat.filter((m) => EVIDENCED.test(m))

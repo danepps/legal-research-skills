@@ -2,6 +2,27 @@
 
 Releases of the `legal-research` plugin for Claude Code and the companion Codex skills. Claude Code users receive a release when the version below changes (`/plugin marketplace update danepps`, or automatically if auto-update is on for the `danepps` marketplace). Codex users re-run the installer.
 
+## 1.6.22 (2026-11-27)
+
+`cite-check`: two false positives from the live run that checked 1.6.21. No Codex skill changed;
+the companion Codex version stays **1.7.9**.
+
+- 1.6.20's guard for a cut-short treatment check read the word 'truncated' in an agent's notes.
+  1.6.20's own prompt told the agent to use that word, and in the 1.6.21 run the agent wrote 'Full
+  output read, not truncated' for all five cases; the run ended `complete_with_limits` with every
+  case listed as treatment unchecked. The history schema now has a required `treatmentReadInFull`,
+  and the guard follows it. The text test remains only for an answer without the field, and it
+  skips 'not truncated'.
+- A metadata line that only confirms the cite ('Citation 503 U.S. 540, 549 (1992) is correct for
+  the passage. [source: …]') was exported as a finding. A line that says the cite is correct or
+  matches the record and names no discrepancy (should, wrong, not, but, differs …) is now dropped
+  with the other clean results.
+- The 1.6.21 run otherwise behaved as intended: `treatmentFlag` set aside the rows about other
+  cases (including *State v. Shirley* on *Russell*), and the one real flag (*People v. Brown* on
+  *Mathews*) was kept.
+- Tests: `scripts/test_workflow_case_metadata.py`.
+- Not tested: a live run.
+
 ## 1.6.21 (2026-11-27)
 
 `cite-check`: the history agent says yes or no to a treatment flag. No Codex skill changed (its
