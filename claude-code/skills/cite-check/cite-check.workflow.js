@@ -2355,6 +2355,10 @@ FOR EACH CASE, via Bash (load with ToolSearch "select:Bash" if needed):
    a known, unretrieved amendment — report it as such.
 2. Every case — treatment:
      python3 "${CL_TOOLS}" citing "<cite>" --name "<case name>" --limit 10
+   Run it once per case and read the WHOLE output. Never shorten it (no head, tail, cut or a
+   byte limit): the treatment rows are what this step is for, and a run that cut each output at
+   3,500 bytes read none of them. If you could not read a case's output in full, say so in
+   coverage with the word "truncated"; that case is then listed as not fully checked.
    Read treatment_probe.most_relevant (mentions_target=true rows first) and
    name_search_treatment_probe. A signal row whose snippet names THIS case's parties and says it
    was overruled / abrogated / limited / declined to follow / superseded is a treatment flag:
@@ -2432,6 +2436,14 @@ for (const h of historyResults) {
       metaMismatchCites.some((c) => ` ${norm(h.cite)} `.includes(` ${c} `))) h.historyFinding = ''
   if (h.treatment && isNullResult(h.treatment)) h.treatment = ''
 }
+// A treatment probe the agent did not read in full is not a treatment check (2026-11-27: a live
+// run cut every citing output at 3,500 bytes, said so in each case's note, and the report still
+// said "Treatment flags: none" with no limit). The case stays listed as checked for history, its
+// confidence drops to low, and the cut is a run limit.
+const TRUNCATED = /\btruncat\w*|\bfirst ~?\d[\d.,]*\s*(kb|bytes|characters|chars|lines)\b|\bnot (read|seen) in full\b/i
+const historyTruncated = historyResults.filter((h) => h.status === 'checked' && TRUNCATED.test(`${h.note || ''} ${h.coverage || ''}`))
+for (const h of historyTruncated) h.confidence = 'low'
+if (historyTruncated.length) degradation.push(`subsequent-history / treatment pass: the citing output was not read in full for ${historyTruncated.length} case cite(s) (${historyTruncated.map((h) => h.cite).join('; ')}), so treatment for ${historyTruncated.length === 1 ? 'it is' : 'them is'} unchecked`)
 const historyByCite = new Map(historyResults.map((h) => [norm(h.cite), h]))
 const historyFindings = historyResults.filter((h) => h.status === 'checked' && h.historyFinding)
 const treatmentFlags = historyResults.filter((h) => h.status === 'checked' && h.treatment)
@@ -2856,7 +2868,8 @@ ${historyFindings.map(histLine).join('\n') || '(none)'}
 TREATMENT FLAGS (a later case says this one was overruled / abrogated / limited — the author must confirm how the draft uses it):
 ${treatmentFlags.filter((h) => !h.historyFinding).map(histLine).join('\n') || '(none)'}
 NOT CHECKED / NOT RESOLVED:
-${historyUnchecked.map((h) => `- ${h.cite} — ${h.status}: ${h.coverage || h.note || ''}`).join('\n') || '(none)'}
+${[...historyUnchecked.map((h) => `- ${h.cite} — ${h.status}: ${h.coverage || h.note || ''}`),
+   ...historyTruncated.map((h) => `- ${h.cite} — treatment unchecked: the citing output was not read in full (${(h.coverage || h.note || '').slice(0, 160)})`)].join('\n') || '(none)'}
 
 === PROPOSITION SUPPORT (section H${SUPPORT_ON ? '; contradicted items ALSO go in A' : ''}) ===
 ${SUPPORT_ON ? `Pass ran: ${supportRan ? 'yes' : 'NO (' + (degradation.find((d) => /^support/.test(d)) || 'no units in scope') + ')'}; scope ${SUPPORT_SCOPE}; ${counts.support.unitsInScope} unquoted instances in scope (${counts.support.unitsOutOfScope} whole-work cites out of scope, not read); ${counts.support.unitsChecked} read; ${counts.support.artifactsCaught} first-checker findings re-derived as artifacts (EXCLUDED below); ${counts.support.unauditedAdverse} adverse verdict(s) not re-derived (NOT findings — section I); ${counts.support.rejected} agent result(s) not accepted.
